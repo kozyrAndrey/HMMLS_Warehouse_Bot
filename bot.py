@@ -10,6 +10,7 @@ from telegram.ext import (
 from config import BOT_TOKEN
 from database import init_db
 from google_sheets import init_google_sheet
+from payroll_google_sheets import init_payroll_sheet
 from handlers.common import (
     google_status,
     last_records,
@@ -25,6 +26,7 @@ from handlers.common import (
 from handlers.incoming import get_incoming_conversation_handler
 from handlers.reports import get_report_handlers
 from handlers.returns import get_returns_conversation_handler
+from handlers.payroll import get_payroll_handlers
 
 
 def setup_logging():
@@ -51,6 +53,13 @@ def main():
         logging.warning(
             "Google Sheets не настроен или google_credentials.json не найден. "
             "Записи в Google Таблицу работать не будут, пока не исправить настройки."
+        )
+
+    payroll_ready = init_payroll_sheet()
+    if not payroll_ready:
+        logging.warning(
+            "Payroll Google Sheets не настроен. "
+            "Модуль ЗП будет работать только после настройки PAYROLL_GOOGLE_SHEET_ID."
         )
 
     request = HTTPXRequest(
@@ -85,6 +94,10 @@ def main():
 
     # Отчеты.
     for handler in get_report_handlers():
+        app.add_handler(handler)
+
+    # Расчет ЗП.
+    for handler in get_payroll_handlers():
         app.add_handler(handler)
 
     # Кнопки меню.

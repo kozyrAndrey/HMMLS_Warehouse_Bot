@@ -32,3 +32,9 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")
 RETURNS_TOPIC_ID = os.getenv("RETURNS_TOPIC_ID", "")
 
 RECEIVING_REPORT_TOPIC_ID = os.getenv("RECEIVING_REPORT_TOPIC_ID", "")
+# ============================================================
+# НАСТРОЙКИ МОДУЛЯ ЗП
+# ============================================================
+
+PAYROLL_GOOGLE_SHEET_ID = os.getenv("PAYROLL_GOOGLE_SHEET_ID", "")
+PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")

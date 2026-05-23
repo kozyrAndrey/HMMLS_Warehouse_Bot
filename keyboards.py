@@ -20,6 +20,7 @@ def build_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("📦 Отчет оприходований", callback_data="section:receiving")],
         [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
+        [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
     ]
     return InlineKeyboardMarkup(keyboard)
 

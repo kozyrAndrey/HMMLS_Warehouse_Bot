@@ -412,6 +412,47 @@ PRODUCT_CATALOG = {
             },
         },
     },
+    
+    "belts": {
+        "name": "Ремни",
+        "models": {
+            "og_belt": {
+                "name": "OG BELT",
+                "variants": {
+                    "diamond": {
+                        "id": "belt001",
+                        "color": "DIAMOND",
+                        "name": "DIAMOND OG BELT",
+                    },
+                    "base": {
+                        "id": "belt002",
+                        "color": "BASE",
+                        "name": "BASE OG BELT",
+                    },
+                    "black": {
+                        "id": "belt003",
+                        "color": "BLACK",
+                        "name": "BLACK OG BELT",
+                    },
+                    "pink": {
+                        "id": "belt004",
+                        "color": "PINK",
+                        "name": "PINK OG BELT",
+                    },
+                    "white": {
+                        "id": "belt005",
+                        "color": "WHITE",
+                        "name": "WHITE OG BELT",
+                    },
+                    "leo": {
+                        "id": "belt005",
+                        "color": "LEO",
+                        "name": "LEO OG BELT",
+                    },
+                },
+            },
+        },
+    },
 
     "vests": {
         "name": "Жилетки",
