@@ -137,7 +137,7 @@ def kpi_keyboard(prefix):
     rows = []
     for item in get_kpi_items():
         rows.append(
-            [InlineKeyboardButton(f"{item['name']} — {money(item['rate'])}", callback_data=f"{prefix}:{item['kpi_id']}")]
+            [InlineKeyboardButton(item["name"], callback_data=f"{prefix}:{item['kpi_id']}")]
         )
     rows.append([InlineKeyboardButton("✅ Завершить KPI", callback_data=f"{prefix}:done")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
@@ -297,12 +297,13 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def format_kpi_lines(kpi_items):
     if not kpi_items:
         return "—"
+
     lines = []
+
     for item in kpi_items:
         qty = safe_float(item.get("qty"))
-        rate = safe_float(item.get("rate"))
-        total = qty * rate
-        lines.append(f"{item.get('name')} — {money(qty)} × {money(rate)} = {money(total)}")
+        lines.append(f"{item.get('name')} — {money(qty)}")
+
     return "\n".join(lines)
 
 
@@ -322,7 +323,6 @@ def format_daily_report_text(report_model):
             "",
             "KPI:",
             format_kpi_lines(report_model["kpi_items"]),
-            f"KPI сумма: {money(report_model['kpi_sum'])}",
         ]
     )
 
@@ -489,7 +489,7 @@ async def create_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     context.user_data["selected_kpi"] = selected
     await query.edit_message_text(
-        f"KPI: {selected['name']}\nСтавка: {money(selected['rate'])}\n\nВведите количество:",
+        f"KPI: {selected['name']}\n\nВведите количество:",
         reply_markup=payroll_back_keyboard(),
     )
     return CREATE_KPI_QTY
@@ -728,7 +728,7 @@ async def edit_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["selected_kpi"] = selected
     await query.edit_message_text(
-        f"KPI: {selected['name']}\nСтавка: {money(selected['rate'])}\n\nВведите количество:",
+        f"KPI: {selected['name']}\n\nВведите количество:",
         reply_markup=payroll_back_keyboard(),
     )
     return EDIT_KPI_QTY

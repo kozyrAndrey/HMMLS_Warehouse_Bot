@@ -7,7 +7,13 @@ from pathlib import Path
 import gspread
 
 from config import GOOGLE_CREDENTIALS_PATH, PAYROLL_GOOGLE_SHEET_ID
-from payroll_config import PAYROLL_EMPLOYEES, PAYROLL_KPI, normalize_username
+from payroll_config import (
+    KPI_DAILY_COLUMN_BY_KPI_ID,
+    KPI_DAILY_COLUMNS,
+    PAYROLL_EMPLOYEES,
+    PAYROLL_KPI,
+    normalize_username,
+)
 
 
 EMPLOYEES_SHEET = "Сотрудники"
@@ -16,6 +22,7 @@ EXPENSES_SHEET = "Расходы"
 PENALTIES_SHEET = "Штрафы"
 KPI_SHEET = "KPI"
 PERIODS_SHEET = "Расчетные периоды"
+KPI_DAILY_SHEET = "KPI за день"
 
 EMPLOYEE_HEADERS = [
     "employee_id",
@@ -87,6 +94,8 @@ PERIOD_HEADERS = [
     "Обновлено",
 ]
 
+KPI_DAILY_HEADERS = ["Дата", "Имя сотрудника", "Отработанные часы"] + KPI_DAILY_COLUMNS + ["Общее"]
+
 
 def now_str():
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -128,6 +137,17 @@ def safe_float(value):
         return 0.0
 
 
+def safe_hourly_rate(value):
+    rate = safe_float(value)
+
+    # Защита от ошибки локали Google Таблицы: иногда 437.5 может превратиться в 4375.
+    # Для складских ставок значения выше 1000 считаем потерянной десятичной точкой.
+    if 1000 <= rate < 10000:
+        return rate / 10
+
+    return rate
+
+
 def safe_bool(value):
     if isinstance(value, bool):
         return value
@@ -143,6 +163,14 @@ def money(value):
 
 def generate_id(prefix):
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def column_letter(index):
+    letters = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
 
 
 def payroll_is_configured():
@@ -170,13 +198,98 @@ def get_worksheet(title, rows=1000, cols=30):
 def ensure_headers(worksheet, headers):
     first_row = worksheet.row_values(1)
     if first_row != headers:
-        end_col = chr(ord("A") + len(headers) - 1)
+        end_col = column_letter(len(headers))
         worksheet.update(f"A1:{end_col}1", [headers])
 
 
 def records_from_worksheet(worksheet):
     return worksheet.get_all_records()
 
+
+
+def rows_to_dict_by_key(values, key_name):
+    if not values or len(values) <= 1:
+        return {}, []
+
+    headers = values[0]
+    rows = values[1:]
+    result = {}
+
+    for index, row in enumerate(rows, start=2):
+        row_data = dict(zip(headers, row))
+        key_value = str(row_data.get(key_name, "")).strip()
+
+        if key_value:
+            result[key_value] = {
+                "row_index": index,
+                "row_data": row_data,
+            }
+
+    return result, headers
+
+
+def sync_employees_sheet(worksheet):
+    """Синхронизирует справочник сотрудников с payroll_config.py.
+
+    Это важно, потому что лист «Сотрудники» мог быть создан раньше.
+    Без этой синхронизации новые telegram_user_id, ставки и роли из кода
+    не попадали бы в уже существующую таблицу.
+    """
+    values = worksheet.get_all_values()
+    existing_by_id, _ = rows_to_dict_by_key(values, "employee_id")
+    end_col = column_letter(len(EMPLOYEE_HEADERS))
+
+    rows_to_append = []
+
+    for employee in PAYROLL_EMPLOYEES:
+        row = [
+            employee["employee_id"],
+            employee["full_name"],
+            str(employee.get("telegram_user_id", "")),
+            employee.get("telegram_username", ""),
+            employee["role"],
+            str(employee["hourly_rate"]).replace(".", ","),
+            employee["fixed_salary"],
+            str(employee["include_in_common_fund"]).upper(),
+            str(employee["is_active"]).upper(),
+        ]
+
+        found = existing_by_id.get(employee["employee_id"])
+        if found:
+            row_index = found["row_index"]
+            worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
+        else:
+            rows_to_append.append(row)
+
+    if rows_to_append:
+        worksheet.append_rows(rows_to_append)
+
+
+def sync_kpi_sheet(worksheet):
+    """Синхронизирует справочник KPI с payroll_config.py."""
+    values = worksheet.get_all_values()
+    existing_by_id, _ = rows_to_dict_by_key(values, "kpi_id")
+    end_col = column_letter(len(KPI_HEADERS))
+
+    rows_to_append = []
+
+    for item in PAYROLL_KPI:
+        row = [
+            item["kpi_id"],
+            item["name"],
+            item["rate"],
+            str(item["is_active"]).upper(),
+        ]
+
+        found = existing_by_id.get(item["kpi_id"])
+        if found:
+            row_index = found["row_index"]
+            worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
+        else:
+            rows_to_append.append(row)
+
+    if rows_to_append:
+        worksheet.append_rows(rows_to_append)
 
 def init_payroll_sheet():
     if not payroll_is_configured():
@@ -189,6 +302,7 @@ def init_payroll_sheet():
     penalties_ws = get_worksheet(PENALTIES_SHEET, rows=1000, cols=12)
     kpi_ws = get_worksheet(KPI_SHEET, rows=100, cols=6)
     periods_ws = get_worksheet(PERIODS_SHEET, rows=200, cols=10)
+    kpi_daily_ws = get_worksheet(KPI_DAILY_SHEET, rows=3000, cols=20)
 
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
@@ -196,33 +310,13 @@ def init_payroll_sheet():
     ensure_headers(penalties_ws, PENALTY_HEADERS)
     ensure_headers(kpi_ws, KPI_HEADERS)
     ensure_headers(periods_ws, PERIOD_HEADERS)
+    ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
 
-    if len(employees_ws.get_all_values()) <= 1:
-        rows = []
-        for employee in PAYROLL_EMPLOYEES:
-            rows.append([
-                employee["employee_id"],
-                employee["full_name"],
-                employee.get("telegram_user_id", ""),
-                employee.get("telegram_username", ""),
-                employee["role"],
-                employee["hourly_rate"],
-                employee["fixed_salary"],
-                str(employee["include_in_common_fund"]).upper(),
-                str(employee["is_active"]).upper(),
-            ])
-        employees_ws.append_rows(rows)
-
-    if len(kpi_ws.get_all_values()) <= 1:
-        rows = []
-        for item in PAYROLL_KPI:
-            rows.append([
-                item["kpi_id"],
-                item["name"],
-                item["rate"],
-                str(item["is_active"]).upper(),
-            ])
-        kpi_ws.append_rows(rows)
+    # Справочники синхронизируем при каждом запуске, а не только при первом создании.
+    # Это гарантирует, что новые user_id, ставки, KPI и исправления попадут
+    # в уже существующую Google Таблицу.
+    sync_employees_sheet(employees_ws)
+    sync_kpi_sheet(kpi_ws)
 
     return True
 
@@ -240,7 +334,7 @@ def get_employees(include_inactive=False):
             "telegram_user_id": str(record.get("telegram_user_id", "")).strip(),
             "telegram_username": normalize_username(record.get("telegram_username", "")),
             "role": str(record.get("role", "warehouse_employee")).strip(),
-            "hourly_rate": safe_float(record.get("hourly_rate")),
+            "hourly_rate": safe_hourly_rate(record.get("hourly_rate")),
             "fixed_salary": safe_float(record.get("fixed_salary")),
             "include_in_common_fund": safe_bool(record.get("include_in_common_fund")),
             "is_active": safe_bool(record.get("is_active")),
@@ -338,6 +432,63 @@ def calculate_kpi_sum(kpi_items):
     return total
 
 
+def build_kpi_daily_quantity_map(kpi_items):
+    result = {column: 0.0 for column in KPI_DAILY_COLUMNS}
+
+    for item in kpi_items or []:
+        kpi_id = str(item.get("kpi_id", "")).strip()
+        column = KPI_DAILY_COLUMN_BY_KPI_ID.get(kpi_id)
+
+        if not column:
+            continue
+
+        result[column] += safe_float(item.get("qty"))
+
+    return result
+
+
+def find_kpi_daily_row(report_date, employee_full_name):
+    ws = get_worksheet(KPI_DAILY_SHEET)
+    values = ws.get_all_values()
+
+    if len(values) <= 1:
+        return None
+
+    for index, row in enumerate(values[1:], start=2):
+        row_date = row[0] if len(row) > 0 else ""
+        row_name = row[1] if len(row) > 1 else ""
+
+        if row_date == report_date and row_name == employee_full_name:
+            return index
+
+    return None
+
+
+def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
+    ws = get_worksheet(KPI_DAILY_SHEET)
+    quantity_map = build_kpi_daily_quantity_map(kpi_items)
+    total_qty = sum(quantity_map.values())
+
+    row = [
+        report_date,
+        employee["full_name"],
+        safe_float(hours),
+    ]
+
+    for column in KPI_DAILY_COLUMNS:
+        row.append(quantity_map[column])
+
+    row.append(total_qty)
+
+    row_index = find_kpi_daily_row(report_date, employee["full_name"])
+
+    if row_index:
+        end_col = column_letter(len(KPI_DAILY_HEADERS))
+        ws.update(f"A{row_index}:{end_col}{row_index}", [row])
+    else:
+        ws.append_row(row)
+
+
 def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data=None):
     telegram_data = telegram_data or {}
     ws = get_worksheet(REPORTS_SHEET)
@@ -363,6 +514,7 @@ def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items
         created_at,
     ]
     ws.append_row(row)
+    upsert_daily_kpi_row(employee, report_date, hours, kpi_items)
     return report_id
 
 
@@ -370,6 +522,15 @@ def update_daily_report(row_index, report_data):
     ws = get_worksheet(REPORTS_SHEET)
     values = [[report_data.get(header, "") for header in REPORT_HEADERS]]
     ws.update(f"A{row_index}:O{row_index}", values)
+
+    employee = get_employee_by_id(report_data.get("employee_id"))
+    if employee:
+        upsert_daily_kpi_row(
+            employee=employee,
+            report_date=report_data.get("Дата", ""),
+            hours=safe_float(report_data.get("Отработано часов")),
+            kpi_items=kpi_from_json(report_data.get("KPI данные", "")),
+        )
 
 
 def update_report_message_ids(row_index, chat_id, thread_id, message_id):
