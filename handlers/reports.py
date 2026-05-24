@@ -312,7 +312,7 @@ def get_report_handlers():
         CallbackQueryHandler(report_choose_date, pattern=r"^report:choose_date$"),
         CallbackQueryHandler(report_date_selected, pattern=r"^report:date:"),
         CallbackQueryHandler(receiving_delete_choose, pattern=r"^recvdel:choose$"),
-        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\\d+$"),
-        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\\d+$"),
+        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\d+$"),
+        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\d+$"),
         CallbackQueryHandler(receiving_delete_cancel, pattern=r"^recvdel:cancel$"),
     ]
