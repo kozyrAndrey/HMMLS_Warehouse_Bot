@@ -157,6 +157,17 @@ def edit_field_keyboard():
     )
 
 
+def edit_mode_keyboard(prefix):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✏️ Изменить полностью", callback_data=f"{prefix}:replace")],
+            [InlineKeyboardButton("➕ Дополнить", callback_data=f"{prefix}:append")],
+            [InlineKeyboardButton("⬅️ Назад к выбору поля", callback_data="editfield:back")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+        ]
+    )
+
+
 def periods_keyboard():
     return InlineKeyboardMarkup(
         [
@@ -644,30 +655,139 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
     if field == "finish":
         return await finish_edit_report(query, context, update.effective_user)
 
+    if field == "back":
+        await query.edit_message_text(
+            "Что нужно изменить?",
+            reply_markup=edit_field_keyboard(),
+        )
+        return EDIT_FIELD
+
     context.user_data["edit_field"] = field
+    report_data = context.user_data.get("edit_report_data") or {}
 
     if field == "interval":
-        await query.edit_message_text("Введите новый рабочий промежуток:", reply_markup=payroll_back_keyboard())
+        current_value = report_data.get("Рабочий промежуток", "") or "—"
+        await query.edit_message_text(
+            "Текущий рабочий промежуток:\n"
+            f"{current_value}\n\n"
+            "Введите новый рабочий промежуток:",
+            reply_markup=payroll_back_keyboard(),
+        )
         return EDIT_VALUE
 
     if field == "hours":
-        await query.edit_message_text("Введите новое количество часов:", reply_markup=payroll_back_keyboard())
+        current_value = report_data.get("Отработано часов", "") or "—"
+        await query.edit_message_text(
+            "Текущие отработанные часы:\n"
+            f"{money(safe_float(current_value)) if current_value != '—' else '—'}\n\n"
+            "Введите новое количество часов:",
+            reply_markup=payroll_back_keyboard(),
+        )
         return EDIT_VALUE
 
     if field == "tasks":
-        await query.edit_message_text("Введите новое описание задач:", reply_markup=payroll_back_keyboard())
-        return EDIT_VALUE
+        current_tasks = report_data.get("Задачи", "") or "—"
+        await query.edit_message_text(
+            "Текущие задачи:\n"
+            f"{current_tasks}\n\n"
+            "Выберите действие:",
+            reply_markup=edit_mode_keyboard("edittasks"),
+        )
+        return EDIT_FIELD
 
     if field == "kpi":
-        context.user_data["edit_new_kpi_items"] = []
+        current_kpi_items = kpi_from_json(report_data.get("KPI данные", ""))
         await query.edit_message_text(
-            "Выберите KPI заново или нажмите «Завершить KPI». Старый список KPI будет заменен новым.",
-            reply_markup=kpi_keyboard("edkpi"),
+            "Текущий KPI:\n"
+            f"{format_kpi_lines(current_kpi_items)}\n\n"
+            "Выберите действие:",
+            reply_markup=edit_mode_keyboard("editkpi"),
         )
-        return EDIT_KPI_SELECT
+        return EDIT_FIELD
 
     await query.edit_message_text("Неизвестное поле.", reply_markup=edit_field_keyboard())
     return EDIT_FIELD
+
+
+async def edit_tasks_mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    mode = query.data.replace("edittasks:", "")
+    if mode not in {"replace", "append"}:
+        await query.edit_message_text("Неизвестное действие.", reply_markup=edit_field_keyboard())
+        return EDIT_FIELD
+
+    context.user_data["edit_field"] = "tasks"
+    context.user_data["edit_mode"] = mode
+
+    report_data = context.user_data.get("edit_report_data") or {}
+    current_tasks = report_data.get("Задачи", "") or "—"
+
+    if mode == "replace":
+        text = (
+            "Текущие задачи:\n"
+            f"{current_tasks}\n\n"
+            "Введите новый текст задач. Старый текст будет заменен полностью:"
+        )
+    else:
+        text = (
+            "Текущие задачи:\n"
+            f"{current_tasks}\n\n"
+            "Введите текст, который нужно добавить к текущим задачам:"
+        )
+
+    await query.edit_message_text(text, reply_markup=payroll_back_keyboard())
+    return EDIT_VALUE
+
+
+def add_or_replace_kpi_item(kpi_items, new_item):
+    for item in kpi_items:
+        if item.get("kpi_id") == new_item.get("kpi_id"):
+            item["name"] = new_item["name"]
+            item["rate"] = new_item["rate"]
+            item["qty"] = new_item["qty"]
+            item["sum"] = new_item["sum"]
+            return kpi_items
+
+    kpi_items.append(new_item)
+    return kpi_items
+
+
+async def edit_kpi_mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    mode = query.data.replace("editkpi:", "")
+    if mode not in {"replace", "append"}:
+        await query.edit_message_text("Неизвестное действие.", reply_markup=edit_field_keyboard())
+        return EDIT_FIELD
+
+    report_data = context.user_data.get("edit_report_data") or {}
+    old_kpi_items = kpi_from_json(report_data.get("KPI данные", ""))
+
+    context.user_data["edit_kpi_mode"] = mode
+
+    if mode == "replace":
+        context.user_data["edit_new_kpi_items"] = []
+        text = (
+            "Текущий KPI:\n"
+            f"{format_kpi_lines(old_kpi_items)}\n\n"
+            "Выберите KPI заново. Старый KPI-блок будет заменен полностью.\n"
+            "Когда закончите, нажмите «Завершить KPI»."
+        )
+    else:
+        context.user_data["edit_new_kpi_items"] = [dict(item) for item in old_kpi_items]
+        text = (
+            "Текущий KPI:\n"
+            f"{format_kpi_lines(old_kpi_items)}\n\n"
+            "Выберите KPI, который нужно добавить или изменить.\n"
+            "Если выбранный KPI уже есть в отчете, новое количество заменит старое по этой категории.\n"
+            "Когда закончите, нажмите «Завершить KPI»."
+        )
+
+    await query.edit_message_text(text, reply_markup=kpi_keyboard("edkpi"))
+    return EDIT_KPI_SELECT
 
 
 async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -688,7 +808,15 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
             return EDIT_VALUE
         report_data["Отработано часов"] = hours
     elif field == "tasks":
-        report_data["Задачи"] = value
+        mode = context.user_data.get("edit_mode", "replace")
+        old_tasks = str(report_data.get("Задачи", "") or "").strip()
+
+        if mode == "append" and old_tasks:
+            report_data["Задачи"] = f"{old_tasks}\n{value}"
+        else:
+            report_data["Задачи"] = value
+
+        context.user_data.pop("edit_mode", None)
     else:
         await update.message.reply_text("Неизвестное поле.")
         return EDIT_FIELD
@@ -696,8 +824,12 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
     report_data["Обновлено"] = now_str()
     context.user_data["edit_report_data"] = report_data
 
+    model_preview = report_data_to_model(report_data)
+
     await update.message.reply_text(
-        "Изменение принято. Выберите ещё поле или нажмите «Завершить изменение».",
+        "Изменение принято. Текущая версия отчета:\n\n"
+        f"{format_daily_report_text(model_preview)}\n\n"
+        "Выберите ещё поле или нажмите «Завершить изменение».",
         reply_markup=edit_field_keyboard(),
     )
     return EDIT_FIELD
@@ -715,8 +847,15 @@ async def edit_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_data["KPI сумма"] = calculate_kpi_sum(kpi_items)
         report_data["Обновлено"] = now_str()
         context.user_data["edit_report_data"] = report_data
+        context.user_data.pop("edit_kpi_mode", None)
+        context.user_data.pop("selected_kpi", None)
+
+        model_preview = report_data_to_model(report_data)
+
         await query.edit_message_text(
-            "KPI обновлен. Выберите ещё поле или нажмите «Завершить изменение».",
+            "KPI обновлен. Текущая версия отчета:\n\n"
+            f"{format_daily_report_text(model_preview)}\n\n"
+            "Выберите ещё поле или нажмите «Завершить изменение».",
             reply_markup=edit_field_keyboard(),
         )
         return EDIT_FIELD
@@ -745,19 +884,22 @@ async def edit_kpi_qty_received(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("KPI потерялся. Выберите категорию заново:", reply_markup=kpi_keyboard("edkpi"))
         return EDIT_KPI_SELECT
 
-    context.user_data.setdefault("edit_new_kpi_items", []).append(
-        {
-            "kpi_id": selected["kpi_id"],
-            "name": selected["name"],
-            "rate": selected["rate"],
-            "qty": qty,
-            "sum": qty * selected["rate"],
-        }
-    )
+    new_item = {
+        "kpi_id": selected["kpi_id"],
+        "name": selected["name"],
+        "rate": selected["rate"],
+        "qty": qty,
+        "sum": qty * selected["rate"],
+    }
+
+    kpi_items = context.user_data.setdefault("edit_new_kpi_items", [])
+    context.user_data["edit_new_kpi_items"] = add_or_replace_kpi_item(kpi_items, new_item)
     context.user_data.pop("selected_kpi", None)
 
     await update.message.reply_text(
-        "KPI добавлен. Выберите ещё KPI или нажмите «Завершить KPI»:",
+        "KPI добавлен/обновлен. Текущий KPI:\n"
+        f"{format_kpi_lines(context.user_data['edit_new_kpi_items'])}\n\n"
+        "Выберите ещё KPI или нажмите «Завершить KPI»: ",
         reply_markup=kpi_keyboard("edkpi"),
     )
     return EDIT_KPI_SELECT
@@ -1320,6 +1462,8 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EDIT_FIELD: [
+                CallbackQueryHandler(edit_tasks_mode_selected, pattern=r"^edittasks:"),
+                CallbackQueryHandler(edit_kpi_mode_selected, pattern=r"^editkpi:"),
                 CallbackQueryHandler(edit_field_selected, pattern=r"^editfield:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
