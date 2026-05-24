@@ -276,7 +276,15 @@ def ensure_penalty_headers(worksheet):
 
 
 def records_from_worksheet(worksheet):
-    return worksheet.get_all_records()
+    # Важно: отключаем авто-преобразование чисел от gspread.
+    #
+    # Без этого значения с запятой в русской локали Google Таблиц
+    # могут читаться неправильно:
+    #   "4,5" -> 45
+    #
+    # После отключения numericise мы сами аккуратно приводим числа
+    # через safe_float(), где "4,5" корректно становится 4.5.
+    return worksheet.get_all_records(numericise_ignore=["all"])
 
 
 
