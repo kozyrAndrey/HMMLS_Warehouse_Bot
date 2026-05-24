@@ -464,10 +464,26 @@ def find_kpi_daily_row(report_date, employee_full_name):
     return None
 
 
+def calculate_daily_salary_total(employee, hours, kpi_items):
+    """Считает дневную сумму для листа «KPI за день».
+
+    Формула:
+    отработанные часы × ставка сотрудника + сумма KPI за день.
+
+    Важно: в листе «KPI за день» колонка «Общее» — это не сумма
+    количеств KPI, а именно дневная сумма в рублях.
+    """
+    hourly_rate = safe_hourly_rate(employee.get("hourly_rate", 0))
+    hours_value = safe_float(hours)
+    kpi_sum = calculate_kpi_sum(kpi_items)
+
+    return hours_value * hourly_rate + kpi_sum
+
+
 def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
     ws = get_worksheet(KPI_DAILY_SHEET)
     quantity_map = build_kpi_daily_quantity_map(kpi_items)
-    total_qty = sum(quantity_map.values())
+    daily_salary_total = calculate_daily_salary_total(employee, hours, kpi_items)
 
     row = [
         report_date,
@@ -478,7 +494,7 @@ def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
     for column in KPI_DAILY_COLUMNS:
         row.append(quantity_map[column])
 
-    row.append(total_qty)
+    row.append(daily_salary_total)
 
     row_index = find_kpi_daily_row(report_date, employee["full_name"])
 
