@@ -22,7 +22,14 @@ HEADERS = [
     "Упаковано",
     "Брак",
     "Доработка",
+    "Выгружено в отчет",
+    "Дата выгрузки",
+    "Кто выгрузил",
 ]
+
+EXPORT_FLAG_INDEX = 9
+EXPORT_DATE_INDEX = 10
+EXPORT_USER_INDEX = 11
 
 
 def google_sheets_is_configured():
@@ -63,9 +70,43 @@ def init_google_sheet():
 
     if first_row != HEADERS:
         # Не очищаем таблицу, только обновляем заголовки.
-        worksheet.update("A1:I1", [HEADERS])
+        # Старые строки останутся, новые колонки просто появятся справа.
+        worksheet.update("A1:L1", [HEADERS])
 
     return True
+
+
+def pad_row(row, length=len(HEADERS)):
+    row = list(row)
+    if len(row) < length:
+        row.extend([""] * (length - len(row)))
+    return row
+
+
+def row_is_exported(row):
+    row = pad_row(row)
+    value = str(row[EXPORT_FLAG_INDEX]).strip().lower()
+    return value in {"да", "yes", "true", "1", "выгружено", "exported"}
+
+
+def make_record_from_row(row_number, row):
+    row = pad_row(row)
+
+    return {
+        "row_number": row_number,
+        "date": normalize_sheet_date(row[0]),
+        "user_id": row[1],
+        "username": row[2],
+        "category_name": row[3],
+        "product_name": row[4],
+        "size": row[5],
+        "packed": safe_int(row[6]),
+        "defective": safe_int(row[7]),
+        "rework": safe_int(row[8]),
+        "exported": row_is_exported(row),
+        "exported_at": row[EXPORT_DATE_INDEX],
+        "exported_by": row[EXPORT_USER_INDEX],
+    }
 
 
 def save_to_google_sheet(
@@ -104,8 +145,12 @@ def save_to_google_sheet(
             packed,
             defective,
             rework,
+            "",
+            "",
+            "",
         ]
     )
+
 
 def append_google_status_test_row():
     worksheet = get_google_worksheet()
@@ -121,6 +166,9 @@ def append_google_status_test_row():
             0,
             0,
             0,
+            "",
+            "",
+            "",
         ]
     )
 
@@ -192,14 +240,16 @@ def get_last_records_text_from_google(limit=10):
     lines = [f"📋 Последние {min(limit, len(last_rows))} записей из Google Таблицы:"]
 
     for row in last_rows:
-        created_at = normalize_sheet_date(row[0]) if len(row) > 0 else ""
-        username = row[2] if len(row) > 2 else ""
-        category_name = row[3] if len(row) > 3 else ""
-        product_name = row[4] if len(row) > 4 else ""
-        size = row[5] if len(row) > 5 else ""
-        packed = row[6] if len(row) > 6 else "0"
-        defective = row[7] if len(row) > 7 else "0"
-        rework = row[8] if len(row) > 8 else "0"
+        row = pad_row(row)
+        created_at = normalize_sheet_date(row[0])
+        username = row[2]
+        category_name = row[3]
+        product_name = row[4]
+        size = row[5]
+        packed = row[6] or "0"
+        defective = row[7] or "0"
+        rework = row[8] or "0"
+        exported_text = "Да" if row_is_exported(row) else "Нет"
 
         lines.append(
             f"\n{created_at}\n"
@@ -209,18 +259,147 @@ def get_last_records_text_from_google(limit=10):
             f"Размер: {size}\n"
             f"Упаковано: {packed}\n"
             f"Брак: {defective}\n"
-            f"Доработка: {rework}"
+            f"Доработка: {rework}\n"
+            f"Выгружено в отчет: {exported_text}"
         )
 
     return "\n".join(lines)
 
 
-def build_receiving_report_text(report_date):
+def get_unexported_receiving_records(limit=15):
     worksheet = get_google_worksheet()
     values = worksheet.get_all_values()
 
     if len(values) <= 1:
-        return f"Дата: {report_date}\n\nНет записей за эту дату."
+        return []
+
+    records = []
+
+    for row_number, row in enumerate(values[1:], start=2):
+        if len(row) < 9:
+            continue
+
+        row = pad_row(row)
+
+        category_name = row[3].strip()
+        product_name = row[4].strip()
+        size = row[5].strip()
+
+        if not category_name or not product_name or not size:
+            continue
+
+        if row_is_exported(row):
+            continue
+
+        records.append(make_record_from_row(row_number, row))
+
+    records.reverse()
+    return records[:limit]
+
+
+def get_receiving_record_by_row(row_number):
+    worksheet = get_google_worksheet()
+    row = worksheet.row_values(row_number)
+
+    if not row:
+        return None
+
+    if len(row) < 9:
+        return None
+
+    return make_record_from_row(row_number, row)
+
+
+def delete_unexported_receiving_record(row_number):
+    worksheet = get_google_worksheet()
+    record = get_receiving_record_by_row(row_number)
+
+    if not record:
+        raise RuntimeError("Запись не найдена.")
+
+    if record["exported"]:
+        raise RuntimeError("Эта запись уже выгружена в отчет, ее нельзя удалить.")
+
+    worksheet.delete_rows(row_number)
+    return record
+
+
+def has_unexported_receiving_records_for_date(report_date):
+    worksheet = get_google_worksheet()
+    values = worksheet.get_all_values()
+
+    if len(values) <= 1:
+        return False
+
+    for row in values[1:]:
+        if len(row) < 9:
+            continue
+
+        row = pad_row(row)
+
+        if normalize_sheet_date(row[0]) != report_date:
+            continue
+
+        if not row[4].strip() or not row[5].strip():
+            continue
+
+        if not row_is_exported(row):
+            return True
+
+    return False
+
+
+def mark_receiving_rows_exported(report_date, exported_by):
+    worksheet = get_google_worksheet()
+    values = worksheet.get_all_values()
+
+    if len(values) <= 1:
+        return 0
+
+    now_text = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    updates = []
+    marked_count = 0
+
+    for row_number, row in enumerate(values[1:], start=2):
+        if len(row) < 9:
+            continue
+
+        row = pad_row(row)
+
+        if normalize_sheet_date(row[0]) != report_date:
+            continue
+
+        if not row[4].strip() or not row[5].strip():
+            continue
+
+        if row_is_exported(row):
+            continue
+
+        updates.append(
+            {
+                "range": f"J{row_number}:L{row_number}",
+                "values": [["Да", now_text, exported_by]],
+            }
+        )
+        marked_count += 1
+
+    if updates:
+        worksheet.batch_update(updates)
+
+    return marked_count
+
+
+def build_receiving_report_text(report_date, exported_by=None, only_unexported=True):
+    worksheet = get_google_worksheet()
+    values = worksheet.get_all_values()
+
+    header_lines = [f"Дата: {report_date}"]
+
+    if exported_by:
+        header_lines.append(f"Выгрузил: {exported_by}")
+
+    if len(values) <= 1:
+        return "\n".join(header_lines) + "\n\nНет записей за эту дату."
 
     rows = values[1:]
 
@@ -239,9 +418,13 @@ def build_receiving_report_text(report_date):
         if len(row) < 9:
             continue
 
+        row = pad_row(row)
         row_date = normalize_sheet_date(row[0])
 
         if row_date != report_date:
+            continue
+
+        if only_unexported and row_is_exported(row):
             continue
 
         product_name = row[4].strip()
@@ -263,12 +446,12 @@ def build_receiving_report_text(report_date):
         total_rework += rework
 
     if not grouped:
-        return f"Дата: {report_date}\n\nНет записей за эту дату."
+        if only_unexported:
+            return "\n".join(header_lines) + "\n\nНет невыгруженных записей за эту дату."
 
-    lines = [
-        f"Дата: {report_date}",
-        "",
-    ]
+        return "\n".join(header_lines) + "\n\nНет записей за эту дату."
+
+    lines = header_lines + [""]
 
     for product_name in sorted(grouped.keys()):
         lines.append(product_name)
