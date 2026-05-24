@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,6 +13,10 @@ from telegram.ext import (
 )
 
 from config import GROUP_CHAT_ID, PAYROLL_REPORT_TOPIC_ID
+
+# ID темы «Штрафы» в общей Telegram-группе.
+# Добавь в .env: PAYROLL_PENALTIES_TOPIC_ID=...
+PAYROLL_PENALTIES_TOPIC_ID = os.getenv("PAYROLL_PENALTIES_TOPIC_ID", "")
 from keyboards import build_main_menu_keyboard
 from payroll_calculations import build_full_payroll_text, build_personal_salary_text
 from payroll_google_sheets import (
@@ -352,6 +357,37 @@ async def send_daily_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_
         "thread_id": int(PAYROLL_REPORT_TOPIC_ID),
         "message_id": message.message_id,
     }
+
+
+def format_penalty_topic_text(employee, penalty_date, comment, amount, created_by):
+    return "\n".join(
+        [
+            "⚠️ Новый штраф",
+            "",
+            f"Сотрудник: {employee['full_name']}",
+            f"Дата: {penalty_date}",
+            f"Сумма: {money(amount)}",
+            f"Комментарий: {comment}",
+            "",
+            f"Назначил: {created_by}",
+        ]
+    )
+
+
+async def send_penalty_to_topic(context: ContextTypes.DEFAULT_TYPE, employee, penalty_date, comment, amount, created_by):
+    if not GROUP_CHAT_ID:
+        return "GROUP_CHAT_ID не настроен, сообщение в тему «Штрафы» не отправлено."
+
+    if not PAYROLL_PENALTIES_TOPIC_ID:
+        return "PAYROLL_PENALTIES_TOPIC_ID не настроен, сообщение в тему «Штрафы» не отправлено."
+
+    await context.bot.send_message(
+        chat_id=int(GROUP_CHAT_ID),
+        message_thread_id=int(PAYROLL_PENALTIES_TOPIC_ID),
+        text=format_penalty_topic_text(employee, penalty_date, comment, amount, created_by),
+    )
+
+    return "Штраф отправлен в тему «Штрафы» ✅"
 
 
 async def delete_old_report_message(context: ContextTypes.DEFAULT_TYPE, report_model):
@@ -1119,15 +1155,38 @@ async def penalty_amount_received(update: Update, context: ContextTypes.DEFAULT_
 
     employee = get_employee_by_id(context.user_data.get("employee_id"))
     current_employee = current_employee_or_none(update)
+    created_by = current_employee["full_name"] if current_employee else str(update.effective_user.id)
+    penalty_date = context.user_data["penalty_date"]
+    penalty_comment = context.user_data["penalty_comment"]
+
     append_penalty(
         employee,
-        context.user_data["penalty_date"],
-        context.user_data["penalty_comment"],
+        penalty_date,
+        penalty_comment,
         amount,
-        current_employee["full_name"] if current_employee else str(update.effective_user.id),
+        created_by,
     )
+
+    try:
+        topic_status = await send_penalty_to_topic(
+            context=context,
+            employee=employee,
+            penalty_date=penalty_date,
+            comment=penalty_comment,
+            amount=amount,
+            created_by=created_by,
+        )
+    except Exception as error:
+        logging.exception("Не удалось отправить штраф в тему Telegram")
+        topic_status = f"Штраф записан в таблицу, но не отправлен в тему ⚠️\nОшибка: {error}"
+
     await update.message.reply_text(
-        f"Штраф добавлен ✅\n\nСотрудник: {employee['full_name']}\nДата: {context.user_data['penalty_date']}\nСумма: {money(amount)}",
+        "Штраф добавлен ✅\n\n"
+        f"Сотрудник: {employee['full_name']}\n"
+        f"Дата: {penalty_date}\n"
+        f"Сумма: {money(amount)}\n"
+        f"Комментарий: {penalty_comment}\n\n"
+        f"{topic_status}",
         reply_markup=payroll_main_keyboard(manager=True),
     )
     context.user_data.clear()
