@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, ContextTypes
@@ -7,20 +8,115 @@ from config import GROUP_CHAT_ID, RECEIVING_REPORT_TOPIC_ID
 from google_sheets import (
     build_receiving_report_text,
     delete_unexported_receiving_record,
+    get_exported_receiving_report_by_export_id,
+    get_exported_receiving_report_groups,
     get_receiving_record_by_row,
     get_unexported_receiving_records,
     has_unexported_receiving_records_for_date,
     mark_receiving_rows_exported,
+    unmark_receiving_rows_by_export_id,
 )
 from keyboards import build_receiving_menu_keyboard, build_report_date_keyboard
 
 
+# Локальный fallback-справочник ФИО.
+# Нужен, чтобы отчеты читались нормально даже если Google-таблица ЗП
+# временно недоступна или лист «Сотрудники» еще не синхронизирован.
+LOCAL_EMPLOYEE_NAMES_BY_USER_ID = {
+    "413489632": "Андрей Козырь",
+    "927075259": "Дмитрий Тарасов",
+    "1152528155": "Константин Рогов",
+    "597723397": "Егор Репин",
+    "272117327": "Никита Комаричев",
+    "854197803": "Лев Грунверг",
+    "5223200693": "Файсал Сабер",
+}
+
+LOCAL_EMPLOYEE_NAMES_BY_USERNAME = {
+    "opulent_shooter": "Андрей Козырь",
+    "adafagahajakal": "Дмитрий Тарасов",
+    "kstyaaaa": "Константин Рогов",
+    "whereareyo0o": "Егор Репин",
+    "rokiothegoat": "Никита Комаричев",
+    "fadexdf": "Лев Грунверг",
+    "hamza_sam": "Файсал Сабер",
+}
+
+
+def normalize_username_local(username):
+    return str(username or "").strip().lstrip("@").lower()
+
+
+def employee_name_from_user_id_or_username(user_id=None, username=None, fallback=None):
+    user_id = str(user_id or "").strip()
+    username = normalize_username_local(username)
+
+    if user_id and user_id in LOCAL_EMPLOYEE_NAMES_BY_USER_ID:
+        return LOCAL_EMPLOYEE_NAMES_BY_USER_ID[user_id]
+
+    if username and username in LOCAL_EMPLOYEE_NAMES_BY_USERNAME:
+        return LOCAL_EMPLOYEE_NAMES_BY_USERNAME[username]
+
+    return fallback or username or user_id or "Неизвестный сотрудник"
+
+
+# ============================================================
+# ФИО СОТРУДНИКА
+# ============================================================
+
+def get_employee_full_name_for_user(user):
+    """Возвращает ФИО сотрудника из модуля ЗП по Telegram user_id/username.
+
+    Порядок поиска:
+    1. Локальный справочник по user_id/username.
+    2. Google-таблица ЗП, лист «Сотрудники».
+    3. payroll_config.py.
+    4. Telegram full_name / username.
+    """
+    local_name = employee_name_from_user_id_or_username(
+        user_id=user.id,
+        username=user.username,
+        fallback=None,
+    )
+    if local_name and local_name != "Неизвестный сотрудник":
+        return local_name
+
+    try:
+        from payroll_google_sheets import find_employee_for_telegram_user
+
+        employee = find_employee_for_telegram_user(user)
+        if employee and employee.get("full_name"):
+            return employee["full_name"]
+    except Exception:
+        logging.exception("Не удалось получить ФИО сотрудника из Google Таблицы ЗП")
+
+    try:
+        from payroll_config import PAYROLL_EMPLOYEES, normalize_username
+
+        telegram_user_id = str(user.id)
+        username = normalize_username(user.username)
+
+        for employee in PAYROLL_EMPLOYEES:
+            if str(employee.get("telegram_user_id", "")).strip() == telegram_user_id:
+                return employee.get("full_name") or user.full_name
+
+        if username:
+            for employee in PAYROLL_EMPLOYEES:
+                if normalize_username(employee.get("telegram_username", "")) == username:
+                    return employee.get("full_name") or user.full_name
+    except Exception:
+        logging.exception("Не удалось получить ФИО сотрудника из payroll_config.py")
+
+    return user.full_name or user.username or str(user.id)
+
+
 def user_display_name(user):
-    if user.username:
-        return f"{user.full_name} (@{user.username})"
+    return get_employee_full_name_for_user(user)
 
-    return user.full_name
 
+# ============================================================
+# ВЫГРУЗКА ОТЧЕТА ОПРИХОДОВАНИЙ
+# ============================================================
 
 async def report_choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -55,26 +151,39 @@ def split_long_message(text, limit=3900):
     return chunks
 
 
+def make_export_id(report_date):
+    date_part = report_date.replace(".", "")
+    time_part = datetime.now().strftime("%H%M%S")
+    return f"recv{date_part}{time_part}"
+
+
 async def send_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_text):
     if not GROUP_CHAT_ID:
-        return "Тема отчета не настроена: GROUP_CHAT_ID пустой."
+        raise RuntimeError("Тема отчета не настроена: GROUP_CHAT_ID пустой.")
 
     if not RECEIVING_REPORT_TOPIC_ID:
-        return "Тема отчета не настроена: RECEIVING_REPORT_TOPIC_ID пустой."
+        raise RuntimeError("Тема отчета не настроена: RECEIVING_REPORT_TOPIC_ID пустой.")
 
     chat_id = int(GROUP_CHAT_ID)
     message_thread_id = int(RECEIVING_REPORT_TOPIC_ID)
 
     chunks = split_long_message(report_text)
+    message_ids = []
 
     for chunk in chunks:
-        await context.bot.send_message(
+        message = await context.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=chunk,
         )
+        message_ids.append(message.message_id)
 
-    return "Отчет отправлен в тему «Отчет приемки» ✅"
+    return {
+        "chat_id": chat_id,
+        "thread_id": message_thread_id,
+        "message_ids": message_ids,
+        "status": "Отчет отправлен в тему «Отчет приемки» ✅",
+    }
 
 
 async def report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,9 +230,23 @@ async def report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     try:
-        send_status = await send_report_to_topic(context, report_text)
-        marked_count = mark_receiving_rows_exported(report_date, exported_by)
-        send_status += f"\nВыгруженных строк отмечено в таблице: {marked_count}"
+        export_info = await send_report_to_topic(context, report_text)
+        export_id = make_export_id(report_date)
+
+        marked_count = mark_receiving_rows_exported(
+            report_date=report_date,
+            exported_by=exported_by,
+            export_id=export_id,
+            chat_id=export_info["chat_id"],
+            thread_id=export_info["thread_id"],
+            message_ids=export_info["message_ids"],
+        )
+
+        send_status = (
+            f"{export_info['status']}\n"
+            f"ID выгрузки: {export_id}\n"
+            f"Выгруженных строк отмечено в таблице: {marked_count}"
+        )
     except Exception as error:
         logging.exception("Не удалось отправить отчет в тему или отметить строки")
         send_status = f"Не удалось отправить отчет в тему / отметить строки ⚠️\nОшибка: {error}"
@@ -147,9 +270,17 @@ def shorten_text(text, max_len=32):
     return text[: max_len - 1] + "…"
 
 
+def record_employee_display_name(record):
+    return employee_name_from_user_id_or_username(
+        user_id=record.get("user_id"),
+        username=record.get("username"),
+        fallback=record.get("username") or record.get("user_id") or "",
+    )
+
+
 def record_button_text(record):
     return (
-        f"{shorten_text(record['username'], 14)} | "
+        f"{shorten_text(record_employee_display_name(record), 18)} | "
         f"{shorten_text(record['product_name'], 24)} | "
         f"{record['size']} | "
         f"У:{record['packed']} Б:{record['defective']} Д:{record['rework']}"
@@ -159,7 +290,7 @@ def record_button_text(record):
 def format_record_details(record):
     return (
         f"Дата: {record['date']}\n"
-        f"Пользователь: {record['username']}\n"
+        f"Сотрудник: {record_employee_display_name(record)}\n"
         f"Группа: {record['category_name']}\n"
         f"Модель: {record['product_name']}\n"
         f"Размер: {record['size']}\n"
@@ -307,12 +438,231 @@ async def receiving_delete_cancel(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+# ============================================================
+# УДАЛЕНИЕ ВЫГРУЖЕННОГО ОТЧЕТА ИЗ ТЕМЫ TELEGRAM
+# ============================================================
+
+def report_group_button_text(group):
+    return (
+        f"{group['date']} | "
+        f"{shorten_text(group['exported_by'], 16)} | "
+        f"строк: {group['row_count']} | "
+        f"общее: {group['total']}"
+    )
+
+
+def format_report_group_details(group):
+    message_ids = ", ".join(str(message_id) for message_id in group["message_ids"])
+
+    return (
+        f"Дата: {group['date']}\n"
+        f"Выгрузил: {group['exported_by']}\n"
+        f"Дата выгрузки: {group['exported_at']}\n"
+        f"ID выгрузки: {group['export_id']}\n"
+        f"Количество строк: {group['row_count']}\n"
+        f"Упаковано: {group['total_packed']}\n"
+        f"Брак: {group['total_defective']}\n"
+        f"Доработка: {group['total_rework']}\n"
+        f"Общее: {group['total']}\n"
+        f"Message IDs: {message_ids}"
+    )
+
+
+def build_report_groups_keyboard(groups):
+    keyboard = []
+
+    for group in groups:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    report_group_button_text(group),
+                    callback_data=f"recvrepdel:confirm:{group['export_id']}",
+                )
+            ]
+        )
+
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="section:receiving")])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_confirm_report_delete_keyboard(export_id):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Удалить отчет", callback_data=f"recvrepdel:do:{export_id}"),
+                InlineKeyboardButton("❌ Отмена", callback_data="recvrepdel:cancel"),
+            ]
+        ]
+    )
+
+
+async def receiving_report_delete_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        groups = get_exported_receiving_report_groups(limit=10)
+    except Exception as error:
+        logging.exception("Не удалось получить выгруженные отчеты")
+        await query.edit_message_text(
+            "Не удалось получить выгруженные отчеты из Google Таблицы ⚠️\n\n"
+            f"Ошибка: {error}",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    if not groups:
+        await query.edit_message_text(
+            "Нет отчетов, которые можно удалить из темы.\n\n"
+            "Важно: удалить можно только отчеты, выгруженные после обновления, "
+            "потому что для старых выгрузок бот не знает Telegram message_id.",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    await query.edit_message_text(
+        "Выберите отчет, который нужно удалить из темы Telegram.\n\n"
+        "После удаления записи снова станут невыгруженными, их можно будет исправить и выгрузить заново:",
+        reply_markup=build_report_groups_keyboard(groups),
+    )
+
+
+async def receiving_report_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    export_id = query.data.replace("recvrepdel:confirm:", "")
+
+    try:
+        group = get_exported_receiving_report_by_export_id(export_id)
+    except Exception as error:
+        logging.exception("Не удалось получить отчет для удаления")
+        await query.edit_message_text(
+            "Не удалось получить отчет из Google Таблицы ⚠️\n\n"
+            f"Ошибка: {error}",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    if not group:
+        await query.edit_message_text(
+            "Отчет не найден. Возможно, он уже был удален или выгрузка старая.",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    context.user_data["receiving_report_delete_export_id"] = export_id
+
+    await query.edit_message_text(
+        "Проверьте отчет перед удалением:\n\n"
+        f"{format_report_group_details(group)}\n\n"
+        "Что произойдет после подтверждения:\n"
+        "1. Бот удалит сообщение/сообщения отчета из темы Telegram.\n"
+        "2. Записи в Google Таблице снова станут невыгруженными.\n"
+        "3. Их можно будет исправить и выгрузить заново.\n\n"
+        "Удалить этот отчет?",
+        reply_markup=build_confirm_report_delete_keyboard(export_id),
+    )
+
+
+async def receiving_report_delete_do(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    export_id = query.data.replace("recvrepdel:do:", "")
+
+    try:
+        group = get_exported_receiving_report_by_export_id(export_id)
+    except Exception as error:
+        logging.exception("Не удалось получить отчет для удаления")
+        await query.edit_message_text(
+            "Не удалось получить отчет из Google Таблицы ⚠️\n\n"
+            f"Ошибка: {error}",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    if not group:
+        await query.edit_message_text(
+            "Отчет не найден. Возможно, он уже был удален.",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    deleted_messages = 0
+    delete_errors = []
+
+    for message_id in group["message_ids"]:
+        try:
+            await context.bot.delete_message(
+                chat_id=int(group["chat_id"]),
+                message_id=int(message_id),
+            )
+            deleted_messages += 1
+        except Exception as error:
+            logging.exception("Не удалось удалить сообщение отчета из Telegram")
+            delete_errors.append(f"message_id {message_id}: {error}")
+
+    try:
+        unmarked_rows = unmark_receiving_rows_by_export_id(export_id)
+    except Exception as error:
+        logging.exception("Не удалось снять отметку выгрузки с записей")
+        await query.edit_message_text(
+            "Сообщения в Telegram частично удалены, но не удалось снять отметку выгрузки в Google Таблице ⚠️\n\n"
+            f"Ошибка: {error}",
+            reply_markup=build_receiving_menu_keyboard(),
+        )
+        return
+
+    context.user_data.pop("receiving_report_delete_export_id", None)
+
+    text = (
+        "Отчет удален из темы ✅\n\n"
+        f"ID выгрузки: {export_id}\n"
+        f"Удалено сообщений Telegram: {deleted_messages}\n"
+        f"Записей снова сделано невыгруженными: {unmarked_rows}\n\n"
+        "Теперь можно удалить/исправить нужные записи и выгрузить отчет заново."
+    )
+
+    if delete_errors:
+        text += (
+            "\n\nНекоторые сообщения удалить не удалось ⚠️\n"
+            + "\n".join(delete_errors[:5])
+        )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=build_receiving_menu_keyboard(),
+    )
+
+
+async def receiving_report_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.pop("receiving_report_delete_export_id", None)
+
+    await query.edit_message_text(
+        "Удаление отчета отменено.",
+        reply_markup=build_receiving_menu_keyboard(),
+    )
+
+
+# ============================================================
+# HANDLERS
+# ============================================================
+
 def get_report_handlers():
     return [
         CallbackQueryHandler(report_choose_date, pattern=r"^report:choose_date$"),
         CallbackQueryHandler(report_date_selected, pattern=r"^report:date:"),
         CallbackQueryHandler(receiving_delete_choose, pattern=r"^recvdel:choose$"),
-        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\\d+$"),
-        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\\d+$"),
+        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\d+$"),
+        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\d+$"),
         CallbackQueryHandler(receiving_delete_cancel, pattern=r"^recvdel:cancel$"),
+        CallbackQueryHandler(receiving_report_delete_choose, pattern=r"^recvrepdel:choose$"),
+        CallbackQueryHandler(receiving_report_delete_confirm, pattern=r"^recvrepdel:confirm:"),
+        CallbackQueryHandler(receiving_report_delete_do, pattern=r"^recvrepdel:do:"),
+        CallbackQueryHandler(receiving_report_delete_cancel, pattern=r"^recvrepdel:cancel$"),
     ]
