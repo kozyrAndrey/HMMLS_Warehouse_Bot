@@ -70,6 +70,18 @@ PENALTY_HEADERS = [
     "Дата",
     "employee_id",
     "ФИО",
+    "Тип штрафа",
+    "Комментарий",
+    "Сумма",
+    "Назначил",
+    "Создано",
+]
+
+OLD_PENALTY_HEADERS = [
+    "penalty_id",
+    "Дата",
+    "employee_id",
+    "ФИО",
     "Комментарий",
     "Сумма",
     "Назначил",
@@ -202,6 +214,47 @@ def ensure_headers(worksheet, headers):
         worksheet.update(f"A1:{end_col}1", [headers])
 
 
+def ensure_penalty_headers(worksheet):
+    """Обновляет лист «Штрафы» до схемы с колонкой «Тип штрафа»."""
+    values = worksheet.get_all_values()
+
+    if not values:
+        end_col = column_letter(len(PENALTY_HEADERS))
+        worksheet.update(f"A1:{end_col}1", [PENALTY_HEADERS])
+        return
+
+    first_row = values[0]
+
+    if first_row == PENALTY_HEADERS:
+        return
+
+    if first_row == OLD_PENALTY_HEADERS:
+        new_values = [PENALTY_HEADERS]
+
+        for row in values[1:]:
+            padded = row + [""] * (len(OLD_PENALTY_HEADERS) - len(row))
+            new_values.append(
+                [
+                    padded[0],
+                    padded[1],
+                    padded[2],
+                    padded[3],
+                    "Другое",
+                    padded[4],
+                    padded[5],
+                    padded[6],
+                    padded[7],
+                ]
+            )
+
+        worksheet.clear()
+        end_col = column_letter(len(PENALTY_HEADERS))
+        worksheet.update(f"A1:{end_col}{len(new_values)}", new_values)
+        return
+
+    ensure_headers(worksheet, PENALTY_HEADERS)
+
+
 def records_from_worksheet(worksheet):
     return worksheet.get_all_records()
 
@@ -307,7 +360,7 @@ def init_payroll_sheet():
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
     ensure_headers(expenses_ws, EXPENSE_HEADERS)
-    ensure_headers(penalties_ws, PENALTY_HEADERS)
+    ensure_penalty_headers(penalties_ws)
     ensure_headers(kpi_ws, KPI_HEADERS)
     ensure_headers(periods_ws, PERIOD_HEADERS)
     ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
@@ -607,13 +660,14 @@ def append_expense(employee, expense_date, comment, amount, created_by):
     ])
 
 
-def append_penalty(employee, penalty_date, comment, amount, created_by):
+def append_penalty(employee, penalty_date, penalty_type, comment, amount, created_by):
     ws = get_worksheet(PENALTIES_SHEET)
     ws.append_row([
         generate_id("penalty"),
         penalty_date,
         employee["employee_id"],
         employee["full_name"],
+        penalty_type,
         comment,
         safe_float(amount),
         created_by,
@@ -652,6 +706,7 @@ def get_penalties_in_period(start_date, end_date):
             penalties.append({
                 "employee_id": str(record.get("employee_id", "")),
                 "amount": safe_float(record.get("Сумма")),
+                "penalty_type": str(record.get("Тип штрафа", "")),
                 "comment": str(record.get("Комментарий", "")),
                 "date": str(record.get("Дата", "")),
             })

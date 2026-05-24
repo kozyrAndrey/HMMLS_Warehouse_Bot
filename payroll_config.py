@@ -146,6 +146,91 @@ SALARY_FIXED_PARTS = {
     ],
 }
 
+
+# ============================================================
+# ТИПЫ ШТРАФОВ
+# ============================================================
+# manual_amount=True означает, что сумму штрафа нужно ввести вручную.
+# needs_comment=True означает, что бот обязательно запросит комментарий с деталями штрафа.
+
+PENALTY_TYPES = {
+    "wrong_shipping": {
+        "name": "Неверная отправка",
+        "amount": 1000,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "inventory_critical_1_3": {
+        "name": "Неверная инвентаризация: 1–3 критические ошибки",
+        "amount": 750,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "inventory_critical_4_5": {
+        "name": "Неверная инвентаризация: 4–5 критических ошибок",
+        "amount": 1500,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "inventory_critical_6_plus": {
+        "name": "Неверная инвентаризация: 6+ критических ошибок",
+        "amount": 3000,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "inventory_noncritical_4_plus": {
+        "name": "Неверная инвентаризация: 4+ некритических ошибок",
+        "amount": None,
+        "manual_amount": True,
+        "needs_comment": True,
+    },
+    "late_warehouse_report": {
+        "name": "Отчет склада позже срока",
+        "amount": 500,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "late_receiving_report": {
+        "name": "Отчет приемки позже срока",
+        "amount": 500,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "late_yandex_pass_report": {
+        "name": "Отчет Яндекс/пропуска позже срока",
+        "amount": 500,
+        "manual_amount": False,
+        "needs_comment": True,
+    },
+    "other": {
+        "name": "Другое",
+        "amount": None,
+        "manual_amount": True,
+        "needs_comment": True,
+    },
+}
+
+PENALTY_TYPE_GROUPS = {
+    "inventory": {
+        "name": "Неверная инвентаризация",
+        "items": [
+            "inventory_critical_1_3",
+            "inventory_critical_4_5",
+            "inventory_critical_6_plus",
+            "inventory_noncritical_4_plus",
+        ],
+    },
+    "late_report": {
+        "name": "Отчет позже срока",
+        "items": [
+            "late_warehouse_report",
+            "late_receiving_report",
+            "late_yandex_pass_report",
+        ],
+    },
+}
+
+
 MANAGER_ROLES = {"warehouse_manager", "admin"}
 EMPLOYEE_ROLES = {"warehouse_employee", "warehouse_manager", "admin"}
 
