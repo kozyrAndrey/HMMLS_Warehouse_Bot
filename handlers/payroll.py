@@ -18,7 +18,12 @@ from config import GROUP_CHAT_ID, PAYROLL_REPORT_TOPIC_ID
 # Добавь в .env: PAYROLL_PENALTIES_TOPIC_ID=...
 PAYROLL_PENALTIES_TOPIC_ID = os.getenv("PAYROLL_PENALTIES_TOPIC_ID", "")
 from keyboards import build_main_menu_keyboard
-from payroll_config import PENALTY_TYPES, PENALTY_TYPE_GROUPS
+from payroll_config import (
+    PENALTY_ABSENCE_NO_REASON_TYPE_ID,
+    PENALTY_AUTO_DISMISSAL_TYPE_ID,
+    PENALTY_TYPES,
+    PENALTY_TYPE_GROUPS,
+)
 from payroll_calculations import build_full_payroll_text, build_personal_salary_text
 from payroll_google_sheets import (
     append_daily_report,
@@ -37,6 +42,7 @@ from payroll_google_sheets import (
     kpi_from_json,
     kpi_to_json,
     calculate_kpi_sum,
+    count_employee_penalties_by_type,
     money,
     report_data_to_model,
     safe_float,
@@ -214,6 +220,12 @@ def penalty_type_group_keyboard():
             [InlineKeyboardButton("Неверная отправка", callback_data="pntype:wrong_shipping")],
             [InlineKeyboardButton("Неверная инвентаризация", callback_data="pngrp:inventory")],
             [InlineKeyboardButton("Отчет позже срока", callback_data="pngrp:late_report")],
+            [InlineKeyboardButton("Опоздание / невыход", callback_data="pngrp:lateness_absence")],
+            [InlineKeyboardButton("Неверный пересчет расходников", callback_data="pntype:consumables_wrong_count")],
+            [InlineKeyboardButton("Неверно положил товар на полку", callback_data="pntype:wrong_shelf")],
+            [InlineKeyboardButton("Некачественная уборка", callback_data="pntype:poor_cleaning")],
+            [InlineKeyboardButton("Офисные ключи", callback_data="pngrp:office_keys")],
+            [InlineKeyboardButton("Неверное оприходование товара", callback_data="pngrp:receiving_errors")],
             [InlineKeyboardButton("Другое", callback_data="pntype:other")],
             [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
         ]
@@ -400,13 +412,14 @@ async def send_daily_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_
     }
 
 
-def format_penalty_topic_text(employee, penalty_date, penalty_type, comment, amount, created_by):
+def format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     return "\n".join(
         [
             "⚠️ Новый штраф",
             "",
             f"Сотрудник: {employee['full_name']}",
             f"Дата: {penalty_date}",
+            f"Категория: {penalty_category}",
             f"Тип штрафа: {penalty_type}",
             f"Комментарий: {comment}",
             f"Сумма: {money(amount)}",
@@ -416,13 +429,14 @@ def format_penalty_topic_text(employee, penalty_date, penalty_type, comment, amo
     )
 
 
-def format_penalty_preview(employee, penalty_date, penalty_type, comment, amount):
+def format_penalty_preview(employee, penalty_date, penalty_category, penalty_type, comment, amount):
     return "\n".join(
         [
             "Проверьте штраф:",
             "",
             f"Сотрудник: {employee['full_name']}",
             f"Дата: {penalty_date}",
+            f"Категория: {penalty_category}",
             f"Тип штрафа: {penalty_type}",
             f"Комментарий: {comment}",
             f"Сумма: {money(amount)}",
@@ -430,7 +444,7 @@ def format_penalty_preview(employee, penalty_date, penalty_type, comment, amount
     )
 
 
-async def send_penalty_to_topic(context: ContextTypes.DEFAULT_TYPE, employee, penalty_date, penalty_type, comment, amount, created_by):
+async def send_penalty_to_topic(context: ContextTypes.DEFAULT_TYPE, employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     if not GROUP_CHAT_ID:
         return "GROUP_CHAT_ID не настроен, сообщение в тему «Штрафы» не отправлено."
 
@@ -440,10 +454,63 @@ async def send_penalty_to_topic(context: ContextTypes.DEFAULT_TYPE, employee, pe
     await context.bot.send_message(
         chat_id=int(GROUP_CHAT_ID),
         message_thread_id=int(PAYROLL_PENALTIES_TOPIC_ID),
-        text=format_penalty_topic_text(employee, penalty_date, penalty_type, comment, amount, created_by),
+        text=format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by),
     )
 
     return "Штраф отправлен в тему «Штрафы» ✅"
+
+
+def last_30_days_period(end_date):
+    end_dt = datetime.strptime(end_date, "%d.%m.%Y")
+    start_dt = end_dt - timedelta(days=30)
+    return start_dt.strftime("%d.%m.%Y"), end_dt.strftime("%d.%m.%Y")
+
+
+async def maybe_send_third_absence_notice(context, employee, penalty_date, created_by):
+    auto_type = PENALTY_TYPES[PENALTY_AUTO_DISMISSAL_TYPE_ID]
+    absence_type = PENALTY_TYPES[PENALTY_ABSENCE_NO_REASON_TYPE_ID]
+    start_date, end_date = last_30_days_period(penalty_date)
+
+    absence_count = count_employee_penalties_by_type(
+        employee_id=employee["employee_id"],
+        penalty_type=absence_type["name"],
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if absence_count != 3:
+        return None
+
+    comment = (
+        f"За последние 30 дней ({start_date} — {end_date}) у сотрудника "
+        "зафиксирован третий невыход на смену без уважительной причины. "
+        "Необходимо рассмотреть вопрос об увольнении."
+    )
+
+    append_penalty(
+        employee,
+        penalty_date,
+        auto_type["category"],
+        auto_type["name"],
+        comment,
+        0,
+        created_by,
+    )
+
+    try:
+        return await send_penalty_to_topic(
+            context=context,
+            employee=employee,
+            penalty_date=penalty_date,
+            penalty_category=auto_type["category"],
+            penalty_type=auto_type["name"],
+            comment=comment,
+            amount=0,
+            created_by=created_by,
+        )
+    except Exception as error:
+        logging.exception("Не удалось отправить автоматическое уведомление о третьем невыходе")
+        return f"Автоуведомление о третьем невыходе не отправлено ⚠️\nОшибка: {error}"
 
 
 async def delete_old_report_message(context: ContextTypes.DEFAULT_TYPE, report_model):
@@ -1241,6 +1308,7 @@ async def penalty_type_selected(update: Update, context: ContextTypes.DEFAULT_TY
         return PENALTY_TYPE_GROUP
 
     context.user_data["penalty_type_id"] = penalty_type_id
+    context.user_data["penalty_category"] = penalty_type.get("category", "Другое")
     context.user_data["penalty_type_name"] = penalty_type["name"]
     context.user_data["penalty_manual_amount"] = bool(penalty_type.get("manual_amount"))
 
@@ -1273,6 +1341,7 @@ async def penalty_comment_received(update: Update, context: ContextTypes.DEFAULT
         format_penalty_preview(
             employee=employee,
             penalty_date=context.user_data["penalty_date"],
+            penalty_category=context.user_data["penalty_category"],
             penalty_type=context.user_data["penalty_type_name"],
             comment=context.user_data["penalty_comment"],
             amount=context.user_data["penalty_amount"],
@@ -1295,6 +1364,7 @@ async def penalty_amount_received(update: Update, context: ContextTypes.DEFAULT_
         format_penalty_preview(
             employee=employee,
             penalty_date=context.user_data["penalty_date"],
+            penalty_category=context.user_data["penalty_category"],
             penalty_type=context.user_data["penalty_type_name"],
             comment=context.user_data["penalty_comment"],
             amount=context.user_data["penalty_amount"],
@@ -1312,6 +1382,8 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
     current_employee = current_employee_or_none(update)
     created_by = current_employee["full_name"] if current_employee else str(update.effective_user.id)
     penalty_date = context.user_data["penalty_date"]
+    penalty_category = context.user_data["penalty_category"]
+    penalty_type_id = context.user_data.get("penalty_type_id")
     penalty_type = context.user_data["penalty_type_name"]
     penalty_comment = context.user_data["penalty_comment"]
     amount = context.user_data["penalty_amount"]
@@ -1319,6 +1391,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
     append_penalty(
         employee,
         penalty_date,
+        penalty_category,
         penalty_type,
         penalty_comment,
         amount,
@@ -1330,6 +1403,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
             context=context,
             employee=employee,
             penalty_date=penalty_date,
+            penalty_category=penalty_category,
             penalty_type=penalty_type,
             comment=penalty_comment,
             amount=amount,
@@ -1339,14 +1413,26 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
         logging.exception("Не удалось отправить штраф в тему Telegram")
         topic_status = f"Штраф записан в таблицу, но не отправлен в тему ⚠️\nОшибка: {error}"
 
+    auto_status = None
+    if penalty_type_id == PENALTY_ABSENCE_NO_REASON_TYPE_ID:
+        auto_status = await maybe_send_third_absence_notice(
+            context=context,
+            employee=employee,
+            penalty_date=penalty_date,
+            created_by=created_by,
+        )
+
+    extra_status = f"\n\n{auto_status}" if auto_status else ""
+
     await query.edit_message_text(
         "Штраф добавлен ✅\n\n"
         f"Сотрудник: {employee['full_name']}\n"
         f"Дата: {penalty_date}\n"
+        f"Категория: {penalty_category}\n"
         f"Тип штрафа: {penalty_type}\n"
         f"Комментарий: {penalty_comment}\n"
         f"Сумма: {money(amount)}\n\n"
-        f"{topic_status}",
+        f"{topic_status}{extra_status}",
         reply_markup=payroll_main_keyboard(manager=True),
     )
     context.user_data.clear()

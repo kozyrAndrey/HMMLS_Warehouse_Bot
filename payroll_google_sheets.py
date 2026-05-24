@@ -12,6 +12,7 @@ from payroll_config import (
     KPI_DAILY_COLUMNS,
     PAYROLL_EMPLOYEES,
     PAYROLL_KPI,
+    find_penalty_category_by_type_name,
     normalize_username,
 )
 
@@ -66,6 +67,19 @@ EXPENSE_HEADERS = [
 ]
 
 PENALTY_HEADERS = [
+    "penalty_id",
+    "Дата",
+    "employee_id",
+    "ФИО",
+    "Категория штрафа",
+    "Тип штрафа",
+    "Комментарий",
+    "Сумма",
+    "Назначил",
+    "Создано",
+]
+
+OLD_PENALTY_HEADERS_WITH_TYPE = [
     "penalty_id",
     "Дата",
     "employee_id",
@@ -215,7 +229,7 @@ def ensure_headers(worksheet, headers):
 
 
 def ensure_penalty_headers(worksheet):
-    """Обновляет лист «Штрафы» до схемы с колонкой «Тип штрафа»."""
+    """Обновляет лист «Штрафы» до схемы с колонками «Категория штрафа» и «Тип штрафа»."""
     values = worksheet.get_all_values()
 
     if not values:
@@ -228,24 +242,30 @@ def ensure_penalty_headers(worksheet):
     if first_row == PENALTY_HEADERS:
         return
 
-    if first_row == OLD_PENALTY_HEADERS:
-        new_values = [PENALTY_HEADERS]
+    new_values = [PENALTY_HEADERS]
 
+    if first_row == OLD_PENALTY_HEADERS_WITH_TYPE:
+        for row in values[1:]:
+            padded = row + [""] * (len(OLD_PENALTY_HEADERS_WITH_TYPE) - len(row))
+            penalty_type = padded[4] or "Другое"
+            new_values.append([
+                padded[0], padded[1], padded[2], padded[3],
+                find_penalty_category_by_type_name(penalty_type),
+                penalty_type, padded[5], padded[6], padded[7], padded[8],
+            ])
+
+        worksheet.clear()
+        end_col = column_letter(len(PENALTY_HEADERS))
+        worksheet.update(f"A1:{end_col}{len(new_values)}", new_values)
+        return
+
+    if first_row == OLD_PENALTY_HEADERS:
         for row in values[1:]:
             padded = row + [""] * (len(OLD_PENALTY_HEADERS) - len(row))
-            new_values.append(
-                [
-                    padded[0],
-                    padded[1],
-                    padded[2],
-                    padded[3],
-                    "Другое",
-                    padded[4],
-                    padded[5],
-                    padded[6],
-                    padded[7],
-                ]
-            )
+            new_values.append([
+                padded[0], padded[1], padded[2], padded[3],
+                "Другое", "Другое", padded[4], padded[5], padded[6], padded[7],
+            ])
 
         worksheet.clear()
         end_col = column_letter(len(PENALTY_HEADERS))
@@ -660,13 +680,14 @@ def append_expense(employee, expense_date, comment, amount, created_by):
     ])
 
 
-def append_penalty(employee, penalty_date, penalty_type, comment, amount, created_by):
+def append_penalty(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     ws = get_worksheet(PENALTIES_SHEET)
     ws.append_row([
         generate_id("penalty"),
         penalty_date,
         employee["employee_id"],
         employee["full_name"],
+        penalty_category,
         penalty_type,
         comment,
         safe_float(amount),
@@ -706,11 +727,23 @@ def get_penalties_in_period(start_date, end_date):
             penalties.append({
                 "employee_id": str(record.get("employee_id", "")),
                 "amount": safe_float(record.get("Сумма")),
+                "penalty_category": str(record.get("Категория штрафа", "")),
                 "penalty_type": str(record.get("Тип штрафа", "")),
                 "comment": str(record.get("Комментарий", "")),
                 "date": str(record.get("Дата", "")),
             })
     return penalties
+
+
+def count_employee_penalties_by_type(employee_id, penalty_type, start_date, end_date):
+    count = 0
+    for penalty in get_penalties_in_period(start_date, end_date):
+        if str(penalty.get("employee_id")) != str(employee_id):
+            continue
+        if str(penalty.get("penalty_type")) != str(penalty_type):
+            continue
+        count += 1
+    return count
 
 
 def get_periods():
