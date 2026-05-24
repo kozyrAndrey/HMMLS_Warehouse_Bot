@@ -116,6 +116,43 @@ def build_return_condition_keyboard():
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
+
+def get_employee_full_name_for_user(user):
+    """Возвращает ФИО сотрудника из модуля ЗП по Telegram user_id/username.
+
+    Если сотрудник не найден или Google Таблица временно недоступна,
+    используем Telegram full_name как безопасный fallback.
+    """
+    try:
+        from payroll_google_sheets import find_employee_for_telegram_user
+
+        employee = find_employee_for_telegram_user(user)
+        if employee and employee.get("full_name"):
+            return employee["full_name"]
+    except Exception:
+        logging.exception("Не удалось получить ФИО сотрудника из Google Таблицы ЗП")
+
+    # Fallback по локальному payroll_config.py, чтобы не зависеть полностью от Google Sheets.
+    try:
+        from payroll_config import PAYROLL_EMPLOYEES, normalize_username
+
+        telegram_user_id = str(user.id)
+        username = normalize_username(user.username)
+
+        for employee in PAYROLL_EMPLOYEES:
+            if str(employee.get("telegram_user_id", "")).strip() == telegram_user_id:
+                return employee.get("full_name") or user.full_name
+
+        if username:
+            for employee in PAYROLL_EMPLOYEES:
+                if normalize_username(employee.get("telegram_username", "")) == username:
+                    return employee.get("full_name") or user.full_name
+    except Exception:
+        logging.exception("Не удалось получить ФИО сотрудника из payroll_config.py")
+
+    return user.full_name or user.username or str(user.id)
+
+
 def parse_positive_number(text):
     text = text.strip()
 
@@ -975,10 +1012,10 @@ def format_return_summary(context: ContextTypes.DEFAULT_TYPE, user):
     track_number = context.user_data.get("return_track_number", "")
     items = get_return_items(context)
 
-    username = user.username or user.full_name
+    employee_full_name = get_employee_full_name_for_user(user)
 
     lines = [
-        f"Сотрудник: {username}",
+        f"Сотрудник: {employee_full_name}",
         f"ФИО контрагента: {counterparty}",
         f"Трек-номер: {track_number}",
         f"Количество товаров: {len(items)}",
