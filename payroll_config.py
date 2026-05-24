@@ -83,6 +83,17 @@ PAYROLL_EMPLOYEES = [
         "include_in_common_fund": True,
         "is_active": True,
     },
+    {
+        "employee_id": "emp008",
+        "full_name": "Олег Герасимов",
+        "telegram_user_id": "554610573",
+        "telegram_username": "kiIlyass",
+        "role": "brand_manager",
+        "hourly_rate": 0,
+        "fixed_salary": 0,
+        "include_in_common_fund": False,
+        "is_active": True,
+    },
 ]
 
 PAYROLL_KPI = [
@@ -433,8 +444,8 @@ def find_penalty_category_by_type_name(type_name):
     return "Другое"
 
 
-MANAGER_ROLES = {"warehouse_manager", "admin"}
-EMPLOYEE_ROLES = {"warehouse_employee", "warehouse_manager", "admin"}
+MANAGER_ROLES = {"warehouse_manager", "brand_manager", "admin"}
+EMPLOYEE_ROLES = {"warehouse_employee", "warehouse_manager", "brand_manager", "admin"}
 
 
 def normalize_username(username):
