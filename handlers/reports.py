@@ -15,44 +15,11 @@ from google_sheets import (
 from keyboards import build_receiving_menu_keyboard, build_report_date_keyboard
 
 
-def get_employee_full_name_for_user(user):
-    """Возвращает ФИО сотрудника из модуля ЗП по Telegram user_id/username.
-
-    Если сотрудник не найден или Google Таблица временно недоступна,
-    используем Telegram full_name как безопасный fallback.
-    """
-    try:
-        from payroll_google_sheets import find_employee_for_telegram_user
-
-        employee = find_employee_for_telegram_user(user)
-        if employee and employee.get("full_name"):
-            return employee["full_name"]
-    except Exception:
-        logging.exception("Не удалось получить ФИО сотрудника из Google Таблицы ЗП")
-
-    # Fallback по локальному payroll_config.py, чтобы не зависеть полностью от Google Sheets.
-    try:
-        from payroll_config import PAYROLL_EMPLOYEES, normalize_username
-
-        telegram_user_id = str(user.id)
-        username = normalize_username(user.username)
-
-        for employee in PAYROLL_EMPLOYEES:
-            if str(employee.get("telegram_user_id", "")).strip() == telegram_user_id:
-                return employee.get("full_name") or user.full_name
-
-        if username:
-            for employee in PAYROLL_EMPLOYEES:
-                if normalize_username(employee.get("telegram_username", "")) == username:
-                    return employee.get("full_name") or user.full_name
-    except Exception:
-        logging.exception("Не удалось получить ФИО сотрудника из payroll_config.py")
-
-    return user.full_name or user.username or str(user.id)
-
-
 def user_display_name(user):
-    return get_employee_full_name_for_user(user)
+    if user.username:
+        return f"{user.full_name} (@{user.username})"
+
+    return user.full_name
 
 
 async def report_choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -345,7 +312,7 @@ def get_report_handlers():
         CallbackQueryHandler(report_choose_date, pattern=r"^report:choose_date$"),
         CallbackQueryHandler(report_date_selected, pattern=r"^report:date:"),
         CallbackQueryHandler(receiving_delete_choose, pattern=r"^recvdel:choose$"),
-        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\d+$"),
-        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\d+$"),
+        CallbackQueryHandler(receiving_delete_confirm, pattern=r"^recvdel:confirm:\\d+$"),
+        CallbackQueryHandler(receiving_delete_do, pattern=r"^recvdel:do:\\d+$"),
         CallbackQueryHandler(receiving_delete_cancel, pattern=r"^recvdel:cancel$"),
     ]

@@ -31,6 +31,7 @@ def build_receiving_menu_keyboard():
         [InlineKeyboardButton("📋 Последние записи", callback_data="menu:last")],
         [InlineKeyboardButton("📤 Выгрузка отчета", callback_data="report:choose_date")],
         [InlineKeyboardButton("🗑 Удалить запись", callback_data="recvdel:choose")],
+        [InlineKeyboardButton("🧹 Удалить отчет из темы", callback_data="recvrepdel:choose")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
     return InlineKeyboardMarkup(keyboard)

@@ -25,12 +25,24 @@ HEADERS = [
     "Выгружено в отчет",
     "Дата выгрузки",
     "Кто выгрузил",
+    "ID выгрузки",
+    "Chat ID отчета",
+    "Thread ID отчета",
+    "Message IDs отчета",
 ]
 
 EXPORT_FLAG_INDEX = 9
 EXPORT_DATE_INDEX = 10
 EXPORT_USER_INDEX = 11
+EXPORT_ID_INDEX = 12
+EXPORT_CHAT_ID_INDEX = 13
+EXPORT_THREAD_ID_INDEX = 14
+EXPORT_MESSAGE_IDS_INDEX = 15
 
+
+# ============================================================
+# GOOGLE SHEETS BASE
+# ============================================================
 
 def google_sheets_is_configured():
     if not GOOGLE_SHEET_ID:
@@ -55,10 +67,20 @@ def get_google_worksheet():
         worksheet = spreadsheet.add_worksheet(
             title=GOOGLE_WORKSHEET_NAME,
             rows=1000,
-            cols=12,
+            cols=len(HEADERS),
         )
 
     return worksheet
+
+
+def column_letter(column_number):
+    result = ""
+
+    while column_number:
+        column_number, remainder = divmod(column_number - 1, 26)
+        result = chr(65 + remainder) + result
+
+    return result
 
 
 def init_google_sheet():
@@ -69,24 +91,90 @@ def init_google_sheet():
     first_row = worksheet.row_values(1)
 
     if first_row != HEADERS:
+        end_col = column_letter(len(HEADERS))
         # Не очищаем таблицу, только обновляем заголовки.
         # Старые строки останутся, новые колонки просто появятся справа.
-        worksheet.update("A1:L1", [HEADERS])
+        worksheet.update(f"A1:{end_col}1", [HEADERS])
 
     return True
 
 
 def pad_row(row, length=len(HEADERS)):
     row = list(row)
+
     if len(row) < length:
         row.extend([""] * (length - len(row)))
+
     return row
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def normalize_sheet_date(value):
+    value = str(value).strip()
+
+    if not value:
+        return ""
+
+    # Новый формат: 19.05.2026
+    try:
+        return datetime.strptime(value, "%d.%m.%Y").strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+
+    # Старый формат: 2026-05-19 16:12:12
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+
+    # Старый формат без времени: 2026-05-19
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+
+    return value
+
+
+def safe_int(value):
+    try:
+        if value is None or value == "":
+            return 0
+
+        return int(float(str(value).replace(",", ".").strip()))
+    except Exception:
+        return 0
 
 
 def row_is_exported(row):
     row = pad_row(row)
     value = str(row[EXPORT_FLAG_INDEX]).strip().lower()
     return value in {"да", "yes", "true", "1", "выгружено", "exported"}
+
+
+def split_message_ids(value):
+    value = str(value or "").strip()
+
+    if not value:
+        return []
+
+    result = []
+
+    for part in value.split(","):
+        part = part.strip()
+
+        if not part:
+            continue
+
+        try:
+            result.append(int(part))
+        except ValueError:
+            continue
+
+    return result
 
 
 def make_record_from_row(row_number, row):
@@ -106,8 +194,16 @@ def make_record_from_row(row_number, row):
         "exported": row_is_exported(row),
         "exported_at": row[EXPORT_DATE_INDEX],
         "exported_by": row[EXPORT_USER_INDEX],
+        "export_id": row[EXPORT_ID_INDEX],
+        "export_chat_id": row[EXPORT_CHAT_ID_INDEX],
+        "export_thread_id": row[EXPORT_THREAD_ID_INDEX],
+        "export_message_ids": row[EXPORT_MESSAGE_IDS_INDEX],
     }
 
+
+# ============================================================
+# WRITE / READ RECEIVING RECORDS
+# ============================================================
 
 def save_to_google_sheet(
     user_id,
@@ -148,6 +244,10 @@ def save_to_google_sheet(
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
 
@@ -169,45 +269,12 @@ def append_google_status_test_row():
             "",
             "",
             "",
+            "",
+            "",
+            "",
+            "",
         ]
     )
-
-
-def normalize_sheet_date(value):
-    value = str(value).strip()
-
-    if not value:
-        return ""
-
-    # Новый формат: 19.05.2026
-    try:
-        return datetime.strptime(value, "%d.%m.%Y").strftime("%d.%m.%Y")
-    except ValueError:
-        pass
-
-    # Старый формат: 2026-05-19 16:12:12
-    try:
-        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
-    except ValueError:
-        pass
-
-    # Старый формат без времени: 2026-05-19
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").strftime("%d.%m.%Y")
-    except ValueError:
-        pass
-
-    return value
-
-
-def safe_int(value):
-    try:
-        if value is None or value == "":
-            return 0
-
-        return int(float(str(value).replace(",", ".").strip()))
-    except Exception:
-        return 0
 
 
 def get_last_records_text_from_google(limit=10):
@@ -265,6 +332,10 @@ def get_last_records_text_from_google(limit=10):
 
     return "\n".join(lines)
 
+
+# ============================================================
+# DELETE UNEXPORTED RECORDS
+# ============================================================
 
 def get_unexported_receiving_records(limit=15):
     worksheet = get_google_worksheet()
@@ -324,6 +395,10 @@ def delete_unexported_receiving_record(row_number):
     return record
 
 
+# ============================================================
+# EXPORT REPORTS
+# ============================================================
+
 def has_unexported_receiving_records_for_date(report_date):
     worksheet = get_google_worksheet()
     values = worksheet.get_all_values()
@@ -349,7 +424,14 @@ def has_unexported_receiving_records_for_date(report_date):
     return False
 
 
-def mark_receiving_rows_exported(report_date, exported_by):
+def mark_receiving_rows_exported(
+    report_date,
+    exported_by,
+    export_id,
+    chat_id,
+    thread_id,
+    message_ids,
+):
     worksheet = get_google_worksheet()
     values = worksheet.get_all_values()
 
@@ -357,6 +439,8 @@ def mark_receiving_rows_exported(report_date, exported_by):
         return 0
 
     now_text = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    message_ids_text = ",".join(str(message_id) for message_id in message_ids)
+
     updates = []
     marked_count = 0
 
@@ -377,8 +461,16 @@ def mark_receiving_rows_exported(report_date, exported_by):
 
         updates.append(
             {
-                "range": f"J{row_number}:L{row_number}",
-                "values": [["Да", now_text, exported_by]],
+                "range": f"J{row_number}:P{row_number}",
+                "values": [[
+                    "Да",
+                    now_text,
+                    exported_by,
+                    export_id,
+                    str(chat_id),
+                    str(thread_id),
+                    message_ids_text,
+                ]],
             }
         )
         marked_count += 1
@@ -403,7 +495,6 @@ def build_receiving_report_text(report_date, exported_by=None, only_unexported=T
 
     rows = values[1:]
 
-    # product_name -> size -> totals
     grouped = defaultdict(lambda: defaultdict(lambda: {
         "packed": 0,
         "defective": 0,
@@ -483,3 +574,106 @@ def build_receiving_report_text(report_date, exported_by=None, only_unexported=T
     )
 
     return "\n".join(lines)
+
+
+# ============================================================
+# DELETE EXPORTED REPORT FROM TELEGRAM TOPIC
+# ============================================================
+
+def make_export_group(export_id, rows):
+    records = [make_record_from_row(row_number, row) for row_number, row in rows]
+    first = records[0]
+
+    total_packed = sum(record["packed"] for record in records)
+    total_defective = sum(record["defective"] for record in records)
+    total_rework = sum(record["rework"] for record in records)
+
+    return {
+        "export_id": export_id,
+        "date": first["date"],
+        "exported_at": first["exported_at"],
+        "exported_by": first["exported_by"],
+        "chat_id": first["export_chat_id"],
+        "thread_id": first["export_thread_id"],
+        "message_ids": split_message_ids(first["export_message_ids"]),
+        "row_count": len(records),
+        "row_numbers": [record["row_number"] for record in records],
+        "total_packed": total_packed,
+        "total_defective": total_defective,
+        "total_rework": total_rework,
+        "total": total_packed + total_defective + total_rework,
+        "last_row_number": max(record["row_number"] for record in records),
+    }
+
+
+def get_exported_receiving_report_groups(limit=10):
+    worksheet = get_google_worksheet()
+    values = worksheet.get_all_values()
+
+    if len(values) <= 1:
+        return []
+
+    groups = defaultdict(list)
+
+    for row_number, row in enumerate(values[1:], start=2):
+        if len(row) < 9:
+            continue
+
+        row = pad_row(row)
+
+        if not row_is_exported(row):
+            continue
+
+        export_id = str(row[EXPORT_ID_INDEX]).strip()
+        message_ids = str(row[EXPORT_MESSAGE_IDS_INDEX]).strip()
+
+        # Старые выгрузки без message_id удалить из Telegram невозможно.
+        if not export_id or not message_ids:
+            continue
+
+        groups[export_id].append((row_number, row))
+
+    result = [make_export_group(export_id, rows) for export_id, rows in groups.items()]
+    result.sort(key=lambda item: item["last_row_number"], reverse=True)
+
+    return result[:limit]
+
+
+def get_exported_receiving_report_by_export_id(export_id):
+    groups = get_exported_receiving_report_groups(limit=1000)
+
+    for group in groups:
+        if group["export_id"] == export_id:
+            return group
+
+    return None
+
+
+def unmark_receiving_rows_by_export_id(export_id):
+    worksheet = get_google_worksheet()
+    values = worksheet.get_all_values()
+
+    if len(values) <= 1:
+        return 0
+
+    updates = []
+    count = 0
+
+    for row_number, row in enumerate(values[1:], start=2):
+        row = pad_row(row)
+
+        if str(row[EXPORT_ID_INDEX]).strip() != str(export_id).strip():
+            continue
+
+        updates.append(
+            {
+                "range": f"J{row_number}:P{row_number}",
+                "values": [["", "", "", "", "", "", ""]],
+            }
+        )
+        count += 1
+
+    if updates:
+        worksheet.batch_update(updates)
+
+    return count
