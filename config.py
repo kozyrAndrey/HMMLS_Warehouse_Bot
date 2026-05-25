@@ -43,5 +43,12 @@ PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")
 # ============================================================
 # НАСТРОЙКИ МОДУЛЯ РАСПИСАНИЯ
 # ============================================================
+# SCHEDULE_EXPORT_TOPIC_ID — тема, куда бот выгружает Excel-файл расписания.
+# SCHEDULE_REMINDER_TOPIC_ID — тема, куда бот отправляет пятничное напоминание.
+#
+# Для обратной совместимости можно оставить старый SCHEDULE_TOPIC_ID:
+# если новые переменные не заданы, бот возьмет его как fallback.
 
 SCHEDULE_TOPIC_ID = os.getenv("SCHEDULE_TOPIC_ID", "")
+SCHEDULE_EXPORT_TOPIC_ID = os.getenv("SCHEDULE_EXPORT_TOPIC_ID", SCHEDULE_TOPIC_ID)
+SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TOPIC_ID)

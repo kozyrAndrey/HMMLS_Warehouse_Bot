@@ -9,7 +9,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-from config import GROUP_CHAT_ID, SCHEDULE_TOPIC_ID
+from config import GROUP_CHAT_ID, SCHEDULE_EXPORT_TOPIC_ID, SCHEDULE_REMINDER_TOPIC_ID
 from keyboards import build_main_menu_keyboard
 from payroll_google_sheets import find_employee_for_telegram_user, get_employee_by_id
 from schedule_config import (
@@ -202,8 +202,8 @@ async def export_schedule_excel_to_user(context, chat_id, week_start):
 
 
 async def export_schedule_excel_to_topic(context, week_start, sent_by_employee, note=""):
-    if not GROUP_CHAT_ID or not SCHEDULE_TOPIC_ID:
-        return "GROUP_CHAT_ID или SCHEDULE_TOPIC_ID не настроены."
+    if not GROUP_CHAT_ID or not SCHEDULE_EXPORT_TOPIC_ID:
+        return "GROUP_CHAT_ID или SCHEDULE_EXPORT_TOPIC_ID не настроены."
 
     version = get_next_export_version(week_start)
 
@@ -223,7 +223,7 @@ async def export_schedule_excel_to_topic(context, week_start, sent_by_employee, 
     with open(path, "rb") as file:
         message = await context.bot.send_document(
             chat_id=int(GROUP_CHAT_ID),
-            message_thread_id=int(SCHEDULE_TOPIC_ID),
+            message_thread_id=int(SCHEDULE_EXPORT_TOPIC_ID),
             document=file,
             filename=filename,
             caption=caption,
@@ -233,7 +233,7 @@ async def export_schedule_excel_to_topic(context, week_start, sent_by_employee, 
         week_start=week_start,
         version=version,
         chat_id=int(GROUP_CHAT_ID),
-        thread_id=int(SCHEDULE_TOPIC_ID),
+        thread_id=int(SCHEDULE_EXPORT_TOPIC_ID),
         message_id=message.message_id,
         filename=filename,
         sent_by=sent_by_employee["full_name"] if sent_by_employee else "",
@@ -620,8 +620,8 @@ async def schedule_friday_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     if current.weekday() != 4:
         return
 
-    if not GROUP_CHAT_ID or not SCHEDULE_TOPIC_ID:
-        logging.warning("Не настроены GROUP_CHAT_ID или SCHEDULE_TOPIC_ID для напоминания расписания")
+    if not GROUP_CHAT_ID or not SCHEDULE_REMINDER_TOPIC_ID:
+        logging.warning("Не настроены GROUP_CHAT_ID или SCHEDULE_REMINDER_TOPIC_ID для напоминания расписания")
         return
 
     mentions = get_reminder_mentions()
@@ -631,7 +631,7 @@ async def schedule_friday_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=int(GROUP_CHAT_ID),
-        message_thread_id=int(SCHEDULE_TOPIC_ID),
+        message_thread_id=int(SCHEDULE_EXPORT_TOPIC_ID),
         text=text,
     )
 
