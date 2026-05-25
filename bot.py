@@ -11,6 +11,7 @@ from config import BOT_TOKEN
 from database import init_db
 from google_sheets import init_google_sheet
 from payroll_google_sheets import init_payroll_sheet
+from schedule_google_sheets import init_schedule_sheet
 from handlers.common import (
     google_status,
     last_records,
@@ -27,6 +28,7 @@ from handlers.incoming import get_incoming_conversation_handler
 from handlers.reports import get_report_handlers
 from handlers.returns import get_returns_conversation_handler
 from handlers.payroll import get_payroll_handlers
+from handlers.schedule import get_schedule_handlers, setup_schedule_jobs
 
 
 def setup_logging():
@@ -61,6 +63,16 @@ def main():
             "Payroll Google Sheets не настроен. "
             "Модуль ЗП будет работать только после настройки PAYROLL_GOOGLE_SHEET_ID."
         )
+
+    schedule_ready = False
+    if payroll_ready:
+        try:
+            schedule_ready = init_schedule_sheet()
+        except Exception:
+            logging.exception("Не удалось инициализировать модуль расписания")
+
+    if not schedule_ready:
+        logging.warning("Модуль расписания не инициализирован. Проверьте настройки Google Sheets.")
 
     request = HTTPXRequest(
         connect_timeout=30,
@@ -99,6 +111,12 @@ def main():
     # Расчет ЗП.
     for handler in get_payroll_handlers():
         app.add_handler(handler)
+
+    # Расписание.
+    for handler in get_schedule_handlers():
+        app.add_handler(handler)
+
+    setup_schedule_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))

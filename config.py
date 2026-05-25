@@ -38,3 +38,10 @@ RECEIVING_REPORT_TOPIC_ID = os.getenv("RECEIVING_REPORT_TOPIC_ID", "")
 
 PAYROLL_GOOGLE_SHEET_ID = os.getenv("PAYROLL_GOOGLE_SHEET_ID", "")
 PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")
+
+
+# ============================================================
+# НАСТРОЙКИ МОДУЛЯ РАСПИСАНИЯ
+# ============================================================
+
+SCHEDULE_TOPIC_ID = os.getenv("SCHEDULE_TOPIC_ID", "")
