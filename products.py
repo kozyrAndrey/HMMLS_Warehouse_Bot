@@ -615,7 +615,7 @@ for category_id, category_data in PRODUCT_CATALOG.items():
     }
 
 
-SIZES = ["2XS", "XS", "S", "M", "L", "XL", "2XL", "XXL", "3XL", "ONE SIZE"]
+SIZES = ["2XS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "ONE SIZE"]
 
 
 def get_product_name(category_id, product_id):

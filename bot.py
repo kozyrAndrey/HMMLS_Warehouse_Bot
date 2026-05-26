@@ -5,9 +5,12 @@ from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
+    MessageHandler,
+    filters,
 )
 
 from config import BOT_TOKEN
+from access import access_guard
 from database import init_db
 from google_sheets import init_google_sheet
 from payroll_google_sheets import init_payroll_sheet
@@ -90,6 +93,17 @@ def main():
     )
 
     app.add_error_handler(error_handler)
+
+    # Глобальная защита:
+    # /start разрешен всем, чтобы пользователь увидел кнопку «Старт».
+    # После нажатия «Старт» и любые дальнейшие действия доступны только сотрудникам из списка.
+    # /whoami оставлен доступным, чтобы можно было узнать Telegram user_id нового сотрудника.
+    app.add_handler(CallbackQueryHandler(access_guard), group=-1)
+    app.add_handler(
+        MessageHandler(filters.COMMAND & ~filters.Regex(r"^/(start|whoami)(\\s|$)"), access_guard),
+        group=-1,
+    )
+    app.add_handler(MessageHandler(~filters.COMMAND, access_guard), group=-1)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("last", last_records))
