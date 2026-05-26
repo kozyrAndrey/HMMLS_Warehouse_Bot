@@ -1,6 +1,6 @@
 import logging
 import tempfile
-from datetime import time
+from datetime import datetime, time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -11,7 +11,7 @@ from telegram.ext import (
 
 from config import GROUP_CHAT_ID, SCHEDULE_EXPORT_TOPIC_ID, SCHEDULE_REMINDER_TOPIC_ID
 from keyboards import build_main_menu_keyboard
-from payroll_google_sheets import find_employee_for_telegram_user, get_employee_by_id
+from payroll_google_sheets import find_employee_for_telegram_user, get_employee_by_id, get_employees
 from schedule_config import (
     MSK_TZ,
     SHIFT_TIMES,
@@ -31,13 +31,17 @@ from schedule_excel import create_schedule_xlsx
 from schedule_google_sheets import (
     append_schedule_export,
     build_personal_schedule_text,
+    get_active_schedule_reminder,
+    get_missing_schedule_employees,
     get_next_export_version,
+    mark_schedule_reminder_status,
     rebuild_current_schedule_sheet,
     schedule_has_submission,
     set_week_duties,
     suggest_week_duties,
     upsert_employee_week_schedule,
     upsert_schedule_day,
+    upsert_schedule_reminder,
 )
 
 (
@@ -676,25 +680,121 @@ async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_
 # ============================================================
 
 
-async def schedule_friday_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+def build_missing_schedule_text(missing_employees):
+    mentions = []
+    for employee in missing_employees:
+        username = str(employee.get("telegram_username", "")).strip().lstrip("@")
+        if username:
+            mentions.append(f"@{username}")
+        else:
+            mentions.append(employee["full_name"])
+
+    return "Заполните расписание❗️\n\n" + "\n".join(mentions)
+
+
+async def delete_saved_schedule_reminder(context: ContextTypes.DEFAULT_TYPE, week_start):
+    saved = get_active_schedule_reminder(week_start)
+    if not saved:
+        return False
+
+    chat_id = saved.get("chat_id")
+    message_id = saved.get("message_id")
+    if not chat_id or not message_id:
+        return False
+
+    try:
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+        return True
+    except Exception:
+        logging.exception("Не удалось удалить старое напоминание о расписании")
+        return False
+
+
+async def send_schedule_missing_reminder(context: ContextTypes.DEFAULT_TYPE, week_start):
+    if not GROUP_CHAT_ID or not SCHEDULE_REMINDER_TOPIC_ID:
+        logging.warning("Не настроены GROUP_CHAT_ID или SCHEDULE_REMINDER_TOPIC_ID для контроля расписания")
+        return
+
+    missing = get_missing_schedule_employees(week_start)
+
+    # Всегда удаляем предыдущее напоминание, чтобы не засорять тему.
+    await delete_saved_schedule_reminder(context, week_start)
+
+    if not missing:
+        mark_schedule_reminder_status(week_start, "completed")
+        return
+
+    message = await context.bot.send_message(
+        chat_id=int(GROUP_CHAT_ID),
+        message_thread_id=int(SCHEDULE_REMINDER_TOPIC_ID),
+        text=build_missing_schedule_text(missing),
+    )
+
+    upsert_schedule_reminder(
+        week_start=week_start,
+        chat_id=int(GROUP_CHAT_ID),
+        thread_id=int(SCHEDULE_REMINDER_TOPIC_ID),
+        message_id=message.message_id,
+        status="active",
+    )
+
+
+async def schedule_missing_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     current = today_msk()
     if current.weekday() != 4:
         return
 
-    if not GROUP_CHAT_ID or not SCHEDULE_REMINDER_TOPIC_ID:
-        logging.warning("Не настроены GROUP_CHAT_ID или SCHEDULE_REMINDER_TOPIC_ID для напоминания расписания")
+    week_start = next_week_start(current)
+
+    # В 10:00 готовим визуальный лист под следующую неделю.
+    current_time = datetime.now(MSK_TZ).time()
+    if current_time.hour == 10:
+        try:
+            rebuild_current_schedule_sheet(week_start)
+        except Exception:
+            logging.exception("Не удалось подготовить лист «Расписание» под новую неделю")
+
+    await send_schedule_missing_reminder(context, week_start)
+
+
+async def schedule_manager_overdue_job(context: ContextTypes.DEFAULT_TYPE):
+    current = today_msk()
+    if current.weekday() != 4:
         return
 
-    mentions = get_reminder_mentions()
-    text = "Уважаемые коллеги. Скиньте ваш график на следующую неделю до 18:00"
-    if mentions:
-        text += "\n\n" + "\n".join(mentions)
+    week_start = next_week_start(current)
+    missing = get_missing_schedule_employees(week_start)
 
-    await context.bot.send_message(
-        chat_id=int(GROUP_CHAT_ID),
-        message_thread_id=int(SCHEDULE_REMINDER_TOPIC_ID),
-        text=text,
+    if not missing:
+        mark_schedule_reminder_status(week_start, "completed")
+        return
+
+    mark_schedule_reminder_status(week_start, "overdue")
+
+    text = (
+        "Не все сотрудники заполнили расписание до 19:00 ⚠️\n\n"
+        + "\n".join(
+            [
+                f"@{str(employee.get('telegram_username', '')).strip().lstrip('@')}"
+                if str(employee.get("telegram_username", "")).strip()
+                else employee["full_name"]
+                for employee in missing
+            ]
+        )
     )
+
+    for employee in get_employees(include_inactive=False):
+        if employee.get("role") != "warehouse_manager":
+            continue
+
+        telegram_user_id = str(employee.get("telegram_user_id", "")).strip()
+        if not telegram_user_id:
+            continue
+
+        try:
+            await context.bot.send_message(chat_id=int(telegram_user_id), text=text)
+        except Exception:
+            logging.exception("Не удалось отправить руководителю личное сообщение о незаполненном расписании")
 
 
 def setup_schedule_jobs(app):
@@ -705,10 +805,17 @@ def setup_schedule_jobs(app):
         )
         return
 
+    for hour in (10, 12, 14, 16, 18):
+        app.job_queue.run_daily(
+            schedule_missing_reminder_job,
+            time=time(hour=hour, minute=0, tzinfo=MSK_TZ),
+            name=f"schedule_missing_reminder_{hour}",
+        )
+
     app.job_queue.run_daily(
-        schedule_friday_reminder_job,
-        time=time(hour=10, minute=0, tzinfo=MSK_TZ),
-        name="schedule_friday_reminder",
+        schedule_manager_overdue_job,
+        time=time(hour=19, minute=0, tzinfo=MSK_TZ),
+        name="schedule_manager_overdue",
     )
 
 

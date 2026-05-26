@@ -62,6 +62,9 @@ EXPORTS_HEADERS = [
     "Файл",
     "Выгрузил",
     "Создано",
+    "Тип записи",
+    "Статус",
+    "Обновлено",
 ]
 
 
@@ -294,6 +297,12 @@ def get_next_export_version(week_start):
     for record in schedule_records(ws):
         if str(record.get("Неделя начала", "")).strip() != week_start_str:
             continue
+
+        record_type = str(record.get("Тип записи", "")).strip()
+        # Старые строки без типа считаем выгрузками расписания.
+        if record_type and record_type != "schedule_export":
+            continue
+
         try:
             version = int(str(record.get("Версия", "0")).strip() or 0)
         except ValueError:
@@ -314,7 +323,95 @@ def append_schedule_export(week_start, version, chat_id, thread_id, message_id, 
         filename,
         sent_by,
         now_str(),
+        "schedule_export",
+        "sent",
+        now_str(),
     ])
+
+
+def get_missing_schedule_employees(week_start):
+    """Возвращает сотрудников, которые еще не заполнили расписание на неделю."""
+    missing = []
+    for employee in get_schedule_employees():
+        if not schedule_has_submission(employee["employee_id"], week_start):
+            missing.append(employee)
+    return missing
+
+
+def get_schedule_reminder_row(week_start):
+    ws = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET)
+    week_start_str = get_week_start_str(week_start)
+    records = schedule_records(ws)
+
+    for index, record in enumerate(records, start=2):
+        if (
+            str(record.get("Неделя начала", "")).strip() == week_start_str
+            and str(record.get("Тип записи", "")).strip() == "schedule_reminder"
+        ):
+            return index, record
+
+    return None, None
+
+
+def upsert_schedule_reminder(week_start, chat_id, thread_id, message_id, status="active"):
+    """Сохраняет ID последнего сообщения-напоминания в лист «Выгрузки расписания»."""
+    ws = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET)
+    row_index, record = get_schedule_reminder_row(week_start)
+    created_at = now_str()
+
+    if record:
+        created_at = str(record.get("Создано", "")).strip() or created_at
+
+    row = [
+        get_week_start_str(week_start),
+        get_week_end_str(week_start),
+        "",
+        chat_id,
+        thread_id,
+        message_id,
+        "",
+        "bot",
+        created_at,
+        "schedule_reminder",
+        status,
+        now_str(),
+    ]
+
+    end_col = column_letter(len(EXPORTS_HEADERS))
+    if row_index:
+        ws.update(f"A{row_index}:{end_col}{row_index}", [row])
+    else:
+        ws.append_row(row)
+
+
+def get_active_schedule_reminder(week_start):
+    row_index, record = get_schedule_reminder_row(week_start)
+    if not record:
+        return None
+
+    if str(record.get("Статус", "")).strip() not in {"active", ""}:
+        return None
+
+    return {
+        "row_index": row_index,
+        "chat_id": str(record.get("chat_id", "")).strip(),
+        "thread_id": str(record.get("thread_id", "")).strip(),
+        "message_id": str(record.get("message_id", "")).strip(),
+        "status": str(record.get("Статус", "")).strip() or "active",
+    }
+
+
+def mark_schedule_reminder_status(week_start, status):
+    ws = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET)
+    row_index, record = get_schedule_reminder_row(week_start)
+    if not row_index:
+        return False
+
+    status_col = column_letter(EXPORTS_HEADERS.index("Статус") + 1)
+    updated_col = column_letter(EXPORTS_HEADERS.index("Обновлено") + 1)
+
+    ws.update(f"{status_col}{row_index}:{updated_col}{row_index}", [[status, now_str()]])
+    return True
 
 
 def set_duty_for_day(week_start, day, employee, assigned_by):
