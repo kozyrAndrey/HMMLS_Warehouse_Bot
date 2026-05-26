@@ -102,11 +102,19 @@ def main():
     # /whoami оставлен доступным, чтобы можно было узнать Telegram user_id нового сотрудника.
     app.add_handler(CallbackQueryHandler(access_guard), group=-1)
     app.add_handler(
-        MessageHandler(filters.COMMAND & ~filters.Regex(r"^/(start|whoami)(\\s|$)"), access_guard),
+        MessageHandler(
+            filters.ChatType.PRIVATE
+            & filters.COMMAND
+            & ~filters.Regex(r"^/(start|whoami)(\\s|$)"),
+            access_guard,
+        ),
         group=-1,
     )
-    app.add_handler(MessageHandler(~filters.COMMAND, access_guard), group=-1)
-
+    app.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, access_guard),
+        group=-1,
+    )
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("last", last_records))
 

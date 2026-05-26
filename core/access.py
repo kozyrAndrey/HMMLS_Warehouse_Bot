@@ -91,19 +91,32 @@ async def access_guard(update, context):
     if is_registered_bot_user(update.effective_user):
         return
 
+    chat = update.effective_chat
+    is_private_chat = bool(chat and chat.type == "private")
+
     if update.callback_query:
         query = update.callback_query
-        await query.answer()
+        await query.answer(
+            "У вас нет доступа к функционалу бота.",
+            show_alert=True,
+        )
 
-        try:
-            await query.edit_message_text(NO_ACCESS_TEXT)
-        except Exception:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=NO_ACCESS_TEXT)
+        if is_private_chat:
+            try:
+                await query.edit_message_text(NO_ACCESS_TEXT)
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=NO_ACCESS_TEXT,
+                )
 
-    elif update.message:
-        await update.message.reply_text(NO_ACCESS_TEXT)
+        raise ApplicationHandlerStop
 
-    raise ApplicationHandlerStop
+    if update.message:
+        if is_private_chat:
+            await update.message.reply_text(NO_ACCESS_TEXT)
+
+        raise ApplicationHandlerStop
 
 
 def get_user_role(user_id):
