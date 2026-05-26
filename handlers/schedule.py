@@ -49,7 +49,8 @@ from schedule_google_sheets import (
     SCHEDULE_EDIT_ACTION,
     SCHEDULE_EDIT_TIME,
     SCHEDULE_DUTY_CONFIRM,
-) = range(900, 908)
+    SCHEDULE_EDIT_NEXT,
+) = range(900, 909)
 
 
 # ============================================================
@@ -69,7 +70,6 @@ def schedule_menu_keyboard(employee):
     if manager:
         rows.extend(
             [
-                [InlineKeyboardButton("📊 Посмотреть расписание Excel", callback_data="sch:view_all")],
                 [InlineKeyboardButton("📤 Выгрузить расписание в тему", callback_data="sch:export_topic")],
                 [InlineKeyboardButton("🛠 Изменить расписание", callback_data="sch:edit")],
                 [InlineKeyboardButton("🧹 Назначить дежурных", callback_data="sch:duties")],
@@ -141,6 +141,17 @@ def edit_action_keyboard():
         [
             [InlineKeyboardButton("🕒 Изменить время", callback_data="schedit:set")],
             [InlineKeyboardButton("🗑 Убрать смену", callback_data="schedit:clear")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
+        ]
+    )
+
+
+def edit_next_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Внести еще изменение", callback_data="schedit:again")],
+            [InlineKeyboardButton("📤 Выгрузить итоговое расписание", callback_data="schedit:export_final")],
+            [InlineKeyboardButton("✅ Завершить без выгрузки", callback_data="schedit:done")],
             [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
         ]
     )
@@ -526,24 +537,74 @@ async def schedule_apply_edit(query, context, shift_time):
     date_str = context.user_data["edit_date"]
     day = __import__('schedule_config').parse_date(date_str)
 
-    upsert_schedule_day(employee, week_start, day, shift_time, manager_employee["full_name"] if manager_employee else "manager")
+    upsert_schedule_day(
+        employee,
+        week_start,
+        day,
+        shift_time,
+        manager_employee["full_name"] if manager_employee else "manager",
+    )
     rebuild_current_schedule_sheet(week_start)
 
-    # После изменения руководителем отправляем новую версию расписания в тему, старые версии сохраняются.
+    action_text = "смена убрана" if not shift_time else f"новое время: {shift_time}"
+    await query.edit_message_text(
+        "Изменение сохранено ✅\n\n"
+        f"Сотрудник: {employee['full_name']}\n"
+        f"День: {day_label(day)}\n"
+        f"Изменение: {action_text}\n\n"
+        "Можно внести еще изменения. Когда закончите — выгрузите итоговое расписание в тему.",
+        reply_markup=edit_next_keyboard(),
+    )
+    return SCHEDULE_EDIT_NEXT
+
+
+async def schedule_edit_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "Выберите сотрудника для следующего изменения:",
+        reply_markup=employees_keyboard("schemp"),
+    )
+    return SCHEDULE_EDIT_EMPLOYEE
+
+
+async def schedule_edit_export_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    manager_employee = current_employee(update)
+    week_start = __import__('schedule_config').parse_date(context.user_data["schedule_week_start"])
+
     try:
+        rebuild_current_schedule_sheet(week_start)
         export_status = await export_schedule_excel_to_topic(
             context,
             week_start,
             manager_employee,
-            note="Изменено руководителем",
+            note="Итоговая версия после изменений",
         )
     except Exception as error:
-        logging.exception("Не удалось выгрузить обновленное расписание в тему")
-        export_status = f"Изменение сохранено, но файл в тему не отправлен ⚠️\nОшибка: {error}"
+        logging.exception("Не удалось выгрузить итоговое расписание в тему")
+        export_status = f"Изменения сохранены, но файл в тему не отправлен ⚠️\nОшибка: {error}"
 
     context.user_data.clear()
     await query.edit_message_text(
-        "Расписание изменено ✅\n\n" + export_status,
+        export_status,
+        reply_markup=schedule_menu_keyboard(manager_employee),
+    )
+    return ConversationHandler.END
+
+
+async def schedule_edit_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    manager_employee = current_employee(update)
+    context.user_data.clear()
+
+    await query.edit_message_text(
+        "Изменения сохранены ✅\n\nИтоговое расписание в тему не выгружалось.",
         reply_markup=schedule_menu_keyboard(manager_employee),
     )
     return ConversationHandler.END
@@ -631,7 +692,7 @@ async def schedule_friday_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=int(GROUP_CHAT_ID),
-        message_thread_id=int(SCHEDULE_EXPORT_TOPIC_ID),
+        message_thread_id=int(SCHEDULE_REMINDER_TOPIC_ID),
         text=text,
     )
 
@@ -693,6 +754,12 @@ def get_schedule_conversation_handler():
                 CallbackQueryHandler(schedule_edit_time_selected, pattern=r"^schtime:"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
+            SCHEDULE_EDIT_NEXT: [
+                CallbackQueryHandler(schedule_edit_again, pattern=r"^schedit:again$"),
+                CallbackQueryHandler(schedule_edit_export_final, pattern=r"^schedit:export_final$"),
+                CallbackQueryHandler(schedule_edit_done, pattern=r"^schedit:done$"),
+                CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
+            ],
             SCHEDULE_DUTY_CONFIRM: [
                 CallbackQueryHandler(schedule_duties_confirm, pattern=r"^schduty:confirm$"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
@@ -706,7 +773,6 @@ def get_schedule_handlers():
     return [
         CallbackQueryHandler(schedule_menu, pattern=r"^section:schedule$"),
         CallbackQueryHandler(schedule_view_mine, pattern=r"^sch:view_mine$"),
-        CallbackQueryHandler(schedule_view_all, pattern=r"^sch:view_all$"),
         CallbackQueryHandler(schedule_export_topic, pattern=r"^sch:export_topic$"),
         get_schedule_conversation_handler(),
     ]
