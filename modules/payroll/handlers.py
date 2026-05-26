@@ -24,7 +24,7 @@ from modules.payroll.config import (
     PENALTY_TYPES,
     PENALTY_TYPE_GROUPS,
 )
-from payroll_calculations import build_full_payroll_text, build_personal_salary_text
+from modules.payroll.calculations import build_full_payroll_text, build_personal_salary_text
 from modules.payroll.google_sheets import (
     append_daily_report,
     append_expense,

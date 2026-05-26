@@ -160,7 +160,7 @@ def get_employee_full_name_for_user(user):
 
     # Fallback по локальному payroll_config.py, чтобы не зависеть полностью от Google Sheets.
     try:
-        from payroll_config import PAYROLL_EMPLOYEES, normalize_username
+        from modules.payroll.config import PAYROLL_EMPLOYEES, normalize_username
 
         telegram_user_id = str(user.id)
         username = normalize_username(user.username)

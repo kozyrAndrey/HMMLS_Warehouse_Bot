@@ -4,8 +4,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from schedule_config import date_to_str, day_label, format_week_range
-from schedule_google_sheets import get_schedule_matrix
+from modules.schedule.config import date_to_str, day_label, format_week_range
+from modules.schedule.google_sheets import get_schedule_matrix
 
 
 GREEN_FILL = PatternFill("solid", fgColor="C6EFCE")

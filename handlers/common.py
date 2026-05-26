@@ -3,13 +3,13 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
-from database import get_table_columns, reset_local_db_with_backup
-from google_sheets import (
+from modules.receiving.database import get_table_columns, reset_local_db_with_backup
+from modules.receiving.google_sheets import (
     append_google_status_test_row,
     get_google_worksheet,
     get_last_records_text_from_google,
 )
-from keyboards import (
+from core.keyboards import (
     build_main_menu_keyboard,
     build_receiving_menu_keyboard,
     build_returns_menu_keyboard,

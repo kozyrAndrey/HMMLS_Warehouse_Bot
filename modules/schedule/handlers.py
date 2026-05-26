@@ -123,7 +123,7 @@ def confirm_keyboard():
 
 
 def employees_keyboard(prefix="schemp"):
-    from schedule_config import get_schedule_employees
+    from modules.schedule.config import get_schedule_employees
 
     rows = []
     for employee in get_schedule_employees():

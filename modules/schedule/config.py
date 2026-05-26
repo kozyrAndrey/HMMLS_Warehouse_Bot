@@ -1,8 +1,8 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from payroll_config import MANAGER_ROLES
-from payroll_google_sheets import get_employees
+from modules.payroll.config import MANAGER_ROLES
+from modules.payroll.google_sheets import get_employees
 
 MSK_TZ = ZoneInfo("Europe/Moscow")
 

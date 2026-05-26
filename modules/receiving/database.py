@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import DB_PATH
-from products import CATEGORIES
+from modules.receiving.products import CATEGORIES
 
 
 def get_connection():

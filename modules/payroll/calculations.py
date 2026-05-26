@@ -1,4 +1,4 @@
-from payroll_config import SALARY_FIXED_PARTS
+from modules.payroll.config import SALARY_FIXED_PARTS
 from modules.payroll.google_sheets import (
     get_active_period,
     get_employees,

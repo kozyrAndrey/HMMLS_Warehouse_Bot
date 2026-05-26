@@ -10,11 +10,11 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
-from access import access_guard
-from database import init_db
-from google_sheets import init_google_sheet
-from payroll_google_sheets import init_payroll_sheet
-from schedule_google_sheets import init_schedule_sheet
+from core.access import access_guard
+from modules.receiving.database import init_db
+from modules.receiving.google_sheets import init_google_sheet
+from modules.payroll.google_sheets import init_payroll_sheet
+from modules.schedule.google_sheets import init_schedule_sheet
 from handlers.common import (
     google_status,
     last_records,
@@ -27,11 +27,11 @@ from handlers.common import (
     start,
     whereami,
 )
-from handlers.incoming import get_incoming_conversation_handler
-from handlers.reports import get_report_handlers
-from handlers.returns import get_returns_conversation_handler
-from handlers.payroll import get_payroll_handlers
-from handlers.schedule import get_schedule_handlers, setup_schedule_jobs
+from modules.receiving.handlers import get_incoming_conversation_handler
+from modules.receiving.reports import get_report_handlers
+from modules.returns.handlers import get_returns_conversation_handler
+from modules.payroll.handlers import get_payroll_handlers
+from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 
 
 def setup_logging():
