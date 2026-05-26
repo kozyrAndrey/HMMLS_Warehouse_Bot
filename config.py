@@ -52,3 +52,11 @@ PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")
 SCHEDULE_TOPIC_ID = os.getenv("SCHEDULE_TOPIC_ID", "")
 SCHEDULE_EXPORT_TOPIC_ID = os.getenv("SCHEDULE_EXPORT_TOPIC_ID", SCHEDULE_TOPIC_ID)
 SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TOPIC_ID)
+
+
+# ============================================================
+# НАСТРОЙКИ ОТПРАВКИ ФОТО ЧЕСТНОГО ЗНАКА ПО ВОЗВРАТАМ
+# ============================================================
+
+RETURN_CHZ_CHAT_ID = os.getenv("RETURN_CHZ_CHAT_ID", "-1002637764298")
+RETURN_CHZ_TOPIC_ID = os.getenv("RETURN_CHZ_TOPIC_ID", "740")
