@@ -1,12 +1,13 @@
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import gspread
 
+from config import GOOGLE_CREDENTIALS_PATH, OPERATIONS_GOOGLE_SHEET_ID
 from payroll_google_sheets import (
     column_letter,
-    get_payroll_spreadsheet,
     safe_bool,
     now_str,
 )
@@ -75,8 +76,22 @@ HEADER_BG = {"red": 0.88, "green": 0.88, "blue": 0.88}
 WHITE = {"red": 1, "green": 1, "blue": 1}
 
 
+def operations_is_configured():
+    return bool(OPERATIONS_GOOGLE_SHEET_ID and Path(GOOGLE_CREDENTIALS_PATH).exists())
+
+
+def get_operations_spreadsheet():
+    if not OPERATIONS_GOOGLE_SHEET_ID:
+        raise RuntimeError("OPERATIONS_GOOGLE_SHEET_ID не указан в .env")
+    if not Path(GOOGLE_CREDENTIALS_PATH).exists():
+        raise FileNotFoundError(f"Файл {GOOGLE_CREDENTIALS_PATH} не найден")
+
+    gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
+    return gc.open_by_key(OPERATIONS_GOOGLE_SHEET_ID)
+
+
 def get_schedule_worksheet(title, rows=1000, cols=30):
-    spreadsheet = get_payroll_spreadsheet()
+    spreadsheet = get_operations_spreadsheet()
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -95,6 +110,13 @@ def schedule_records(worksheet):
 
 
 def init_schedule_sheet():
+    if not operations_is_configured():
+        logging.warning(
+            "Operations Google Sheets не настроен. "
+            "Проверьте OPERATIONS_GOOGLE_SHEET_ID и GOOGLE_CREDENTIALS_PATH."
+        )
+        return False
+
     archive = get_schedule_worksheet(SCHEDULE_ARCHIVE_SHEET, rows=3000, cols=20)
     duties = get_schedule_worksheet(SCHEDULE_DUTIES_SHEET, rows=1000, cols=12)
     exports = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET, rows=500, cols=12)

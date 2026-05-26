@@ -68,14 +68,16 @@ def main():
         )
 
     schedule_ready = False
-    if payroll_ready:
-        try:
-            schedule_ready = init_schedule_sheet()
-        except Exception:
-            logging.exception("Не удалось инициализировать модуль расписания")
+    try:
+        schedule_ready = init_schedule_sheet()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль расписания")
 
     if not schedule_ready:
-        logging.warning("Модуль расписания не инициализирован. Проверьте настройки Google Sheets.")
+        logging.warning(
+            "Модуль расписания не инициализирован. "
+            "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к новой таблице."
+        )
 
     request = HTTPXRequest(
         connect_timeout=30,
