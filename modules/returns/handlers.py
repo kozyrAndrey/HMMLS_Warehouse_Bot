@@ -204,6 +204,10 @@ async def send_item_chz_photo_to_topic(context: ContextTypes.DEFAULT_TYPE, user,
         return "RETURN_CHZ_CHAT_ID не настроен."
 
     product_name = get_current_item_product_name(context)
+    current_item = get_current_item(context)
+    size = current_item.get("size", "")
+    condition_key = current_item.get("condition_key", "")
+    condition_label = RETURN_CONDITIONS.get(condition_key, {}).get("label", "")
     counterparty = context.user_data.get("return_counterparty", "")
     track_number = context.user_data.get("return_track_number", "")
 
@@ -218,6 +222,10 @@ async def send_item_chz_photo_to_topic(context: ContextTypes.DEFAULT_TYPE, user,
         caption_lines.append(f"Трек-номер: {track_number}")
 
     caption_lines.append(f"Товар: {product_name}")
+    if size:
+        caption_lines.append(f"Размер: {size}")
+    if condition_label:
+        caption_lines.append(f"Состояние: {condition_label}")
 
     common_kwargs = {
         "chat_id": int(RETURN_CHZ_CHAT_ID),
@@ -294,10 +302,14 @@ def append_current_item(context: ContextTypes.DEFAULT_TYPE):
     if not category_id or not model_id or not product_id or not size or not condition_key:
         raise RuntimeError("Не все данные товара заполнены.")
 
-    if not chz_status:
+    condition = RETURN_CONDITIONS[condition_key]
+
+    if condition_key == "normal" and not chz_status:
         raise RuntimeError("Не указана информация по Честному знаку товара.")
 
-    condition = RETURN_CONDITIONS[condition_key]
+    if condition_key != "normal":
+        chz_status = ""
+        chz_photo_file_id = ""
 
     if condition.get("needs_photo") and not extra_photo_file_id:
         raise RuntimeError("Для выбранного состояния нужно фото переупакованного возврата.")
@@ -892,12 +904,11 @@ async def return_product_selected(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(
         f"Товар {item_no} из {total}\n"
         f"Товар: {products[product_id]}\n\n"
-        "Отправьте фото маркировки «Честный знак» по этому товару "
-        "или нажмите кнопку «ЧЗ нет»:",
-        reply_markup=build_chz_photo_keyboard(),
+        "Выберите размер:",
+        reply_markup=build_return_sizes_keyboard(),
     )
 
-    return RET_ITEM_CHZ_PHOTO
+    return RET_ITEM_SIZE
 
 
 async def back_to_return_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -954,19 +965,18 @@ async def item_chz_photo_received(update: Update, context: ContextTypes.DEFAULT_
         logging.exception("Не удалось отправить фото ЧЗ по товару в отдельную тему")
         chz_status = f"Фото ЧЗ сохранено, но не отправлено в отдельную тему ⚠️\nОшибка: {error}"
 
-    product_name = get_current_item_product_name(context)
-    item_no = current_item_number(context)
-    total = total_items_count(context)
+    try:
+        append_current_item(context)
+    except Exception as error:
+        logging.exception("Не удалось добавить товар в возврат после ЧЗ")
+        await update.message.reply_text(
+            f"Не удалось добавить товар ⚠️\nОшибка: {error}",
+            reply_markup=build_return_category_keyboard(),
+        )
+        return RET_ITEM_CATEGORY
 
-    await update.message.reply_text(
-        f"{chz_status}\n\n"
-        f"Товар {item_no} из {total}\n"
-        f"Товар: {product_name}\n\n"
-        "Выберите размер:",
-        reply_markup=build_return_sizes_keyboard(),
-    )
-
-    return RET_ITEM_SIZE
+    await update.message.reply_text(chz_status)
+    return await ask_next_item_or_finish(update.message, context, update.effective_user)
 
 
 async def item_chz_missing_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,19 +987,17 @@ async def item_chz_missing_selected(update: Update, context: ContextTypes.DEFAUL
     current_item["chz_status"] = "ЧЗ нет"
     current_item.pop("chz_photo_file_id", None)
 
-    product_name = get_current_item_product_name(context)
-    item_no = current_item_number(context)
-    total = total_items_count(context)
+    try:
+        append_current_item(context)
+    except Exception as error:
+        logging.exception("Не удалось добавить товар в возврат после отметки ЧЗ нет")
+        await query.edit_message_text(
+            f"Не удалось добавить товар ⚠️\nОшибка: {error}",
+            reply_markup=build_return_category_keyboard(),
+        )
+        return RET_ITEM_CATEGORY
 
-    await query.edit_message_text(
-        f"ЧЗ по товару отмечен как отсутствующий.\n\n"
-        f"Товар {item_no} из {total}\n"
-        f"Товар: {product_name}\n\n"
-        "Выберите размер:",
-        reply_markup=build_return_sizes_keyboard(),
-    )
-
-    return RET_ITEM_SIZE
+    return await ask_next_item_or_finish(query, context, query.from_user)
 
 
 async def return_size_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1097,8 +1105,27 @@ async def return_condition_selected(update: Update, context: ContextTypes.DEFAUL
 
     current_item = get_current_item(context)
     current_item["condition_key"] = condition_key
+    current_item.pop("chz_photo_file_id", None)
+    current_item.pop("chz_status", None)
 
     condition = RETURN_CONDITIONS[condition_key]
+
+    product_name = get_current_item_product_name(context)
+    size = current_item.get("size", "")
+    item_no = current_item_number(context)
+    total = total_items_count(context)
+
+    # ЧЗ запрашиваем только для товаров со статусом «норм».
+    if condition_key == "normal":
+        await query.edit_message_text(
+            f"Товар {item_no} из {total}\n"
+            f"{product_name} — размер {size}\n"
+            f"Состояние: {condition['label']}\n\n"
+            "Отправьте фото маркировки «Честный знак» по этому товару "
+            "или нажмите кнопку «ЧЗ нет»:",
+            reply_markup=build_chz_photo_keyboard(),
+        )
+        return RET_ITEM_CHZ_PHOTO
 
     if not condition["needs_photo"]:
         try:
@@ -1112,11 +1139,6 @@ async def return_condition_selected(update: Update, context: ContextTypes.DEFAUL
             return RET_ITEM_CATEGORY
 
         return await ask_next_item_or_finish(query, context, query.from_user)
-
-    product_name = get_current_item_product_name(context)
-    size = current_item.get("size", "")
-    item_no = current_item_number(context)
-    total = total_items_count(context)
 
     await query.edit_message_text(
         f"Товар {item_no} из {total}\n"
@@ -1138,6 +1160,8 @@ async def back_to_return_size(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_item.pop("condition_key", None)
     current_item.pop("extra_photo_file_id", None)
     current_item.pop("condition_comment", None)
+    current_item.pop("chz_photo_file_id", None)
+    current_item.pop("chz_status", None)
 
     product_name = get_current_item_product_name(context)
     item_no = current_item_number(context)
@@ -1191,6 +1215,8 @@ async def back_to_return_condition(update: Update, context: ContextTypes.DEFAULT
     current_item.pop("condition_key", None)
     current_item.pop("extra_photo_file_id", None)
     current_item.pop("condition_comment", None)
+    current_item.pop("chz_photo_file_id", None)
+    current_item.pop("chz_status", None)
 
     product_name = get_current_item_product_name(context)
     size = current_item.get("size", "")
@@ -1316,7 +1342,10 @@ def format_return_summary(context: ContextTypes.DEFAULT_TYPE, user):
 
         product_name = CATEGORIES[category_id]["products"][product_id]
 
-        item_line = f"{index}. {product_name} — размер {size}, ЧЗ: {chz_status}, {condition_label}"
+        if item.get("condition_key") == "normal":
+            item_line = f"{index}. {product_name} — размер {size}, ЧЗ: {chz_status}, {condition_label}"
+        else:
+            item_line = f"{index}. {product_name} — размер {size}, {condition_label}"
 
         if condition_comment and condition_comment != "-":
             item_line += f", комментарий: {condition_comment}"
@@ -1459,7 +1488,7 @@ def get_returns_conversation_handler():
             RET_ITEM_CHZ_PHOTO: [
                 MessageHandler(filters.PHOTO, item_chz_photo_received),
                 CallbackQueryHandler(item_chz_missing_selected, pattern=r"^ret:chz_missing$"),
-                CallbackQueryHandler(back_to_return_product, pattern=r"^ret:back$"),
+                CallbackQueryHandler(back_to_return_condition, pattern=r"^ret:back$"),
                 CallbackQueryHandler(return_cancel, pattern=r"^ret:cancel$"),
             ],
             RET_ITEM_SIZE: [
