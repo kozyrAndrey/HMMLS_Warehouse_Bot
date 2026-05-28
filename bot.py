@@ -5,6 +5,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
+    ConversationHandler,
     MessageHandler,
     filters,
 )
@@ -15,6 +16,7 @@ from modules.receiving.database import init_db
 from modules.receiving.google_sheets import init_google_sheet
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
+from modules.tasks.google_sheets import init_tasks_sheet
 from handlers.common import (
     google_status,
     last_records,
@@ -32,6 +34,7 @@ from modules.receiving.reports import get_report_handlers
 from modules.returns.handlers import get_returns_conversation_handler
 from modules.payroll.handlers import get_payroll_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
+from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
 
 
 def setup_logging():
@@ -43,6 +46,25 @@ def setup_logging():
 
 async def error_handler(update, context):
     logging.exception("Ошибка при обработке update", exc_info=context.error)
+
+
+async def reset_conversations_on_navigation(update, context):
+    # Сбрасывает зависшие ConversationHandler при переходе в другой раздел.
+    # Например: незавершенное «Оприходование» больше не перехватит текст
+    # внутри раздела «Расчет ЗП».
+    try:
+        for handlers in context.application.handlers.values():
+            for handler in handlers:
+                if not isinstance(handler, ConversationHandler):
+                    continue
+
+                try:
+                    key = handler._get_key(update)
+                    handler._conversations.pop(key, None)
+                except Exception:
+                    logging.exception("Не удалось сбросить состояние ConversationHandler")
+    except Exception:
+        logging.exception("Не удалось выполнить общий сброс диалогов")
 
 
 def main():
@@ -79,6 +101,18 @@ def main():
             "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к новой таблице."
         )
 
+    tasks_ready = False
+    try:
+        tasks_ready = init_tasks_sheet()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль задач")
+
+    if not tasks_ready:
+        logging.warning(
+            "Модуль задач не инициализирован. "
+            "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к operations-таблице."
+        )
+
     request = HTTPXRequest(
         connect_timeout=30,
         read_timeout=30,
@@ -95,6 +129,17 @@ def main():
     )
 
     app.add_error_handler(error_handler)
+
+    # Сброс зависших диалогов при переходе между разделами.
+    # Важно: group=-2, чтобы это сработало ДО access_guard и ДО модулей.
+    app.add_handler(
+        CallbackQueryHandler(
+            reset_conversations_on_navigation,
+            pattern=r"^(section:|menu:start$)",
+        ),
+        group=-2,
+    )
+    app.add_handler(CommandHandler("start", reset_conversations_on_navigation), group=-2)
 
     # Глобальная защита:
     # /start разрешен всем, чтобы пользователь увидел кнопку «Старт».
@@ -140,7 +185,12 @@ def main():
     for handler in get_schedule_handlers():
         app.add_handler(handler)
 
+    # Задачи.
+    for handler in get_tasks_handlers():
+        app.add_handler(handler)
+
     setup_schedule_jobs(app)
+    setup_tasks_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
