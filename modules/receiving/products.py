@@ -440,7 +440,7 @@ PRODUCT_CATALOG = {
                         "name": "PINK OG BELT",
                     },
                     "white": {
-                        "id": "belt005",
+                        "id": "belt006",
                         "color": "WHITE",
                         "name": "WHITE OG BELT",
                     },
