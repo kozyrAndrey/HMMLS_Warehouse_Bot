@@ -351,6 +351,54 @@ def append_schedule_export(week_start, version, chat_id, thread_id, message_id, 
     ])
 
 
+def get_latest_schedule_export(week_start):
+    """Возвращает последнюю актуальную выгрузку расписания для выбранной недели."""
+    ws = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET)
+    week_start_str = get_week_start_str(week_start)
+    latest = None
+
+    for index, record in enumerate(schedule_records(ws), start=2):
+        if str(record.get("Неделя начала", "")).strip() != week_start_str:
+            continue
+
+        record_type = str(record.get("Тип записи", "")).strip()
+        if record_type and record_type != "schedule_export":
+            continue
+
+        status = str(record.get("Статус", "")).strip()
+        if status in {"replaced", "deleted"}:
+            continue
+
+        try:
+            version = int(str(record.get("Версия", "0")).strip() or 0)
+        except ValueError:
+            version = 0
+
+        candidate = {
+            "row_index": index,
+            "version": version,
+            "chat_id": str(record.get("chat_id", "")).strip(),
+            "thread_id": str(record.get("thread_id", "")).strip(),
+            "message_id": str(record.get("message_id", "")).strip(),
+        }
+        if latest is None or version >= latest["version"]:
+            latest = candidate
+
+    return latest
+
+
+def mark_schedule_export_status(row_index, status):
+    """Обновляет статус старой выгрузки после ее замены/удаления в Telegram."""
+    if not row_index:
+        return False
+
+    ws = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET)
+    status_col = column_letter(EXPORTS_HEADERS.index("Статус") + 1)
+    updated_col = column_letter(EXPORTS_HEADERS.index("Обновлено") + 1)
+    ws.update(f"{status_col}{row_index}:{updated_col}{row_index}", [[status, now_str()]])
+    return True
+
+
 def get_missing_schedule_employees(week_start):
     """Возвращает сотрудников, которые еще не заполнили расписание на неделю."""
     missing = []

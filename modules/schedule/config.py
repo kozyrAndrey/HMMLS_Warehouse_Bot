@@ -38,6 +38,11 @@ def day_label(value):
     return f"{WEEKDAY_SHORT[value.weekday()]} {value.strftime('%d.%m')}"
 
 
+def current_week_start(base_date=None):
+    current = base_date or today_msk()
+    return current - timedelta(days=current.weekday())
+
+
 def next_week_start(base_date=None):
     current = base_date or today_msk()
     days_until_next_monday = 7 - current.weekday()
