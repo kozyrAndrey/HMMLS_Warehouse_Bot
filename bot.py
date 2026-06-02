@@ -15,6 +15,7 @@ from modules.receiving.database import init_db
 from modules.receiving.google_sheets import init_google_sheet
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
+from modules.tasks.google_sheets import init_tasks_sheet
 from handlers.common import (
     google_status,
     last_records,
@@ -32,6 +33,7 @@ from modules.receiving.reports import get_report_handlers
 from modules.returns.handlers import get_returns_conversation_handler
 from modules.payroll.handlers import get_payroll_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
+from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
 
 
 def setup_logging():
@@ -77,6 +79,18 @@ def main():
         logging.warning(
             "Модуль расписания не инициализирован. "
             "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к новой таблице."
+        )
+
+    tasks_ready = False
+    try:
+        tasks_ready = init_tasks_sheet()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль задач")
+
+    if not tasks_ready:
+        logging.warning(
+            "Модуль задач не инициализирован. "
+            "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к operations-таблице."
         )
 
     request = HTTPXRequest(
@@ -140,7 +154,12 @@ def main():
     for handler in get_schedule_handlers():
         app.add_handler(handler)
 
+    # Задачи.
+    for handler in get_tasks_handlers():
+        app.add_handler(handler)
+
     setup_schedule_jobs(app)
+    setup_tasks_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
