@@ -23,6 +23,7 @@ from modules.schedule.config import (
     format_week_range_full,
     get_reminder_mentions,
     get_schedule_employee_by_id,
+    get_schedule_employees,
     is_schedule_manager,
     next_week_start,
     parse_date,
