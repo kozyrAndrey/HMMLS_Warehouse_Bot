@@ -16,6 +16,7 @@ from modules.schedule.config import (
     MSK_TZ,
     SHIFT_TIMES,
     can_employee_submit_schedule,
+    current_week_start,
     date_to_str,
     day_label,
     format_week_range,
@@ -33,11 +34,15 @@ from modules.schedule.google_sheets import (
     append_schedule_export,
     build_personal_schedule_text,
     get_active_schedule_reminder,
+    get_latest_schedule_export,
     get_missing_schedule_employees,
     get_next_export_version,
+    mark_schedule_export_status,
     mark_schedule_reminder_status,
     rebuild_current_schedule_sheet,
     schedule_has_submission,
+    get_schedule_matrix,
+    set_duty_for_day,
     set_week_duties,
     suggest_week_duties,
     upsert_employee_week_schedule,
@@ -56,6 +61,10 @@ from modules.schedule.google_sheets import (
     SCHEDULE_DUTY_CONFIRM,
     SCHEDULE_EDIT_NEXT,
 ) = range(900, 909)
+
+SCHEDULE_MANAGER_WEEK = 909
+SCHEDULE_DUTY_DAY = 910
+SCHEDULE_DUTY_EMPLOYEE = 911
 
 
 # ============================================================
@@ -155,20 +164,99 @@ def edit_next_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("➕ Внести еще изменение", callback_data="schedit:again")],
-            [InlineKeyboardButton("📤 Выгрузить итоговое расписание", callback_data="schedit:export_final")],
-            [InlineKeyboardButton("✅ Завершить без выгрузки", callback_data="schedit:done")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
+            [InlineKeyboardButton("✅ Завершить и обновить выгрузку", callback_data="schedit:export_final")],
         ]
     )
 
 
-def duty_confirm_keyboard():
+def manager_week_keyboard(action):
+    current_start = current_week_start()
+    next_start = next_week_start()
+
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✅ Подтвердить дежурных", callback_data="schduty:confirm")],
+            [
+                InlineKeyboardButton(
+                    f"📅 Текущая: {format_week_range(current_start)}",
+                    callback_data=f"schweek:{action}:current",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"📅 Следующая: {format_week_range(next_start)}",
+                    callback_data=f"schweek:{action}:next",
+                )
+            ],
             [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
         ]
     )
+
+
+def duty_overview_text(week_start, pending_duties):
+    employees_by_id = {
+        employee["employee_id"]: employee for employee in get_schedule_employees()
+    }
+    lines = [
+        f"Дежурные на {format_week_range(week_start)}:",
+        "",
+        "Нажмите день, чтобы назначить или заменить дежурного.",
+        "",
+    ]
+    for day in week_dates(week_start):
+        employee_id = pending_duties.get(date_to_str(day), "")
+        employee = employees_by_id.get(employee_id)
+        lines.append(
+            f"{day_label(day)} — {employee['full_name'] if employee else 'без дежурного'}"
+        )
+    return "\n".join(lines)
+
+
+def duty_days_keyboard(week_start, pending_duties):
+    employees_by_id = {
+        employee["employee_id"]: employee for employee in get_schedule_employees()
+    }
+    rows = []
+    for day in week_dates(week_start):
+        date_str = date_to_str(day)
+        employee = employees_by_id.get(pending_duties.get(date_str, ""))
+        label = f"{day_label(day)} — {employee['full_name'] if employee else 'нет'}"
+        rows.append(
+            [InlineKeyboardButton(label, callback_data=f"schduty:day:{date_str}")]
+        )
+    rows.extend(
+        [
+            [InlineKeyboardButton("🔄 Предложить автоматически", callback_data="schduty:auto")],
+            [InlineKeyboardButton("✅ Завершить и обновить выгрузку", callback_data="schduty:confirm")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def duty_employee_keyboard(week_start, date_str):
+    employees, dates, schedule, current_duties = get_schedule_matrix(week_start)
+    working = [
+        employee
+        for employee in employees
+        if schedule.get(employee["employee_id"], {}).get(date_str)
+    ]
+
+    rows = []
+    for employee in working:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    employee["full_name"],
+                    callback_data=f"schduty:set:{date_str}:{employee['employee_id']}",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton("Без дежурного", callback_data=f"schduty:set:{date_str}:none")]
+    )
+    rows.append([InlineKeyboardButton("⬅️ Назад к дням", callback_data="schduty:back")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")])
+    return InlineKeyboardMarkup(rows), working
 
 
 # ============================================================
@@ -221,6 +309,7 @@ async def export_schedule_excel_to_topic(context, week_start, sent_by_employee, 
     if not GROUP_CHAT_ID or not SCHEDULE_EXPORT_TOPIC_ID:
         return "GROUP_CHAT_ID или SCHEDULE_EXPORT_TOPIC_ID не настроены."
 
+    previous_export = get_latest_schedule_export(week_start)
     version = get_next_export_version(week_start)
 
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -255,7 +344,24 @@ async def export_schedule_excel_to_topic(context, week_start, sent_by_employee, 
         sent_by=sent_by_employee["full_name"] if sent_by_employee else "",
     )
 
-    return f"Расписание отправлено в тему Telegram ✅\nВерсия: {version}"
+    replacement_note = ""
+    if previous_export and previous_export.get("message_id"):
+        try:
+            await context.bot.delete_message(
+                chat_id=int(previous_export["chat_id"]),
+                message_id=int(previous_export["message_id"]),
+            )
+            mark_schedule_export_status(previous_export["row_index"], "replaced")
+        except Exception:
+            logging.exception("Не удалось удалить предыдущую выгрузку расписания")
+            replacement_note = (
+                "\nПредыдущий файл не удалось удалить автоматически ⚠️"
+            )
+
+    return (
+        f"Расписание отправлено в тему Telegram ✅\n"
+        f"Версия: {version}{replacement_note}"
+    )
 
 
 # ============================================================
@@ -455,12 +561,55 @@ async def schedule_export_topic(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not is_schedule_manager(employee):
         await query.edit_message_text("Недостаточно прав.", reply_markup=schedule_menu_keyboard(employee))
-        return
+        return ConversationHandler.END
 
-    week_start = next_week_start()
-    rebuild_current_schedule_sheet(week_start)
-    status = await export_schedule_excel_to_topic(context, week_start, employee)
-    await query.edit_message_text(status, reply_markup=schedule_menu_keyboard(employee))
+    context.user_data["schedule_manager_action"] = "export"
+    await query.edit_message_text(
+        "За какую неделю выгрузить расписание?",
+        reply_markup=manager_week_keyboard("export"),
+    )
+    return SCHEDULE_MANAGER_WEEK
+
+
+async def schedule_manager_week_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    manager_employee = current_employee(update)
+
+    if not is_schedule_manager(manager_employee):
+        await query.edit_message_text("Недостаточно прав.", reply_markup=schedule_menu_keyboard(manager_employee))
+        return ConversationHandler.END
+
+    _, action, selected_week = query.data.split(":")
+    week_start = current_week_start() if selected_week == "current" else next_week_start()
+    context.user_data["schedule_week_start"] = date_to_str(week_start)
+    context.user_data["schedule_manager_action"] = action
+
+    if action == "export":
+        rebuild_current_schedule_sheet(week_start)
+        status = await export_schedule_excel_to_topic(
+            context,
+            week_start,
+            manager_employee,
+            note="Актуальная версия расписания",
+        )
+        context.user_data.clear()
+        await query.edit_message_text(status, reply_markup=schedule_menu_keyboard(manager_employee))
+        return ConversationHandler.END
+
+    if action == "edit":
+        await query.edit_message_text(
+            f"Изменение расписания на {format_week_range_full(week_start)}\n\n"
+            "Выберите сотрудника:",
+            reply_markup=employees_keyboard("schemp"),
+        )
+        return SCHEDULE_EDIT_EMPLOYEE
+
+    if action == "duties":
+        return await schedule_start_duty_editing(query, context, week_start)
+
+    await query.edit_message_text("Неизвестное действие.", reply_markup=schedule_menu_keyboard(manager_employee))
+    return ConversationHandler.END
 
 
 # ============================================================
@@ -477,10 +626,12 @@ async def schedule_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Недостаточно прав.", reply_markup=schedule_menu_keyboard(employee))
         return ConversationHandler.END
 
-    context.user_data["schedule_week_start"] = date_to_str(next_week_start())
-
-    await query.edit_message_text("Выберите сотрудника:", reply_markup=employees_keyboard("schemp"))
-    return SCHEDULE_EDIT_EMPLOYEE
+    context.user_data["schedule_manager_action"] = "edit"
+    await query.edit_message_text(
+        "Какую неделю нужно изменить?",
+        reply_markup=manager_week_keyboard("edit"),
+    )
+    return SCHEDULE_MANAGER_WEEK
 
 
 async def schedule_edit_employee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -542,22 +693,36 @@ async def schedule_apply_edit(query, context, shift_time):
     date_str = context.user_data["edit_date"]
     day = parse_date(date_str)
 
+    updated_by = manager_employee["full_name"] if manager_employee else "manager"
     upsert_schedule_day(
         employee,
         week_start,
         day,
         shift_time,
-        manager_employee["full_name"] if manager_employee else "manager",
+        updated_by,
     )
+
+    duty_removed = False
+    if not shift_time:
+        _, _, _, duty_by_date = get_schedule_matrix(week_start)
+        if duty_by_date.get(date_str) == employee["employee_id"]:
+            set_duty_for_day(week_start, day, None, updated_by)
+            duty_removed = True
+
     rebuild_current_schedule_sheet(week_start)
 
     action_text = "смена убрана" if not shift_time else f"новое время: {shift_time}"
+    duty_text = (
+        "\nДежурство на этот день снято, так как смена сотрудника убрана."
+        if duty_removed
+        else ""
+    )
     await query.edit_message_text(
         "Изменение сохранено ✅\n\n"
         f"Сотрудник: {employee['full_name']}\n"
         f"День: {day_label(day)}\n"
-        f"Изменение: {action_text}\n\n"
-        "Можно внести еще изменения. Когда закончите — выгрузите итоговое расписание в тему.",
+        f"Изменение: {action_text}{duty_text}\n\n"
+        "Можно внести еще изменения. Когда закончите — нажмите «Завершить и обновить выгрузку».",
         reply_markup=edit_next_keyboard(),
     )
     return SCHEDULE_EDIT_NEXT
@@ -624,25 +789,109 @@ async def schedule_duties_start(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     employee = current_employee(update)
+
     if not is_schedule_manager(employee):
         await query.edit_message_text("Недостаточно прав.", reply_markup=schedule_menu_keyboard(employee))
         return ConversationHandler.END
 
-    week_start = next_week_start()
-    duties = suggest_week_duties(week_start)
-    context.user_data["schedule_week_start"] = date_to_str(week_start)
-    context.user_data["suggested_duties"] = {
-        date_str: duty["employee_id"] if duty else "" for date_str, duty in duties.items()
-    }
+    context.user_data["schedule_manager_action"] = "duties"
+    await query.edit_message_text(
+        "Для какой недели назначить или изменить дежурных?",
+        reply_markup=manager_week_keyboard("duties"),
+    )
+    return SCHEDULE_MANAGER_WEEK
 
-    lines = [f"Предварительные дежурные на {format_week_range(week_start)}:", ""]
+
+async def schedule_start_duty_editing(query, context, week_start):
+    suggested = suggest_week_duties(week_start)
+    _, _, _, current_duties = get_schedule_matrix(week_start)
+
+    pending = {}
     for day in week_dates(week_start):
         date_str = date_to_str(day)
-        duty = duties.get(date_str)
-        lines.append(f"{day_label(day)} — {duty['full_name'] if duty else 'нет сотрудников на смене'}")
+        existing_employee_id = current_duties.get(date_str, "")
+        proposed = suggested.get(date_str)
+        pending[date_str] = (
+            existing_employee_id
+            or (proposed["employee_id"] if proposed else "")
+        )
 
-    await query.edit_message_text("\n".join(lines), reply_markup=duty_confirm_keyboard())
-    return SCHEDULE_DUTY_CONFIRM
+    context.user_data["pending_duties"] = pending
+    await query.edit_message_text(
+        duty_overview_text(week_start, pending),
+        reply_markup=duty_days_keyboard(week_start, pending),
+    )
+    return SCHEDULE_DUTY_DAY
+
+
+async def schedule_duty_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    date_str = query.data.replace("schduty:day:", "")
+    week_start = parse_date(context.user_data["schedule_week_start"])
+    keyboard, working = duty_employee_keyboard(week_start, date_str)
+
+    note = (
+        "Выберите дежурного среди сотрудников на смене:"
+        if working
+        else "На этот день нет сотрудников на смене. Можно оставить день без дежурного."
+    )
+    await query.edit_message_text(
+        f"{day_label(date_str)}\n\n{note}",
+        reply_markup=keyboard,
+    )
+    return SCHEDULE_DUTY_EMPLOYEE
+
+
+async def schedule_duty_employee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, _, date_str, employee_id = query.data.split(":")
+    if employee_id == "none":
+        employee_id = ""
+
+    pending = context.user_data.setdefault("pending_duties", {})
+    pending[date_str] = employee_id
+    week_start = parse_date(context.user_data["schedule_week_start"])
+
+    await query.edit_message_text(
+        duty_overview_text(week_start, pending),
+        reply_markup=duty_days_keyboard(week_start, pending),
+    )
+    return SCHEDULE_DUTY_DAY
+
+
+async def schedule_duties_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    week_start = parse_date(context.user_data["schedule_week_start"])
+    pending = context.user_data.get("pending_duties", {})
+
+    await query.edit_message_text(
+        duty_overview_text(week_start, pending),
+        reply_markup=duty_days_keyboard(week_start, pending),
+    )
+    return SCHEDULE_DUTY_DAY
+
+
+async def schedule_duties_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    week_start = parse_date(context.user_data["schedule_week_start"])
+    suggested = suggest_week_duties(week_start)
+    pending = {
+        date_str: duty["employee_id"] if duty else ""
+        for date_str, duty in suggested.items()
+    }
+    context.user_data["pending_duties"] = pending
+
+    await query.edit_message_text(
+        duty_overview_text(week_start, pending),
+        reply_markup=duty_days_keyboard(week_start, pending),
+    )
+    return SCHEDULE_DUTY_DAY
 
 
 async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -650,9 +899,12 @@ async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     manager_employee = current_employee(update)
     week_start = parse_date(context.user_data["schedule_week_start"])
-    raw = context.user_data.get("suggested_duties", {})
+    raw = context.user_data.get("pending_duties", {})
     duties = {}
-    for date_str, employee_id in raw.items():
+
+    for day in week_dates(week_start):
+        date_str = date_to_str(day)
+        employee_id = raw.get(date_str, "")
         duties[date_str] = get_schedule_employee_by_id(employee_id) if employee_id else None
 
     set_week_duties(week_start, duties, manager_employee["full_name"] if manager_employee else "manager")
@@ -662,7 +914,7 @@ async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_
             context,
             week_start,
             manager_employee,
-            note="Назначены дежурные",
+            note="Обновлены дежурные",
         )
     except Exception as error:
         logging.exception("Не удалось отправить расписание с дежурными в тему")
@@ -670,7 +922,7 @@ async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_
 
     context.user_data.clear()
     await query.edit_message_text(
-        "Дежурные назначены ✅\n\n" + export_status,
+        "Дежурные сохранены ✅\n\n" + export_status,
         reply_markup=schedule_menu_keyboard(manager_employee),
     )
     return ConversationHandler.END
@@ -829,10 +1081,15 @@ def get_schedule_conversation_handler():
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(schedule_create_start, pattern=r"^sch:create$"),
+            CallbackQueryHandler(schedule_export_topic, pattern=r"^sch:export_topic$"),
             CallbackQueryHandler(schedule_edit_start, pattern=r"^sch:edit$"),
             CallbackQueryHandler(schedule_duties_start, pattern=r"^sch:duties$"),
         ],
         states={
+            SCHEDULE_MANAGER_WEEK: [
+                CallbackQueryHandler(schedule_manager_week_selected, pattern=r"^schweek:"),
+                CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
+            ],
             SCHEDULE_SELECT_DAYS: [
                 CallbackQueryHandler(schedule_day_toggle, pattern=r"^schday:"),
                 CallbackQueryHandler(schedule_days_finished, pattern=r"^sch:finish_days$"),
@@ -868,8 +1125,15 @@ def get_schedule_conversation_handler():
                 CallbackQueryHandler(schedule_edit_done, pattern=r"^schedit:done$"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
-            SCHEDULE_DUTY_CONFIRM: [
+            SCHEDULE_DUTY_DAY: [
+                CallbackQueryHandler(schedule_duty_day_selected, pattern=r"^schduty:day:"),
+                CallbackQueryHandler(schedule_duties_auto, pattern=r"^schduty:auto$"),
                 CallbackQueryHandler(schedule_duties_confirm, pattern=r"^schduty:confirm$"),
+                CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
+            ],
+            SCHEDULE_DUTY_EMPLOYEE: [
+                CallbackQueryHandler(schedule_duty_employee_selected, pattern=r"^schduty:set:"),
+                CallbackQueryHandler(schedule_duties_back, pattern=r"^schduty:back$"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
         },
@@ -881,6 +1145,5 @@ def get_schedule_handlers():
     return [
         CallbackQueryHandler(schedule_menu, pattern=r"^section:schedule$"),
         CallbackQueryHandler(schedule_view_mine, pattern=r"^sch:view_mine$"),
-        CallbackQueryHandler(schedule_export_topic, pattern=r"^sch:export_topic$"),
         get_schedule_conversation_handler(),
     ]
