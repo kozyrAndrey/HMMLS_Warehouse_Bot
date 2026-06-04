@@ -9,6 +9,7 @@ from config import (
     MOYSKLAD_CA_BUNDLE,
     NIRGUNA_ATOL_ACCOUNT_ID,
     NIRGUNA_ATOL_BASE_URL,
+    NIRGUNA_ATOL_COOKIE,
     NIRGUNA_ATOL_TOKEN,
     NIRGUNA_ATOL_UID,
     NIRGUNA_MARKING_BUTTON_ID,
@@ -61,17 +62,20 @@ class NirgunaAtolClient:
             form_items.append(("popupFormParameters[var3][1][]", code))
 
         data = urllib.parse.urlencode(form_items).encode("utf-8")
+        headers = {
+            "Accept": "text/html, */*; q=0.01",
+            "Accept-Encoding": "gzip",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": "Mozilla/5.0",
+        }
+        if NIRGUNA_ATOL_COOKIE:
+            headers["Cookie"] = NIRGUNA_ATOL_COOKIE
+
         request = urllib.request.Request(
             url=url,
             data=data,
             method="POST",
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Encoding": "gzip",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin": self.base_url,
-                "Referer": self.base_url + "/",
-            },
+            headers=headers,
         )
 
         try:
@@ -79,6 +83,15 @@ class NirgunaAtolClient:
                 return self._read_response(response)
         except urllib.error.HTTPError as error:
             body = self._read_response(error)
+            if error.code == 403:
+                hint = (
+                    "Доступ запрещён. Чаще всего это означает, что NIRGUNA_ATOL_TOKEN "
+                    "устарел или backend Nirguna требует cookie/заголовки из браузерной сессии."
+                )
+                if not NIRGUNA_ATOL_COOKIE:
+                    hint += " Если в успешном browser-запросе есть Cookie, добавьте его в NIRGUNA_ATOL_COOKIE."
+                raise NirgunaError(f"Nirguna АТОЛ вернул ошибку 403. {hint}") from error
+
             raise NirgunaError(f"Nirguna АТОЛ вернул ошибку {error.code}: {body}") from error
         except urllib.error.URLError as error:
             raise NirgunaError(f"Не удалось подключиться к Nirguna АТОЛ: {error}") from error
