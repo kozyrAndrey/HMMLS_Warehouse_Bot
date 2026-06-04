@@ -8,6 +8,9 @@ google-auth>=2.0,<3.0
 # Optional: load secrets from .env file during local development
 python-dotenv>=1.0,<2.0
 
+# CA certificates for outbound HTTPS API calls
+certifi>=2024.0.0
+
 # PDF generation for payroll reports
 reportlab>=4.0,<5.0
 

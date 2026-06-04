@@ -75,6 +75,7 @@ RETURN_CHZ_TOPIC_ID = os.getenv("RETURN_CHZ_TOPIC_ID", "740")
 # ============================================================
 
 MOYSKLAD_API_TOKEN = os.getenv("MOYSKLAD_API_TOKEN", "")
+MOYSKLAD_CA_BUNDLE = os.getenv("MOYSKLAD_CA_BUNDLE", "")
 MOYSKLAD_RECEIPT_LINK_ATTR_NAME = os.getenv(
     "MOYSKLAD_RECEIPT_LINK_ATTR_NAME",
     "Ссылка на чек HOMME+LESS",

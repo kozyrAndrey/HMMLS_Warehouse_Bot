@@ -1,6 +1,12 @@
+import gzip
 import json
+import ssl
 import urllib.parse
 import urllib.request
+
+import certifi
+
+from config import MOYSKLAD_CA_BUNDLE
 
 
 class MoyskladError(RuntimeError):
@@ -12,6 +18,9 @@ class MoyskladClient:
 
     def __init__(self, token):
         self.token = token
+        self.ssl_context = ssl.create_default_context(
+            cafile=MOYSKLAD_CA_BUNDLE or certifi.where()
+        )
 
     def _request(self, method, path, payload=None, params=None):
         if not self.token:
@@ -25,23 +34,40 @@ class MoyskladClient:
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json;charset=utf-8",
+            "Accept-Encoding": "gzip",
+        }
+
+        if data is not None:
+            headers["Content-Type"] = "application/json;charset=utf-8"
+
         request = urllib.request.Request(
             url=url,
             data=data,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "application/json;charset=utf-8",
-                "Content-Type": "application/json;charset=utf-8",
-            },
+            headers=headers,
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                body = response.read().decode("utf-8")
+            with urllib.request.urlopen(request, timeout=30, context=self.ssl_context) as response:
+                body_bytes = response.read()
+                if response.headers.get("Content-Encoding") == "gzip":
+                    body_bytes = gzip.decompress(body_bytes)
+                body = body_bytes.decode("utf-8")
         except urllib.error.HTTPError as error:
-            error_body = error.read().decode("utf-8", errors="replace")
+            error_body_bytes = error.read()
+            if error.headers.get("Content-Encoding") == "gzip":
+                error_body_bytes = gzip.decompress(error_body_bytes)
+            error_body = error_body_bytes.decode("utf-8", errors="replace")
             raise MoyskladError(f"МойСклад API вернул ошибку {error.code}: {error_body}") from error
+        except ssl.SSLCertVerificationError as error:
+            raise MoyskladError(
+                "Не удалось проверить SSL-сертификат МойСклад. "
+                "По умолчанию бот использует certifi; если в сети есть корпоративный "
+                "сертификат, укажите путь к нему в MOYSKLAD_CA_BUNDLE."
+            ) from error
         except urllib.error.URLError as error:
             raise MoyskladError(f"Не удалось подключиться к МойСклад API: {error}") from error
 
