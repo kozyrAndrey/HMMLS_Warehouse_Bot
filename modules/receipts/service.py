@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from config import MOYSKLAD_API_TOKEN, MOYSKLAD_RECEIPT_LINK_ATTR_NAME
 from modules.receipts.client import MoyskladClient, MoyskladError
+from modules.receipts.nirguna_client import NirgunaAtolClient, is_configured as nirguna_is_configured
 
 
 def get_client():
@@ -127,6 +128,20 @@ def is_tracking_codes_unsupported_error(error):
 async def save_chz_codes_to_order(order_id, positions, codes):
     if not codes:
         return "Коды ЧЗ не вводились, запись кодов в МойСклад пропущена."
+
+    if nirguna_is_configured():
+        response = await asyncio.to_thread(
+            NirgunaAtolClient().submit_marking_codes,
+            order_id,
+            codes,
+        )
+        if "Коды маркировки обновлены успешно" in response:
+            return f"Коды ЧЗ отправлены в приложение АТОЛ/Nirguna: {len(codes)}."
+
+        return (
+            "Коды ЧЗ отправлены в приложение АТОЛ/Nirguna, но ответ не похож на успешный:\n"
+            f"{response[:700]}"
+        )
 
     assignments, extra_codes = allocate_chz_codes_to_positions(positions, codes)
     if not assignments:
