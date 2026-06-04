@@ -68,3 +68,16 @@ SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TO
 
 RETURN_CHZ_CHAT_ID = os.getenv("RETURN_CHZ_CHAT_ID", "-1002637764298")
 RETURN_CHZ_TOPIC_ID = os.getenv("RETURN_CHZ_TOPIC_ID", "740")
+
+
+# ============================================================
+# НАСТРОЙКИ МОДУЛЯ ЧЕКОВ
+# ============================================================
+
+MOYSKLAD_API_TOKEN = os.getenv("MOYSKLAD_API_TOKEN", "")
+MOYSKLAD_RECEIPT_LINK_ATTR_NAME = os.getenv(
+    "MOYSKLAD_RECEIPT_LINK_ATTR_NAME",
+    "Ссылка на чек HOMME+LESS",
+)
+RECEIPTS_ERROR_CHAT_ID = os.getenv("RECEIPTS_ERROR_CHAT_ID", GROUP_CHAT_ID)
+RECEIPTS_ERROR_TOPIC_ID = os.getenv("RECEIPTS_ERROR_TOPIC_ID", "")
