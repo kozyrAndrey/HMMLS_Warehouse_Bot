@@ -224,6 +224,14 @@ async def chz_finished(update: Update, context: ContextTypes.DEFAULT_TYPE):
     positions = context.user_data.get("receipt_positions") or []
     codes = context.user_data.get("receipt_chz_codes") or []
 
+    if not order:
+        await query.edit_message_text(
+            "Данные заказа потерялись. Начните формирование чека заново.",
+            reply_markup=build_receipts_menu_keyboard(),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
     await query.edit_message_text(
         f"{format_order_title(order)}\n\n"
         f"Товары:\n{format_positions(positions)}\n\n"
@@ -373,6 +381,8 @@ async def send_text(update, text, reply_markup=None):
 def get_receipts_handlers():
     return [
         CallbackQueryHandler(show_receipts_menu, pattern=r"^section:receipts$"),
+        CallbackQueryHandler(chz_finished, pattern=r"^receipt:finish_chz$"),
+        CallbackQueryHandler(receipt_confirmed, pattern=r"^receipt:confirm$"),
         ConversationHandler(
             entry_points=[
                 CommandHandler("receipt", receipt_start),

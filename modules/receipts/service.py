@@ -25,8 +25,11 @@ async def get_order_with_positions(order_id):
 
 
 async def get_receipt_link_attribute_meta():
-    metadata = await asyncio.to_thread(get_client().get_customer_order_metadata)
-    for attribute in metadata.get("attributes", []):
+    attributes = await asyncio.to_thread(get_client().get_customer_order_metadata_attributes)
+    for attribute in attributes:
+        if not isinstance(attribute, dict):
+            continue
+
         if attribute.get("name") == MOYSKLAD_RECEIPT_LINK_ATTR_NAME:
             return attribute.get("meta")
 

@@ -79,6 +79,10 @@ class MoyskladClient:
     def get_customer_order_metadata(self):
         return self._request("GET", "/entity/customerorder/metadata")
 
+    def get_customer_order_metadata_attributes(self):
+        data = self._request("GET", "/entity/customerorder/metadata/attributes")
+        return data.get("rows", [])
+
     def find_customer_orders_by_name(self, name, limit=10):
         data = self._request(
             "GET",
