@@ -22,6 +22,7 @@ from modules.receipts.service import (
     get_order_with_positions,
     mark_receipt_error,
     normalize_chz_code,
+    save_chz_codes_to_order,
 )
 
 
@@ -247,10 +248,23 @@ async def receipt_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     order = context.user_data.get("receipt_order") or {}
+    positions = context.user_data.get("receipt_positions") or []
+    codes = context.user_data.get("receipt_chz_codes") or []
     order_id = order.get("id")
 
     if not order_id:
         await query.edit_message_text("Данные заказа потерялись. Начните заново.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    try:
+        chz_status = await save_chz_codes_to_order(order_id, positions, codes)
+    except Exception as error:
+        logging.exception("Не удалось записать коды ЧЗ в МойСклад")
+        await query.edit_message_text(
+            f"Не удалось записать коды ЧЗ в МойСклад ⚠️\n\n{error}",
+            reply_markup=build_receipts_menu_keyboard(),
+        )
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -267,7 +281,8 @@ async def receipt_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         "Черновик чека подготовлен ✅\n\n"
-        "Поле ссылки на чек очищено. Коды ЧЗ собраны в боте.\n\n"
+        "Поле ссылки на чек очищено.\n\n"
+        f"Коды ЧЗ:\n{chz_status}\n\n"
         "На этом этапе бот ещё не нажимает кнопку решения МойСклад автоматически: "
         "это место оставлено отдельным шагом после проверки доступного API/механизма кнопки.",
         reply_markup=build_receipts_menu_keyboard(),

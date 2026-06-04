@@ -113,6 +113,27 @@ class MoyskladClient:
         )
         return data.get("rows", [])
 
+    def get_position_tracking_codes(self, entity_type, entity_id, position_id):
+        data = self._request(
+            "GET",
+            f"/entity/{entity_type}/{entity_id}/positions/{position_id}/trackingCodes",
+        )
+        return data.get("rows", [])
+
+    def upsert_position_tracking_codes(self, entity_type, entity_id, position_id, codes):
+        payload = [
+            {
+                "cis": code,
+                "type": "trackingcode",
+            }
+            for code in codes
+        ]
+        return self._request(
+            "POST",
+            f"/entity/{entity_type}/{entity_id}/positions/{position_id}/trackingCodes",
+            payload=payload,
+        )
+
     def update_customer_order_attributes(self, order_id, attributes):
         return self._request(
             "PUT",
