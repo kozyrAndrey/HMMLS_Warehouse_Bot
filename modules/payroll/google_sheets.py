@@ -2,11 +2,9 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import gspread
-
-from config import GOOGLE_CREDENTIALS_PATH, PAYROLL_GOOGLE_SHEET_ID
+from config import PAYROLL_GOOGLE_SHEET_ID
+from modules.storage.google_archive import DatabaseWorksheet
 from modules.payroll.config import (
     KPI_DAILY_COLUMN_BY_KPI_ID,
     KPI_DAILY_COLUMNS,
@@ -200,25 +198,23 @@ def column_letter(index):
 
 
 def payroll_is_configured():
-    return bool(PAYROLL_GOOGLE_SHEET_ID and Path(GOOGLE_CREDENTIALS_PATH).exists())
-
-
-def get_payroll_spreadsheet():
-    if not PAYROLL_GOOGLE_SHEET_ID:
-        raise RuntimeError("PAYROLL_GOOGLE_SHEET_ID не указан в .env")
-    if not Path(GOOGLE_CREDENTIALS_PATH).exists():
-        raise FileNotFoundError(f"Файл {GOOGLE_CREDENTIALS_PATH} не найден")
-
-    gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
-    return gc.open_by_key(PAYROLL_GOOGLE_SHEET_ID)
+    return True
 
 
 def get_worksheet(title, rows=1000, cols=30):
-    spreadsheet = get_payroll_spreadsheet()
-    try:
-        return spreadsheet.worksheet(title)
-    except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+    headers_by_title = {
+        EMPLOYEES_SHEET: EMPLOYEE_HEADERS,
+        REPORTS_SHEET: REPORT_HEADERS,
+        EXPENSES_SHEET: EXPENSE_HEADERS,
+        PENALTIES_SHEET: PENALTY_HEADERS,
+        KPI_SHEET: KPI_HEADERS,
+        PERIODS_SHEET: PERIOD_HEADERS,
+        KPI_DAILY_SHEET: KPI_DAILY_HEADERS,
+    }
+    headers = headers_by_title.get(title)
+    if not headers:
+        raise RuntimeError(f"Неизвестный payroll-лист: {title}")
+    return DatabaseWorksheet("payroll", PAYROLL_GOOGLE_SHEET_ID, title, headers)
 
 
 def ensure_headers(worksheet, headers):
@@ -373,10 +369,6 @@ def sync_kpi_sheet(worksheet):
         worksheet.append_rows(rows_to_append)
 
 def init_payroll_sheet():
-    if not payroll_is_configured():
-        logging.warning("Payroll Google Sheet не настроен")
-        return False
-
     employees_ws = get_worksheet(EMPLOYEES_SHEET, rows=200, cols=12)
     reports_ws = get_worksheet(REPORTS_SHEET, rows=3000, cols=20)
     expenses_ws = get_worksheet(EXPENSES_SHEET, rows=1000, cols=12)

@@ -1,11 +1,9 @@
 import logging
 import uuid
 from datetime import datetime
-from pathlib import Path
 
-import gspread
-
-from config import GOOGLE_CREDENTIALS_PATH, OPERATIONS_GOOGLE_SHEET_ID
+from config import OPERATIONS_GOOGLE_SHEET_ID
+from modules.storage.google_archive import DatabaseWorksheet
 from modules.payroll.google_sheets import (
     column_letter,
     safe_bool,
@@ -77,25 +75,21 @@ WHITE = {"red": 1, "green": 1, "blue": 1}
 
 
 def operations_is_configured():
-    return bool(OPERATIONS_GOOGLE_SHEET_ID and Path(GOOGLE_CREDENTIALS_PATH).exists())
-
-
-def get_operations_spreadsheet():
-    if not OPERATIONS_GOOGLE_SHEET_ID:
-        raise RuntimeError("OPERATIONS_GOOGLE_SHEET_ID не указан в .env")
-    if not Path(GOOGLE_CREDENTIALS_PATH).exists():
-        raise FileNotFoundError(f"Файл {GOOGLE_CREDENTIALS_PATH} не найден")
-
-    gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
-    return gc.open_by_key(OPERATIONS_GOOGLE_SHEET_ID)
+    return True
 
 
 def get_schedule_worksheet(title, rows=1000, cols=30):
-    spreadsheet = get_operations_spreadsheet()
-    try:
-        return spreadsheet.worksheet(title)
-    except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+    visual_headers = [f"column_{index}" for index in range(1, max(cols, 12) + 1)]
+    headers_by_title = {
+        SCHEDULE_ARCHIVE_SHEET: SCHEDULE_ARCHIVE_HEADERS,
+        SCHEDULE_DUTIES_SHEET: DUTIES_HEADERS,
+        SCHEDULE_EXPORTS_SHEET: EXPORTS_HEADERS,
+        SCHEDULE_SHEET: visual_headers,
+    }
+    headers = headers_by_title.get(title)
+    if not headers:
+        raise RuntimeError(f"Неизвестный operations-лист: {title}")
+    return DatabaseWorksheet("operations", OPERATIONS_GOOGLE_SHEET_ID, title, headers)
 
 
 def ensure_headers(worksheet, headers):
@@ -110,13 +104,6 @@ def schedule_records(worksheet):
 
 
 def init_schedule_sheet():
-    if not operations_is_configured():
-        logging.warning(
-            "Operations Google Sheets не настроен. "
-            "Проверьте OPERATIONS_GOOGLE_SHEET_ID и GOOGLE_CREDENTIALS_PATH."
-        )
-        return False
-
     archive = get_schedule_worksheet(SCHEDULE_ARCHIVE_SHEET, rows=3000, cols=20)
     duties = get_schedule_worksheet(SCHEDULE_DUTIES_SHEET, rows=1000, cols=12)
     exports = get_schedule_worksheet(SCHEDULE_EXPORTS_SHEET, rows=500, cols=12)

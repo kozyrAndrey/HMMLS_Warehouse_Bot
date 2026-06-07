@@ -5,7 +5,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
 from config import GROUP_CHAT_ID, RECEIVING_REPORT_TOPIC_ID
-from modules.receiving.google_sheets import (
+from modules.receiving.postgres_storage import (
     build_receiving_report_text,
     delete_unexported_receiving_record,
     get_exported_receiving_report_by_export_id,
@@ -198,7 +198,7 @@ async def report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as error:
         logging.exception("Не удалось проверить невыгруженные записи")
         await query.edit_message_text(
-            "Не удалось проверить записи в Google Таблице ⚠️\n\n"
+            "Не удалось проверить записи в PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -223,7 +223,7 @@ async def report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as error:
         logging.exception("Не удалось собрать отчет оприходований")
         await query.edit_message_text(
-            "Не удалось собрать отчет из Google Таблицы ⚠️\n\n"
+            "Не удалось собрать отчет из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -338,7 +338,7 @@ async def receiving_delete_choose(update: Update, context: ContextTypes.DEFAULT_
     except Exception as error:
         logging.exception("Не удалось получить невыгруженные записи")
         await query.edit_message_text(
-            "Не удалось получить невыгруженные записи из Google Таблицы ⚠️\n\n"
+            "Не удалось получить невыгруженные записи из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -370,7 +370,7 @@ async def receiving_delete_confirm(update: Update, context: ContextTypes.DEFAULT
     except Exception as error:
         logging.exception("Не удалось прочитать запись для удаления")
         await query.edit_message_text(
-            "Не удалось прочитать запись из Google Таблицы ⚠️\n\n"
+            "Не удалось прочитать запись из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -395,7 +395,7 @@ async def receiving_delete_confirm(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text(
         "Проверьте запись перед удалением:\n\n"
         f"{format_record_details(record)}\n\n"
-        "Удалить эту запись из Google Таблицы?",
+        "Удалить эту запись из PostgreSQL?",
         reply_markup=build_confirm_delete_keyboard(row_number),
     )
 
@@ -506,7 +506,7 @@ async def receiving_report_delete_choose(update: Update, context: ContextTypes.D
     except Exception as error:
         logging.exception("Не удалось получить выгруженные отчеты")
         await query.edit_message_text(
-            "Не удалось получить выгруженные отчеты из Google Таблицы ⚠️\n\n"
+            "Не удалось получить выгруженные отчеты из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -539,7 +539,7 @@ async def receiving_report_delete_confirm(update: Update, context: ContextTypes.
     except Exception as error:
         logging.exception("Не удалось получить отчет для удаления")
         await query.edit_message_text(
-            "Не удалось получить отчет из Google Таблицы ⚠️\n\n"
+            "Не удалось получить отчет из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -559,7 +559,7 @@ async def receiving_report_delete_confirm(update: Update, context: ContextTypes.
         f"{format_report_group_details(group)}\n\n"
         "Что произойдет после подтверждения:\n"
         "1. Бот удалит сообщение/сообщения отчета из темы Telegram.\n"
-        "2. Записи в Google Таблице снова станут невыгруженными.\n"
+        "2. Записи в PostgreSQL снова станут невыгруженными.\n"
         "3. Их можно будет исправить и выгрузить заново.\n\n"
         "Удалить этот отчет?",
         reply_markup=build_confirm_report_delete_keyboard(export_id),
@@ -577,7 +577,7 @@ async def receiving_report_delete_do(update: Update, context: ContextTypes.DEFAU
     except Exception as error:
         logging.exception("Не удалось получить отчет для удаления")
         await query.edit_message_text(
-            "Не удалось получить отчет из Google Таблицы ⚠️\n\n"
+            "Не удалось получить отчет из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
@@ -609,7 +609,7 @@ async def receiving_report_delete_do(update: Update, context: ContextTypes.DEFAU
     except Exception as error:
         logging.exception("Не удалось снять отметку выгрузки с записей")
         await query.edit_message_text(
-            "Сообщения в Telegram частично удалены, но не удалось снять отметку выгрузки в Google Таблице ⚠️\n\n"
+            "Сообщения в Telegram частично удалены, но не удалось снять отметку выгрузки в PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}",
             reply_markup=build_receiving_menu_keyboard(),
         )
