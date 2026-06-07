@@ -71,7 +71,12 @@ def main():
 
     init_receiving_storage()
 
-    payroll_ready = init_payroll_sheet()
+    payroll_ready = False
+    try:
+        payroll_ready = init_payroll_sheet()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль ЗП")
+
     if not payroll_ready:
         logging.warning(
             "Payroll Google Sheets не настроен. "
