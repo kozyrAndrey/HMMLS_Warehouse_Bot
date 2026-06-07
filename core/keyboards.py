@@ -20,7 +20,6 @@ def build_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("📦 Отчет оприходований", callback_data="section:receiving")],
         [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
-        [InlineKeyboardButton("🧾 Чеки", callback_data="section:receipts")],
         [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
         [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
     ]
@@ -43,14 +42,6 @@ def build_returns_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("🚚 СДЭК", callback_data="menu:return:cdek")],
         [InlineKeyboardButton("🏬 Шоу-рум", callback_data="menu:return:showroom")],
-        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def build_receipts_menu_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🧾 Сформировать чек", callback_data="receipt:start")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
     return InlineKeyboardMarkup(keyboard)

@@ -12,9 +12,6 @@ python-dotenv>=1.0,<2.0
 SQLAlchemy>=2.0,<3.0
 psycopg[binary]>=3.1,<4.0
 
-# CA certificates for outbound HTTPS API calls
-certifi>=2024.0.0
-
 # PDF generation for payroll reports
 reportlab>=4.0,<5.0
 

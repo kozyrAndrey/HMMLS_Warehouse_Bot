@@ -127,97 +127,187 @@ PRODUCT_CATALOG = {
                 },
             },
             "paramount_tshirt": {
-                "name": "PARAMOUNT TSHIRT",
+                "name": "PARAMOUNT T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t003",
                         "color": "BLACK",
-                        "name": "PARAMOUNT TSHIRT BLACK",
+                        "name": "PARAMOUNT T-SHIRT BLACK",
                     },
                     "ecru": {
                         "id": "t004",
                         "color": "ECRU",
-                        "name": "PARAMOUNT TSHIRT ECRU",
+                        "name": "PARAMOUNT T-SHIRT ECRU",
                     },
                 },
             },
             "stamp_tshirt": {
-                "name": "STAMP TSHIRT",
+                "name": "STAMP T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t005",
                         "color": "BLACK",
-                        "name": "STAMP TSHIRT BLACK",
+                        "name": "STAMP T-SHIRT BLACK",
                     },
                     "grey": {
                         "id": "t006",
                         "color": "GREY",
-                        "name": "STAMP TSHIRT GREY",
+                        "name": "STAMP T-SHIRT GREY",
                     },
                     "ecru": {
                         "id": "t007",
                         "color": "ECRU",
-                        "name": "STAMP TSHIRT ECRU",
+                        "name": "STAMP T-SHIRT ECRU",
                     },
                 },
             },
             "stickers_tshirt": {
-                "name": "STICKERS TSHIRT",
+                "name": "STICKERS T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t008",
                         "color": "BLACK",
-                        "name": "STICKERS TSHIRT BLACK",
+                        "name": "STICKERS T-SHIRT BLACK",
                     },
                     "ecru": {
                         "id": "t009",
                         "color": "ECRU",
-                        "name": "STICKERS TSHIRT ECRU",
+                        "name": "STICKERS T-SHIRT ECRU",
                     },
                 },
             },
             "humble_tshirt": {
-                "name": "HUMBLE TSHIRT",
+                "name": "HUMBLE T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t010",
                         "color": "BLACK",
-                        "name": "HUMBLE TSHIRT BLACK",
+                        "name": "HUMBLE T-SHIRT BLACK",
                     },
                 },
             },
             "network_tshirt": {
-                "name": "NETWORK TSHIRT",
+                "name": "NETWORK T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t011",
                         "color": "BLACK",
-                        "name": "NETWORK TSHIRT BLACK",
+                        "name": "NETWORK T-SHIRT BLACK",
                     },
                     "ecru": {
                         "id": "t012",
                         "color": "ECRU",
-                        "name": "NETWORK TSHIRT ECRU",
+                        "name": "NETWORK T-SHIRT ECRU",
                     },
                 },
             },
             "hommeless_tshirt": {
-                "name": "HOMMELESS TSHIRT",
+                "name": "HOMMELESS T-SHIRT",
                 "variants": {
                     "black": {
                         "id": "t013",
                         "color": "BLACK",
-                        "name": "HOMMELESS TSHIRT BLACK",
+                        "name": "HOMMELESS T-SHIRT BLACK",
                     },
                     "grey": {
                         "id": "t014",
                         "color": "GREY",
-                        "name": "HOMMELESS TSHIRT GREY",
+                        "name": "HOMMELESS T-SHIRT GREY",
                     },
                     "ecru": {
                         "id": "t015",
                         "color": "ECRU",
-                        "name": "HOMMELESS TSHIRT ECRU",
+                        "name": "HOMMELESS T-SHIRT ECRU",
+                    },
+                },
+            },
+            "base_logo_tshirt": {
+                "name": "BASE LOGO T-SHIRT",
+                "variants": {
+                    "black": {
+                        "id": "t016",
+                        "color": "BLACK",
+                        "name": "BASE LOGO T-SHIRT BLACK",
+                    },
+                    "white": {
+                        "id": "t017",
+                        "color": "WHITE",
+                        "name": "BASE LOGO T-SHIRT WHITE",
+                    },
+                    "grey": {
+                        "id": "t018",
+                        "color": "GREY",
+                        "name": "BASE LOGO T-SHIRT GREY",
+                    },
+                    "brown": {
+                        "id": "t019",
+                        "color": "BROWN",
+                        "name": "BASE LOGO T-SHIRT BROWN",
+                    },
+                },
+            },
+            "fleur_logo_tshirt": {
+                "name": "FLEUR LOGO T-SHIRT",
+                "variants": {
+                    "white": {
+                        "id": "t020",
+                        "color": "WHITE",
+                        "name": "FLEUR LOGO T-SHIRT WHITE",
+                    },
+                    "black": {
+                        "id": "t024",
+                        "color": "BLACK",
+                        "name": "FLEUR LOGO T-SHIRT BLACK",
+                    },
+                },
+            },
+            "cloud_logo_tshirt": {
+                "name": "CLOUD LOGO T-SHIRT",
+                "variants": {
+                    "white": {
+                        "id": "t021",
+                        "color": "WHITE",
+                        "name": "CLOUD LOGO T-SHIRT WHITE",
+                    },
+                    "black": {
+                        "id": "t025",
+                        "color": "BLACK",
+                        "name": "CLOUD LOGO T-SHIRT BLACK",
+                    },
+                },
+            },
+            "honey_logo_tshirt": {
+                "name": "HONEY LOGO T-SHIRT",
+                "variants": {
+                    "one": {
+                        "id": "t022",
+                        "color": "ONE COLOR",
+                        "name": "HONEY LOGO T-SHIRT",
+                    },
+                },
+            },
+            "statue_logo_tshirt": {
+                "name": "STATUE LOGO T-SHIRT",
+                "variants": {
+                    "white": {
+                        "id": "t023",
+                        "color": "WHITE",
+                        "name": "STATUE LOGO T-SHIRT WHITE",
+                    },
+                    "black": {
+                        "id": "t027",
+                        "color": "BLACK",
+                        "name": "STATUE LOGO T-SHIRT BLACK",
+                    },
+                },
+            },
+            "chain_logo_tshirt": {
+                "name": "CHAIN LOGO T-SHIRT",
+                "variants": {
+                    "one": {
+                        "id": "t026",
+                        "color": "ONE COLOR",
+                        "name": "CHAIN LOGO T-SHIRT",
                     },
                 },
             },

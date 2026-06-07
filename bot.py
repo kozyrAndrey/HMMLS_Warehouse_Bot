@@ -29,7 +29,6 @@ from modules.receiving.handlers import get_incoming_conversation_handler
 from modules.receiving.reports import get_report_handlers
 from modules.returns.handlers import get_returns_conversation_handler
 from modules.payroll.handlers import get_payroll_handlers
-from modules.receipts.handlers import get_receipts_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 
 
@@ -160,10 +159,6 @@ def main():
 
     # Расчет ЗП.
     for handler in get_payroll_handlers():
-        app.add_handler(handler)
-
-    # Чеки.
-    for handler in get_receipts_handlers():
         app.add_handler(handler)
 
     # Расписание.
