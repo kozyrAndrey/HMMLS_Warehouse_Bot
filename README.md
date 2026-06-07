@@ -446,7 +446,18 @@ Runtime-данные бота хранятся в PostgreSQL. Старые Googl
 Команда переносит:
 
 - оприходования в рабочую таблицу `incoming_goods`;
-- все листы приемки, ЗП и расписания в архив `google_sheet_archive_rows`.
+- все листы приемки, ЗП и расписания в архив `google_sheet_archive_rows`;
+- ЗП и расписание в отдельные таблицы:
+  `payroll_employees`, `payroll_reports`, `payroll_expenses`,
+  `payroll_penalties`, `payroll_kpi`, `payroll_periods`,
+  `payroll_kpi_daily`, `schedule_archive`, `schedule_duties`,
+  `schedule_exports`.
+
+Если архив уже импортирован, отдельные таблицы можно пересобрать без Google:
+
+```bash
+.venv/bin/python scripts/sync_structured_tables.py
+```
 
 Для миграции нужны `GOOGLE_CREDENTIALS_PATH`, `GOOGLE_SHEET_ID`, `PAYROLL_GOOGLE_SHEET_ID` и `OPERATIONS_GOOGLE_SHEET_ID`.
 

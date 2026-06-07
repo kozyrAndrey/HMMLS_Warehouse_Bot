@@ -51,6 +51,14 @@ def replace_sheet_archive(source, spreadsheet_id, sheet_name, rows):
                 )
             )
 
+    sync_structured_sheet_if_configured(source, sheet_name, rows)
+
+
+def sync_structured_sheet_if_configured(source, sheet_name, rows):
+    from modules.storage.structured_sheets import sync_structured_sheet
+
+    sync_structured_sheet(source, sheet_name, rows)
+
 
 def count_archived_rows(source=None):
     with session_scope() as session:
@@ -113,6 +121,9 @@ class DatabaseWorksheet:
             )
             return [(row.row_number, dict(row.data or {})) for row in rows]
 
+    def _sync_structured(self):
+        sync_structured_sheet_if_configured(self.source, self.title, self._rows())
+
     def _row_values_from_data(self, data):
         return [data.get(header, "") for header in self.headers]
 
@@ -155,6 +166,7 @@ class DatabaseWorksheet:
                     data=self._data_from_row(row),
                 )
             )
+        self._sync_structured()
 
     def append_rows(self, rows):
         with session_scope() as session:
@@ -169,6 +181,7 @@ class DatabaseWorksheet:
                         data=self._data_from_row(row),
                     )
                 )
+        self._sync_structured()
 
     def _data_from_row(self, row):
         row = list(row)
@@ -214,6 +227,7 @@ class DatabaseWorksheet:
                             data=data,
                         )
                     )
+        self._sync_structured()
 
     def clear(self):
         with session_scope() as session:
@@ -223,6 +237,7 @@ class DatabaseWorksheet:
                     GoogleSheetArchiveRow.sheet_name == self.title,
                 )
             )
+        self._sync_structured()
 
     def delete_rows(self, row_number):
         rows = [
