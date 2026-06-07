@@ -3,12 +3,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
-from modules.receiving.database import get_table_columns, reset_local_db_with_backup
-from modules.receiving.google_sheets import (
-    append_google_status_test_row,
-    get_google_worksheet,
-    get_last_records_text_from_google,
-)
+from modules.receiving.postgres_storage import get_last_records_text, get_receiving_db_status
 from core.keyboards import (
     build_main_menu_keyboard,
     build_receiving_menu_keyboard,
@@ -90,11 +85,11 @@ async def menu_last_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        text = get_last_records_text_from_google(limit=10)
+        text = get_last_records_text(limit=10)
     except Exception as error:
-        logging.exception("Ошибка чтения последних записей из Google Sheets")
+        logging.exception("Ошибка чтения последних записей из PostgreSQL")
         text = (
-            "Не удалось загрузить последние записи из Google Таблицы ⚠️\n\n"
+            "Не удалось загрузить последние записи из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}"
         )
 
@@ -106,11 +101,11 @@ async def menu_last_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def last_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = get_last_records_text_from_google(limit=10)
+        text = get_last_records_text(limit=10)
     except Exception as error:
-        logging.exception("Ошибка чтения последних записей из Google Sheets")
+        logging.exception("Ошибка чтения последних записей из PostgreSQL")
         text = (
-            "Не удалось загрузить последние записи из Google Таблицы ⚠️\n\n"
+            "Не удалось загрузить последние записи из PostgreSQL ⚠️\n\n"
             f"Ошибка: {error}"
         )
 
@@ -120,47 +115,19 @@ async def last_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def google_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        get_google_worksheet()
-        append_google_status_test_row()
+        version, columns = get_receiving_db_status()
 
         await update.message.reply_text(
-            "✅ Google Sheets работает. Тестовая строка добавлена в таблицу."
+            "PostgreSQL работает ✅\n\n"
+            f"{version}\n\n"
+            "Колонки в incoming_goods:\n"
+            + "\n".join(columns)
         )
     except Exception as error:
-        logging.exception("Google Sheets status check failed")
-        await update.message.reply_text(f"❌ Google Sheets не работает:\n{error}")
-
-
-async def sqlite_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        columns = sorted(get_table_columns("incoming_goods"))
-
-        await update.message.reply_text(
-            "SQLite работает. Колонки в incoming_goods:\n" + "\n".join(columns)
-        )
-    except Exception as error:
-        logging.exception("SQLite status check failed")
-        await update.message.reply_text(f"❌ SQLite ошибка:\n{error}")
-
-
-async def reset_local_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        backup_file = reset_local_db_with_backup()
-
-        if backup_file:
-            text = (
-                "✅ Локальная SQLite-база пересоздана.\n"
-                f"Старая база сохранена как: {backup_file.name}"
-            )
-        else:
-            text = "✅ Локальная SQLite-база создана."
-
-        await update.message.reply_text(text)
-    except Exception as error:
-        logging.exception("SQLite reset failed")
-        await update.message.reply_text(f"❌ Не удалось пересоздать SQLite-базу:\n{error}")
+        logging.exception("PostgreSQL status check failed")
+        await update.message.reply_text(f"❌ PostgreSQL ошибка:\n{error}")
 
 
 async def whereami(update: Update, context: ContextTypes.DEFAULT_TYPE):

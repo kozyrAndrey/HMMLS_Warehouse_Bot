@@ -9,7 +9,7 @@ Telegram-бот для складских процессов HMMLS.
 - отправки возвратов в тему Telegram-чата;
 - выгрузки отчёта оприходований в тему Telegram-чата;
 - записи оприходований в Google Таблицу;
-- хранения локальной резервной базы SQLite.
+- хранения данных в PostgreSQL.
 
 ---
 
@@ -54,7 +54,7 @@ Telegram-бот для складских процессов HMMLS.
 → ввод количества «Брак»
 → ввод количества «Доработка»
 → запись в Google Таблицу
-→ запись в SQLite как локальный резерв
+→ запись в PostgreSQL
 ```
 
 Дата выбирается из двух вариантов:
@@ -248,7 +248,7 @@ GOOGLE_CREDENTIALS_PATH
 GROUP_CHAT_ID
 RETURNS_TOPIC_ID
 RECEIVING_REPORT_TOPIC_ID
-DB_PATH
+DATABASE_URL
 ```
 
 ### `products.py`
@@ -279,16 +279,14 @@ DB_PATH
 - выбор размера;
 - выбор состояния возврата.
 
-### `database.py`
+### `postgres_storage.py`
 
-Работа с SQLite.
-
-SQLite используется как локальный резерв.
+Работа с PostgreSQL для оприходований.
 
 Файл базы:
 
 ```text
-warehouse.db
+PostgreSQL
 ```
 
 Этот файл не хранится в GitHub.
@@ -326,9 +324,7 @@ viewer
 ```text
 /start
 /last
-/google_status
-/sqlite_status
-/reset_local_db
+/db_status
 /whereami
 ```
 
@@ -353,8 +349,6 @@ viewer
 ```text
 .env
 google_credentials.json
-warehouse.db
-warehouse_backup_*.db
 .venv/
 incoming_goods.xlsx
 ```
@@ -378,10 +372,6 @@ __pycache__/
 .venv/
 venv/
 env/
-
-# Local database
-warehouse.db
-warehouse_backup_*.db
 
 # Excel exports
 *.xlsx
@@ -690,21 +680,11 @@ chmod +x setup_env.sh
 
 ### `/last`
 
-Показывает последние записи из Google Таблицы.
+Показывает последние записи из PostgreSQL.
 
-### `/google_status`
+### `/db_status`
 
-Проверяет подключение к Google Таблице и добавляет тестовую строку.
-
-### `/sqlite_status`
-
-Показывает колонки локальной SQLite-базы.
-
-### `/reset_local_db`
-
-Пересоздаёт локальную SQLite-базу.
-
-Старая база сохраняется как backup.
+Проверяет подключение к PostgreSQL и показывает колонки таблицы `incoming_goods`.
 
 ### `/whereami`
 
@@ -856,7 +836,6 @@ git status
 ```text
 .env
 google_credentials.json
-warehouse.db
 .venv/
 ```
 
@@ -960,7 +939,7 @@ python -m pip install -r requirements.txt
 Проверить:
 
 ```text
-/google_status
+/db_status
 ```
 
 Возможные причины:
@@ -1031,7 +1010,6 @@ telegram.error.TimedOut
 BOT_TOKEN
 .env
 google_credentials.json
-warehouse.db
 ```
 
 Если токен бота случайно попал в чат, GitHub или логи, его нужно перевыпустить в BotFather:
@@ -1058,7 +1036,7 @@ warehouse.db
 ✅ Google Таблица расшарена на client_email
 ✅ Бот добавлен в Telegram-группу
 ✅ Настроены GROUP_CHAT_ID, RETURNS_TOPIC_ID, RECEIVING_REPORT_TOPIC_ID
-✅ Команда /google_status работает
+✅ Команда /db_status работает
 ✅ Команда /whereami показывает нужные ID
 ```
 

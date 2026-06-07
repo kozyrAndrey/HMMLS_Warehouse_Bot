@@ -1,5 +1,3 @@
-import logging
-
 from telegram import Update
 from telegram.ext import (
     CallbackQueryHandler,
@@ -10,8 +8,7 @@ from telegram.ext import (
     filters,
 )
 
-from modules.receiving.database import save_incoming_good
-from modules.receiving.google_sheets import save_to_google_sheet
+from modules.receiving.postgres_storage import save_incoming_good
 from core.keyboards import (
     build_category_keyboard,
     build_incoming_date_keyboard,
@@ -274,24 +271,8 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         packed=packed,
         defective=defective,
         rework=rework,
+        record_date=record_date,
     )
-
-    try:
-        save_to_google_sheet(
-            user_id=user.id,
-            username=username,
-            category_id=category_id,
-            product_id=product_id,
-            size=size,
-            packed=packed,
-            defective=defective,
-            rework=rework,
-            record_date=record_date,
-        )
-        google_status = "Google Таблица: запись добавлена ✅"
-    except Exception as error:
-        logging.exception("Ошибка записи в Google Sheets")
-        google_status = f"Google Таблица: не удалось записать ⚠️\nОшибка: {error}"
 
     category_name = CATEGORIES[category_id]["name"]
     product_name = CATEGORIES[category_id]["products"][product_id]
@@ -305,7 +286,7 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Упаковано: {packed}\n"
         f"Брак: {defective}\n"
         f"Доработка: {rework}\n\n"
-        f"{google_status}\n\n"
+        "PostgreSQL: запись добавлена ✅\n\n"
         "Выберите следующее действие:",
         reply_markup=build_receiving_menu_keyboard(),
     )

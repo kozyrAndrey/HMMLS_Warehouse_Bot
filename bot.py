@@ -12,19 +12,16 @@ from telegram.ext import (
 
 from config import BOT_TOKEN
 from core.access import access_guard
-from modules.receiving.database import init_db
-from modules.receiving.google_sheets import init_google_sheet
+from modules.receiving.postgres_storage import init_receiving_storage
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
 from handlers.common import (
-    google_status,
     last_records,
     menu_last_records,
-    reset_local_db,
+    db_status,
     show_main_menu,
     show_receiving_menu,
     show_returns_menu,
-    sqlite_status,
     start,
     whereami,
 )
@@ -72,14 +69,7 @@ def main():
 
     setup_logging()
 
-    init_db()
-
-    google_ready = init_google_sheet()
-    if not google_ready:
-        logging.warning(
-            "Google Sheets не настроен или google_credentials.json не найден. "
-            "Записи в Google Таблицу работать не будут, пока не исправить настройки."
-        )
+    init_receiving_storage()
 
     payroll_ready = init_payroll_sheet()
     if not payroll_ready:
@@ -152,9 +142,7 @@ def main():
     app.add_handler(CommandHandler("last", last_records))
 
     # Служебные команды.
-    app.add_handler(CommandHandler("google_status", google_status))
-    app.add_handler(CommandHandler("sqlite_status", sqlite_status))
-    app.add_handler(CommandHandler("reset_local_db", reset_local_db))
+    app.add_handler(CommandHandler("db_status", db_status))
     app.add_handler(CommandHandler("whereami", whereami))
 
     # Основные сценарии.

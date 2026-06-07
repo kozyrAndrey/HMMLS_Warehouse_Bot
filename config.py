@@ -10,10 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-DB_PATH = os.getenv(
-    "DB_PATH",
-    str(BASE_DIR / "warehouse.db"),
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 GOOGLE_CREDENTIALS_PATH = os.getenv(
     "GOOGLE_CREDENTIALS_PATH",
