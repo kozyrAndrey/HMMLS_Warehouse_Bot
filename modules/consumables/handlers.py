@@ -14,10 +14,19 @@ from config import CONSUMABLES_TOPIC_ID, GROUP_CHAT_ID
 from core.keyboards import build_consumables_menu_keyboard
 from modules.consumables.storage import (
     create_supply,
+    clear_acceptance,
+    deactivate_supplier,
+    delete_supply,
+    get_accepted_supplies,
+    get_active_suppliers,
     get_pending_supplies,
     get_recent_organizations,
     get_supply,
+    get_supplies,
     mark_supply_accepted,
+    split_message_ids,
+    update_acceptance,
+    update_supply,
 )
 from modules.payroll.google_sheets import find_employee_for_telegram_user, is_manager, money, safe_float
 
@@ -30,7 +39,15 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
     ACCEPT_SUPPLY,
     ACCEPT_LAYOUT_PHOTO,
     ACCEPT_DOCUMENT,
-) = range(500, 507)
+    SUPPLY_MANAGE_SELECT,
+    SUPPLY_EDIT_FIELD,
+    SUPPLY_EDIT_VALUE,
+    SUPPLY_DELETE_CONFIRM,
+    ACCEPTANCE_MANAGE_SELECT,
+    ACCEPTANCE_DELETE_CONFIRM,
+    SUPPLIER_DELETE_SELECT,
+    SUPPLIER_DELETE_CONFIRM,
+) = range(500, 515)
 
 
 def current_employee_or_none(update):
@@ -60,20 +77,29 @@ def organization_keyboard(organizations=None):
     return InlineKeyboardMarkup(rows)
 
 
-def pending_supplies_keyboard():
+def supplies_keyboard(supplies, prefix):
     rows = []
-    for supply in get_pending_supplies():
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"#{supply['id']} {supply['consumable_name']} - {supply['organization']}",
-                    callback_data=f"conssup:{supply['id']}",
-                )
-            ]
-        )
+    for supply in supplies:
+        rows.append([InlineKeyboardButton(f"#{supply['id']}", callback_data=f"{prefix}:{supply['id']}")])
 
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+def pending_supplies_keyboard():
+    return supplies_keyboard(get_pending_supplies(), "conssup")
+
+
+def supplies_list_text(title, supplies):
+    lines = [title]
+    for supply in supplies:
+        lines.extend(["", format_supply_line(supply)])
+        if supply.get("status") == "accepted":
+            accepted_at = supply.get("accepted_at")
+            accepted_at_text = accepted_at.strftime("%d.%m.%Y %H:%M") if accepted_at else "-"
+            lines.append(f"Принял: {supply.get('accepted_by_name') or '-'}")
+            lines.append(f"Дата приемки: {accepted_at_text}")
+    return "\n".join(lines)
 
 
 def document_keyboard():
@@ -83,6 +109,35 @@ def document_keyboard():
             [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
         ]
     )
+
+
+def supply_edit_field_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Название расходника", callback_data="consfield:name")],
+            [InlineKeyboardButton("Организация", callback_data="consfield:organization")],
+            [InlineKeyboardButton("Сумма к оплате", callback_data="consfield:amount")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
+def confirm_keyboard(confirm_callback):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Подтвердить", callback_data=confirm_callback)],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
+def suppliers_keyboard(suppliers):
+    rows = []
+    for index, supplier in enumerate(suppliers):
+        rows.append([InlineKeyboardButton(supplier, callback_data=f"conssupplier:{index}")])
+
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def parse_positive_amount(text):
@@ -248,7 +303,10 @@ async def accept_supply_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return ConversationHandler.END
 
-    await query.edit_message_text("Выберите поставку:", reply_markup=pending_supplies_keyboard())
+    await query.edit_message_text(
+        supplies_list_text("Выберите поставку:", supplies),
+        reply_markup=supplies_keyboard(supplies, "conssup"),
+    )
     return ACCEPT_SUPPLY
 
 
@@ -259,7 +317,11 @@ async def accept_supply_selected(update: Update, context: ContextTypes.DEFAULT_T
     supply_id = query.data.replace("conssup:", "")
     supply = get_supply(supply_id)
     if not supply or supply["status"] != "pending":
-        await query.edit_message_text("Поставка не найдена или уже принята.", reply_markup=pending_supplies_keyboard())
+        supplies = get_pending_supplies()
+        await query.edit_message_text(
+            supplies_list_text("Поставка не найдена или уже принята. Выберите заново:", supplies),
+            reply_markup=supplies_keyboard(supplies, "conssup"),
+        )
         return ACCEPT_SUPPLY
 
     context.user_data["supply_id"] = supply["id"]
@@ -362,10 +424,25 @@ async def send_acceptance_to_topic(context: ContextTypes.DEFAULT_TYPE, supply, a
     return message_ids, "Приемка отправлена в тему чата ✅"
 
 
+async def delete_topic_messages(context: ContextTypes.DEFAULT_TYPE, supply):
+    if not GROUP_CHAT_ID:
+        return
+
+    for message_id in split_message_ids(supply.get("topic_message_ids")):
+        try:
+            await context.bot.delete_message(chat_id=int(GROUP_CHAT_ID), message_id=message_id)
+        except Exception:
+            logging.exception("Не удалось удалить сообщение приемки расходника из темы")
+
+
 async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     supply = get_supply(context.user_data.get("supply_id"))
-    if not supply or supply["status"] != "pending":
+    mode = context.user_data.get("acceptance_mode", "create")
+    expected_status = "accepted" if mode == "edit" else "pending"
+    if not supply or supply["status"] != expected_status:
         text = "Поставка не найдена или уже принята."
+        if mode == "edit":
+            text = "Приемка не найдена или уже удалена."
         if update.callback_query:
             await update.callback_query.edit_message_text(text)
         else:
@@ -375,6 +452,9 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     accepted_by = current_employee_name(update)
 
+    if mode == "edit":
+        await delete_topic_messages(context, supply)
+
     try:
         message_ids, topic_status = await send_acceptance_to_topic(context, supply, accepted_by)
     except Exception as error:
@@ -382,18 +462,30 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_ids = []
         topic_status = f"Приемка сохранена, но не отправлена в тему ⚠️\nОшибка: {error}"
 
-    mark_supply_accepted(
-        supply_id=supply["id"],
-        accepted_by_user_id=update.effective_user.id,
-        accepted_by_name=accepted_by,
-        layout_photo_file_id=context.user_data["layout_photo_file_id"],
-        closing_document_file_id=context.user_data.get("closing_document_file_id", ""),
-        closing_document_kind=context.user_data.get("closing_document_kind", "none"),
-        topic_message_ids=message_ids,
-    )
+    if mode == "edit":
+        update_acceptance(
+            supply_id=supply["id"],
+            accepted_by_user_id=update.effective_user.id,
+            accepted_by_name=accepted_by,
+            layout_photo_file_id=context.user_data["layout_photo_file_id"],
+            closing_document_file_id=context.user_data.get("closing_document_file_id", ""),
+            closing_document_kind=context.user_data.get("closing_document_kind", "none"),
+            topic_message_ids=message_ids,
+        )
+    else:
+        mark_supply_accepted(
+            supply_id=supply["id"],
+            accepted_by_user_id=update.effective_user.id,
+            accepted_by_name=accepted_by,
+            layout_photo_file_id=context.user_data["layout_photo_file_id"],
+            closing_document_file_id=context.user_data.get("closing_document_file_id", ""),
+            closing_document_kind=context.user_data.get("closing_document_kind", "none"),
+            topic_message_ids=message_ids,
+        )
 
     employee = current_employee_or_none(update)
-    text = "Приемка расходника завершена ✅\n\n" + format_supply_line(supply) + f"\n\n{topic_status}"
+    result_title = "Приемка расходника изменена ✅" if mode == "edit" else "Приемка расходника завершена ✅"
+    text = result_title + "\n\n" + format_supply_line(supply) + f"\n\n{topic_status}"
 
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -410,11 +502,322 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def edit_supply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not is_manager(employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    supplies = get_supplies()
+    if not supplies:
+        await query.edit_message_text("Поставок пока нет.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        return ConversationHandler.END
+
+    context.user_data["supply_manage_action"] = "edit"
+    await query.edit_message_text(
+        supplies_list_text("Выберите поставку для изменения:", supplies),
+        reply_markup=supplies_keyboard(supplies, "consmanage"),
+    )
+    return SUPPLY_MANAGE_SELECT
+
+
+async def delete_supply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not is_manager(employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    supplies = get_supplies()
+    if not supplies:
+        await query.edit_message_text("Поставок пока нет.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        return ConversationHandler.END
+
+    context.user_data["supply_manage_action"] = "delete"
+    await query.edit_message_text(
+        supplies_list_text("Выберите поставку для удаления:", supplies),
+        reply_markup=supplies_keyboard(supplies, "consmanage"),
+    )
+    return SUPPLY_MANAGE_SELECT
+
+
+async def supply_manage_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supply_id = query.data.replace("consmanage:", "")
+    supply = get_supply(supply_id)
+    if not supply:
+        await query.edit_message_text("Поставка не найдена.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        return ConversationHandler.END
+
+    context.user_data["supply_id"] = supply["id"]
+
+    if context.user_data.get("supply_manage_action") == "delete":
+        await query.edit_message_text(
+            "Удалить поставку?\n\n" + format_supply_line(supply),
+            reply_markup=confirm_keyboard("conssupplydelete:yes"),
+        )
+        return SUPPLY_DELETE_CONFIRM
+
+    await query.edit_message_text(
+        "Что изменить?\n\n" + format_supply_line(supply),
+        reply_markup=supply_edit_field_keyboard(),
+    )
+    return SUPPLY_EDIT_FIELD
+
+
+async def supply_edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    field = query.data.replace("consfield:", "")
+    context.user_data["supply_edit_field"] = field
+
+    prompts = {
+        "name": "Введите новое название расходника:",
+        "organization": "Введите новое наименование организации:",
+        "amount": "Введите новую сумму к оплате:",
+    }
+    await query.edit_message_text(prompts.get(field, "Введите новое значение:"), reply_markup=consumables_back_keyboard())
+    return SUPPLY_EDIT_VALUE
+
+
+async def supply_edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = update.message.text.strip()
+    field = context.user_data.get("supply_edit_field")
+    if not value:
+        await update.message.reply_text("Значение не должно быть пустым. Введите еще раз:")
+        return SUPPLY_EDIT_VALUE
+
+    kwargs = {}
+    if field == "name":
+        kwargs["consumable_name"] = value
+    elif field == "organization":
+        kwargs["organization"] = value
+    elif field == "amount":
+        amount = parse_positive_amount(value)
+        if amount is None:
+            await update.message.reply_text("Введите сумму числом больше 0:")
+            return SUPPLY_EDIT_VALUE
+        kwargs["amount"] = amount
+    else:
+        await update.message.reply_text("Поле не найдено.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    supply = update_supply(context.user_data["supply_id"], **kwargs)
+
+    topic_status = ""
+    if supply["status"] == "accepted" and supply.get("layout_photo_file_id"):
+        await delete_topic_messages(context, supply)
+        context.user_data["layout_photo_file_id"] = supply["layout_photo_file_id"]
+        context.user_data["closing_document_file_id"] = supply.get("closing_document_file_id", "")
+        context.user_data["closing_document_kind"] = supply.get("closing_document_kind", "none")
+        try:
+            message_ids, topic_status = await send_acceptance_to_topic(context, supply, supply.get("accepted_by_name") or "-")
+            update_acceptance(
+                supply_id=supply["id"],
+                accepted_by_user_id=supply.get("accepted_by_user_id", ""),
+                accepted_by_name=supply.get("accepted_by_name", ""),
+                layout_photo_file_id=supply["layout_photo_file_id"],
+                closing_document_file_id=supply.get("closing_document_file_id", ""),
+                closing_document_kind=supply.get("closing_document_kind", "none"),
+                topic_message_ids=message_ids,
+            )
+            topic_status = f"\n\n{topic_status}"
+        except Exception as error:
+            logging.exception("Не удалось обновить сообщение приемки после изменения поставки")
+            topic_status = f"\n\nПоставка изменена, но сообщение приемки в теме не обновлено ⚠️\nОшибка: {error}"
+
+    await update.message.reply_text(
+        "Поставка изменена ✅\n\n" + format_supply_line(supply) + topic_status,
+        reply_markup=build_consumables_menu_keyboard(manager=True),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def supply_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supply = get_supply(context.user_data.get("supply_id"))
+    if not supply:
+        await query.edit_message_text("Поставка не найдена.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await delete_topic_messages(context, supply)
+    deleted = delete_supply(supply["id"])
+    await query.edit_message_text(
+        "Поставка удалена ✅\n\n" + format_supply_line(deleted),
+        reply_markup=build_consumables_menu_keyboard(manager=True),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def edit_acceptance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    supplies = get_accepted_supplies()
+    if not supplies:
+        await query.edit_message_text(
+            "Принятых поставок пока нет.",
+            reply_markup=build_consumables_menu_keyboard(manager=is_manager(current_employee_or_none(update))),
+        )
+        return ConversationHandler.END
+
+    context.user_data["acceptance_manage_action"] = "edit"
+    await query.edit_message_text(
+        supplies_list_text("Выберите приемку для изменения:", supplies),
+        reply_markup=supplies_keyboard(supplies, "consacc"),
+    )
+    return ACCEPTANCE_MANAGE_SELECT
+
+
+async def delete_acceptance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    supplies = get_accepted_supplies()
+    if not supplies:
+        await query.edit_message_text(
+            "Принятых поставок пока нет.",
+            reply_markup=build_consumables_menu_keyboard(manager=is_manager(current_employee_or_none(update))),
+        )
+        return ConversationHandler.END
+
+    context.user_data["acceptance_manage_action"] = "delete"
+    await query.edit_message_text(
+        supplies_list_text("Выберите приемку для удаления:", supplies),
+        reply_markup=supplies_keyboard(supplies, "consacc"),
+    )
+    return ACCEPTANCE_MANAGE_SELECT
+
+
+async def acceptance_manage_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supply = get_supply(query.data.replace("consacc:", ""))
+    if not supply or supply["status"] != "accepted":
+        await query.edit_message_text("Приемка не найдена.", reply_markup=build_consumables_menu_keyboard())
+        return ConversationHandler.END
+
+    context.user_data["supply_id"] = supply["id"]
+
+    if context.user_data.get("acceptance_manage_action") == "delete":
+        await query.edit_message_text(
+            "Удалить приемку и вернуть поставку в ожидание приемки?\n\n" + format_supply_line(supply),
+            reply_markup=confirm_keyboard("consaccdelete:yes"),
+        )
+        return ACCEPTANCE_DELETE_CONFIRM
+
+    context.user_data["acceptance_mode"] = "edit"
+    await query.edit_message_text(
+        "Отправьте новое фото разложенных расходников:",
+        reply_markup=consumables_back_keyboard(),
+    )
+    return ACCEPT_LAYOUT_PHOTO
+
+
+async def acceptance_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supply = get_supply(context.user_data.get("supply_id"))
+    if not supply or supply["status"] != "accepted":
+        await query.edit_message_text("Приемка не найдена.", reply_markup=build_consumables_menu_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await delete_topic_messages(context, supply)
+    cleared = clear_acceptance(supply["id"])
+    await query.edit_message_text(
+        "Приемка удалена ✅\nПоставка снова доступна для приемки.\n\n" + format_supply_line(cleared),
+        reply_markup=build_consumables_menu_keyboard(manager=is_manager(current_employee_or_none(update))),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def delete_supplier_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not is_manager(employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    suppliers = get_active_suppliers()
+    if not suppliers:
+        await query.edit_message_text("Активных поставщиков пока нет.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        return ConversationHandler.END
+
+    context.user_data["suppliers"] = suppliers
+    await query.edit_message_text(
+        "Выберите поставщика, которого нужно убрать из выбора:",
+        reply_markup=suppliers_keyboard(suppliers),
+    )
+    return SUPPLIER_DELETE_SELECT
+
+
+async def supplier_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        index = int(query.data.replace("conssupplier:", ""))
+        supplier = context.user_data.get("suppliers", [])[index]
+    except (ValueError, IndexError):
+        await query.edit_message_text("Поставщик не найден.", reply_markup=build_consumables_menu_keyboard(manager=True))
+        return ConversationHandler.END
+
+    context.user_data["supplier_name"] = supplier
+    await query.edit_message_text(
+        f"Удалить поставщика из выбора?\n\n{supplier}\n\nИстория поставок сохранится.",
+        reply_markup=confirm_keyboard("conssupplierdelete:yes"),
+    )
+    return SUPPLIER_DELETE_CONFIRM
+
+
+async def supplier_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supplier = deactivate_supplier(context.user_data.get("supplier_name"))
+    await query.edit_message_text(
+        f"Поставщик удален из выбора ✅\n\n{supplier}",
+        reply_markup=build_consumables_menu_keyboard(manager=True),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 def get_consumables_conversation_handler():
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_supply_start, pattern=r"^cons:add_supply$"),
             CallbackQueryHandler(accept_supply_start, pattern=r"^cons:accept_supply$"),
+            CallbackQueryHandler(edit_supply_start, pattern=r"^cons:edit_supply$"),
+            CallbackQueryHandler(delete_supply_start, pattern=r"^cons:delete_supply$"),
+            CallbackQueryHandler(edit_acceptance_start, pattern=r"^cons:edit_acceptance$"),
+            CallbackQueryHandler(delete_acceptance_start, pattern=r"^cons:delete_acceptance$"),
+            CallbackQueryHandler(delete_supplier_start, pattern=r"^cons:delete_supplier$"),
         ],
         states={
             SUPPLY_NAME: [
@@ -446,6 +849,38 @@ def get_consumables_conversation_handler():
                 MessageHandler((filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, acceptance_document_received),
                 MessageHandler(filters.ALL & ~filters.COMMAND, acceptance_document_wrong_message),
                 CallbackQueryHandler(acceptance_document_missing, pattern=r"^consdoc:none$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLY_MANAGE_SELECT: [
+                CallbackQueryHandler(supply_manage_selected, pattern=r"^consmanage:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLY_EDIT_FIELD: [
+                CallbackQueryHandler(supply_edit_field_selected, pattern=r"^consfield:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLY_EDIT_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, supply_edit_value_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLY_DELETE_CONFIRM: [
+                CallbackQueryHandler(supply_delete_confirmed, pattern=r"^conssupplydelete:yes$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            ACCEPTANCE_MANAGE_SELECT: [
+                CallbackQueryHandler(acceptance_manage_selected, pattern=r"^consacc:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            ACCEPTANCE_DELETE_CONFIRM: [
+                CallbackQueryHandler(acceptance_delete_confirmed, pattern=r"^consaccdelete:yes$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_DELETE_SELECT: [
+                CallbackQueryHandler(supplier_delete_selected, pattern=r"^conssupplier:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_DELETE_CONFIRM: [
+                CallbackQueryHandler(supplier_delete_confirmed, pattern=r"^conssupplierdelete:yes$"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
         },

@@ -52,11 +52,20 @@ def build_consumables_menu_keyboard(manager=False):
     keyboard = []
 
     if manager:
-        keyboard.append([InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")])
+        keyboard.extend(
+            [
+                [InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")],
+                [InlineKeyboardButton("✏️ Изменить поставку", callback_data="cons:edit_supply")],
+                [InlineKeyboardButton("🗑 Удалить поставку", callback_data="cons:delete_supply")],
+                [InlineKeyboardButton("🚫 Удалить поставщика", callback_data="cons:delete_supplier")],
+            ]
+        )
 
     keyboard.extend(
         [
             [InlineKeyboardButton("📥 Приемка расходника", callback_data="cons:accept_supply")],
+            [InlineKeyboardButton("✏️ Изменить приемку", callback_data="cons:edit_acceptance")],
+            [InlineKeyboardButton("🗑 Удалить приемку", callback_data="cons:delete_acceptance")],
             [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
         ]
     )
