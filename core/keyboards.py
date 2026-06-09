@@ -22,6 +22,7 @@ def build_main_menu_keyboard():
         [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
         [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
         [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
+        [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -44,6 +45,21 @@ def build_returns_menu_keyboard():
         [InlineKeyboardButton("🏬 Шоу-рум", callback_data="menu:return:showroom")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_consumables_menu_keyboard(manager=False):
+    keyboard = []
+
+    if manager:
+        keyboard.append([InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")])
+
+    keyboard.extend(
+        [
+            [InlineKeyboardButton("📥 Приемка расходника", callback_data="cons:accept_supply")],
+            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
+        ]
+    )
     return InlineKeyboardMarkup(keyboard)
 
 

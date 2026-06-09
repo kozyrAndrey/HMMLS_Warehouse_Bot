@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -80,6 +80,7 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     PENALTY_TYPE,
     PENALTY_COMMENT,
     PENALTY_AMOUNT,
+    PENALTY_PHOTOS,
     PENALTY_CONFIRM,
     PERIOD_NAME,
     PERIOD_START,
@@ -87,7 +88,7 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     PERIOD_EDIT_FIELD,
     PERIOD_EDIT_VALUE,
     CLEANUP_CONFIRM,
-) = range(300, 331)
+) = range(300, 332)
 
 
 # ============================================================
@@ -257,6 +258,15 @@ def penalty_confirm_keyboard():
     )
 
 
+def penalty_photos_keyboard(has_photos=False):
+    rows = []
+    if has_photos:
+        rows.append([InlineKeyboardButton("✅ Готово", callback_data="penaltyphotos:done")])
+    rows.append([InlineKeyboardButton("Без фото", callback_data="penaltyphotos:skip")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ============================================================
 # ОБЩИЕ ХЕЛПЕРЫ
 # ============================================================
@@ -412,7 +422,8 @@ async def send_daily_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_
     }
 
 
-def format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
+def format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by, photo_count=0):
+    evidence_text = f"{photo_count} фото" if photo_count else "нет"
     return "\n".join(
         [
             "⚠️ Новый штраф",
@@ -423,13 +434,15 @@ def format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_
             f"Тип штрафа: {penalty_type}",
             f"Комментарий: {comment}",
             f"Сумма: {money(amount)}",
+            f"Фото-доказательства: {evidence_text}",
             "",
             f"Назначил: {created_by}",
         ]
     )
 
 
-def format_penalty_preview(employee, penalty_date, penalty_category, penalty_type, comment, amount):
+def format_penalty_preview(employee, penalty_date, penalty_category, penalty_type, comment, amount, photo_count=0):
+    evidence_text = f"{photo_count} фото" if photo_count else "нет"
     return "\n".join(
         [
             "Проверьте штраф:",
@@ -440,22 +453,78 @@ def format_penalty_preview(employee, penalty_date, penalty_category, penalty_typ
             f"Тип штрафа: {penalty_type}",
             f"Комментарий: {comment}",
             f"Сумма: {money(amount)}",
+            f"Фото-доказательства: {evidence_text}",
         ]
     )
 
 
-async def send_penalty_to_topic(context: ContextTypes.DEFAULT_TYPE, employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
+async def send_penalty_to_topic(
+    context: ContextTypes.DEFAULT_TYPE,
+    employee,
+    penalty_date,
+    penalty_category,
+    penalty_type,
+    comment,
+    amount,
+    created_by,
+    photo_file_ids=None,
+):
     if not GROUP_CHAT_ID:
         return "GROUP_CHAT_ID не настроен, сообщение в тему «Штрафы» не отправлено."
 
     if not PAYROLL_PENALTIES_TOPIC_ID:
         return "PAYROLL_PENALTIES_TOPIC_ID не настроен, сообщение в тему «Штрафы» не отправлено."
 
-    await context.bot.send_message(
-        chat_id=int(GROUP_CHAT_ID),
-        message_thread_id=int(PAYROLL_PENALTIES_TOPIC_ID),
-        text=format_penalty_topic_text(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by),
+    photo_file_ids = photo_file_ids or []
+    text = format_penalty_topic_text(
+        employee,
+        penalty_date,
+        penalty_category,
+        penalty_type,
+        comment,
+        amount,
+        created_by,
+        photo_count=len(photo_file_ids),
     )
+    common_kwargs = {
+        "chat_id": int(GROUP_CHAT_ID),
+        "message_thread_id": int(PAYROLL_PENALTIES_TOPIC_ID),
+    }
+
+    if not photo_file_ids:
+        await context.bot.send_message(
+            **common_kwargs,
+            text=text,
+        )
+        return "Штраф отправлен в тему «Штрафы» ✅"
+
+    if len(text) > 1000:
+        text = text[:950] + "\n\n...текст обрезан."
+
+    if len(photo_file_ids) == 1:
+        await context.bot.send_photo(
+            **common_kwargs,
+            photo=photo_file_ids[0],
+            caption=text,
+        )
+        return "Штраф отправлен в тему «Штрафы» ✅"
+
+    first_chunk = True
+    for chunk_start in range(0, len(photo_file_ids), 10):
+        chunk = photo_file_ids[chunk_start:chunk_start + 10]
+        media = []
+
+        for index, photo_file_id in enumerate(chunk):
+            if first_chunk and index == 0:
+                media.append(InputMediaPhoto(media=photo_file_id, caption=text))
+            else:
+                media.append(InputMediaPhoto(media=photo_file_id))
+
+        await context.bot.send_media_group(
+            **common_kwargs,
+            media=media,
+        )
+        first_chunk = False
 
     return "Штраф отправлен в тему «Штрафы» ✅"
 
@@ -1336,19 +1405,12 @@ async def penalty_comment_received(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("Введите сумму штрафа:", reply_markup=payroll_back_keyboard())
         return PENALTY_AMOUNT
 
-    employee = get_employee_by_id(context.user_data.get("employee_id"))
     await update.message.reply_text(
-        format_penalty_preview(
-            employee=employee,
-            penalty_date=context.user_data["penalty_date"],
-            penalty_category=context.user_data["penalty_category"],
-            penalty_type=context.user_data["penalty_type_name"],
-            comment=context.user_data["penalty_comment"],
-            amount=context.user_data["penalty_amount"],
-        ),
-        reply_markup=penalty_confirm_keyboard(),
+        "Если есть фото-доказательства ошибки, отправьте их сюда.\n\n"
+        "Можно отправить несколько фото по одному или нажать «Без фото».",
+        reply_markup=penalty_photos_keyboard(has_photos=False),
     )
-    return PENALTY_CONFIRM
+    return PENALTY_PHOTOS
 
 
 async def penalty_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1358,17 +1420,57 @@ async def penalty_amount_received(update: Update, context: ContextTypes.DEFAULT_
         return PENALTY_AMOUNT
 
     context.user_data["penalty_amount"] = amount
-    employee = get_employee_by_id(context.user_data.get("employee_id"))
 
     await update.message.reply_text(
-        format_penalty_preview(
-            employee=employee,
-            penalty_date=context.user_data["penalty_date"],
-            penalty_category=context.user_data["penalty_category"],
-            penalty_type=context.user_data["penalty_type_name"],
-            comment=context.user_data["penalty_comment"],
-            amount=context.user_data["penalty_amount"],
-        ),
+        "Если есть фото-доказательства ошибки, отправьте их сюда.\n\n"
+        "Можно отправить несколько фото по одному или нажать «Без фото».",
+        reply_markup=penalty_photos_keyboard(has_photos=False),
+    )
+    return PENALTY_PHOTOS
+
+
+def build_penalty_preview_from_context(context):
+    employee = get_employee_by_id(context.user_data.get("employee_id"))
+    photo_file_ids = context.user_data.get("penalty_photo_file_ids", [])
+    return format_penalty_preview(
+        employee=employee,
+        penalty_date=context.user_data["penalty_date"],
+        penalty_category=context.user_data["penalty_category"],
+        penalty_type=context.user_data["penalty_type_name"],
+        comment=context.user_data["penalty_comment"],
+        amount=context.user_data["penalty_amount"],
+        photo_count=len(photo_file_ids),
+    )
+
+
+async def penalty_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text(
+            "Отправьте фото-доказательство или нажмите «Без фото».",
+            reply_markup=penalty_photos_keyboard(has_photos=bool(context.user_data.get("penalty_photo_file_ids"))),
+        )
+        return PENALTY_PHOTOS
+
+    photo_file_ids = context.user_data.setdefault("penalty_photo_file_ids", [])
+    photo_file_ids.append(update.message.photo[-1].file_id)
+
+    await update.message.reply_text(
+        f"Фото добавлено ✅ Всего фото: {len(photo_file_ids)}\n\n"
+        "Отправьте еще фото или нажмите «Готово».",
+        reply_markup=penalty_photos_keyboard(has_photos=True),
+    )
+    return PENALTY_PHOTOS
+
+
+async def penalty_photos_finished(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "penaltyphotos:skip":
+        context.user_data["penalty_photo_file_ids"] = []
+
+    await query.edit_message_text(
+        build_penalty_preview_from_context(context),
         reply_markup=penalty_confirm_keyboard(),
     )
     return PENALTY_CONFIRM
@@ -1387,6 +1489,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
     penalty_type = context.user_data["penalty_type_name"]
     penalty_comment = context.user_data["penalty_comment"]
     amount = context.user_data["penalty_amount"]
+    photo_file_ids = context.user_data.get("penalty_photo_file_ids", [])
 
     append_penalty(
         employee,
@@ -1408,6 +1511,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
             comment=penalty_comment,
             amount=amount,
             created_by=created_by,
+            photo_file_ids=photo_file_ids,
         )
     except Exception as error:
         logging.exception("Не удалось отправить штраф в тему Telegram")
@@ -1432,6 +1536,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
         f"Тип штрафа: {penalty_type}\n"
         f"Комментарий: {penalty_comment}\n"
         f"Сумма: {money(amount)}\n\n"
+        f"Фото-доказательства: {len(photo_file_ids) if photo_file_ids else 'нет'}\n\n"
         f"{topic_status}{extra_status}",
         reply_markup=payroll_main_keyboard(manager=True),
     )
@@ -1826,6 +1931,11 @@ def get_payroll_conversation_handler():
             ],
             PENALTY_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, penalty_amount_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            PENALTY_PHOTOS: [
+                MessageHandler(filters.PHOTO, penalty_photo_received),
+                CallbackQueryHandler(penalty_photos_finished, pattern=r"^penaltyphotos:(done|skip)$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             PENALTY_CONFIRM: [

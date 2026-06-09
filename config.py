@@ -38,6 +38,13 @@ PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")
 
 
 # ============================================================
+# НАСТРОЙКИ МОДУЛЯ РАСХОДНИКОВ
+# ============================================================
+
+CONSUMABLES_TOPIC_ID = os.getenv("CONSUMABLES_TOPIC_ID", "103")
+
+
+# ============================================================
 # НАСТРОЙКИ ОПЕРАЦИОННОЙ ТАБЛИЦЫ
 # ============================================================
 # Здесь хранятся расписание, дежурства и будущий модуль задач.
@@ -65,4 +72,3 @@ SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TO
 
 RETURN_CHZ_CHAT_ID = os.getenv("RETURN_CHZ_CHAT_ID", "-1002637764298")
 RETURN_CHZ_TOPIC_ID = os.getenv("RETURN_CHZ_TOPIC_ID", "740")
-

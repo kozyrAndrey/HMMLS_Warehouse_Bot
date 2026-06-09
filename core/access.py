@@ -8,10 +8,10 @@ import logging
 # если Google Sheets временно недоступен.
 
 ROLE_PERMISSIONS = {
-    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule"},
-    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule"},
-    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule"},
-    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule"},
+    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
+    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
+    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
+    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables"},
     "viewer": {"last_records"},
 }
 
