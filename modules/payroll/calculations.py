@@ -1,4 +1,8 @@
-from modules.payroll.config import SALARY_FIXED_PARTS
+from modules.payroll.config import (
+    PENALTY_BONUS_EMPLOYEE_ID,
+    PENALTY_BONUS_RATE,
+    SALARY_FIXED_PARTS,
+)
 from modules.payroll.google_sheets import (
     get_active_period,
     get_employees,
@@ -32,6 +36,7 @@ def calculate_payroll_for_period(start_date, end_date):
             "fixed_half": fixed_half,
             "expenses": 0.0,
             "penalties": 0.0,
+            "penalty_bonus": 0.0,
             "salary_without_expenses": 0.0,
             "salary_with_expenses": 0.0,
             "reports_count": 0,
@@ -55,12 +60,21 @@ def calculate_payroll_for_period(start_date, end_date):
         if employee_id in totals:
             totals[employee_id]["penalties"] += penalty["amount"]
 
+    penalty_bonus_base = sum(
+        penalty["amount"]
+        for penalty in penalties
+        if penalty["employee_id"] != PENALTY_BONUS_EMPLOYEE_ID
+    )
+    if PENALTY_BONUS_EMPLOYEE_ID in totals:
+        totals[PENALTY_BONUS_EMPLOYEE_ID]["penalty_bonus"] = penalty_bonus_base * PENALTY_BONUS_RATE
+
     for item in totals.values():
         item["hourly_pay"] = item["hours"] * item["hourly_rate"]
         item["warehouse_gross"] = item["hourly_pay"] + item["kpi_sum"]
         item["salary_without_expenses"] = (
             item["warehouse_gross"]
             + item["fixed_half"]
+            + item["penalty_bonus"]
             - item["penalties"]
         )
         item["salary_with_expenses"] = item["salary_without_expenses"] + item["expenses"]
@@ -107,20 +121,28 @@ def short_date(value):
 
 def format_employee_salary_block(item):
     employee = item["employee"]
-    return "\n".join(
+    lines = [
+        f"{employee['full_name']}",
+        f"Часы: {money(item['hours'])}",
+        f"Ставка: {money(item['hourly_rate'])}",
+        f"Почасовая ЗП: {money(item['hourly_pay'])}",
+        f"KPI: {money(item['kpi_sum'])}",
+        f"Оклад / 2: {money(item['fixed_half'])}",
+        f"Штрафы: {money(item['penalties'])}",
+    ]
+
+    if item["penalty_bonus"]:
+        lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
+
+    lines.extend(
         [
-            f"{employee['full_name']}",
-            f"Часы: {money(item['hours'])}",
-            f"Ставка: {money(item['hourly_rate'])}",
-            f"Почасовая ЗП: {money(item['hourly_pay'])}",
-            f"KPI: {money(item['kpi_sum'])}",
-            f"Оклад / 2: {money(item['fixed_half'])}",
-            f"Штрафы: {money(item['penalties'])}",
             f"ЗП без расходов: {money(item['salary_without_expenses'])}",
             f"Расходы: {money(item['expenses'])}",
             f"ЗП с расходами: {money(item['salary_with_expenses'])}",
         ]
     )
+
+    return "\n".join(lines)
 
 
 def build_personal_salary_text(employee, period=None):
@@ -134,17 +156,25 @@ def build_personal_salary_text(employee, period=None):
     if not item:
         return "Данные по сотруднику не найдены."
 
-    return "\n".join(
+    lines = [
+        f"💰 ЗП за период: {period['start_date']} — {period['end_date']}",
+        "",
+        employee["full_name"],
+        f"Штрафы: {money(item['penalties'])}",
+    ]
+
+    if item["penalty_bonus"]:
+        lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
+
+    lines.extend(
         [
-            f"💰 ЗП за период: {period['start_date']} — {period['end_date']}",
-            "",
-            employee["full_name"],
-            f"Штрафы: {money(item['penalties'])}",
             f"ЗП без расходов: {money(item['salary_without_expenses'])}",
             f"Расходы: {money(item['expenses'])}",
             f"ЗП с расходами: {money(item['salary_with_expenses'])}",
         ]
     )
+
+    return "\n".join(lines)
 
 
 def format_fixed_parts(parts):
@@ -170,6 +200,10 @@ def format_payroll_statement_line(item):
     parts[0] += ")"
 
     parts.extend(format_fixed_parts(item.get("fixed_parts", [])))
+
+    penalty_bonus = item.get("penalty_bonus", 0)
+    if penalty_bonus:
+        parts.append(f"{money_pretty(penalty_bonus)} (40% штрафов)")
 
     if expenses:
         parts.append(f"{money_pretty(expenses)} (расходы)")

@@ -56,7 +56,7 @@ PAYROLL_EMPLOYEES = [
         "telegram_user_id": "597723397",
         "telegram_username": "whereareyo0o",
         "role": "warehouse_employee",
-        "hourly_rate": 312.5,
+        "hourly_rate": 437.5,
         "fixed_salary": 0,
         "include_in_common_fund": True,
         "is_active": True,
@@ -156,6 +156,9 @@ SALARY_FIXED_PARTS = {
         {"label": "оклад чеки", "amount": 5000},
     ],
 }
+
+PENALTY_BONUS_EMPLOYEE_ID = "emp001"
+PENALTY_BONUS_RATE = 0.4
 
 
 # ============================================================
