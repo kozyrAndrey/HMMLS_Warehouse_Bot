@@ -14,7 +14,6 @@ from core.keyboards import (
     build_incoming_date_keyboard,
     build_models_keyboard,
     build_product_colors_keyboard,
-    build_receiving_menu_keyboard,
     build_sizes_keyboard,
 )
 from modules.receiving.products import CATEGORIES, SIZES
@@ -287,12 +286,15 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Брак: {defective}\n"
         f"Доработка: {rework}\n\n"
         "PostgreSQL: запись добавлена ✅\n\n"
-        "Выберите следующее действие:",
-        reply_markup=build_receiving_menu_keyboard(),
+        "Выберите размер для следующей записи:",
+        reply_markup=build_sizes_keyboard(),
     )
 
-    context.user_data.clear()
-    return ConversationHandler.END
+    context.user_data.pop("size", None)
+    context.user_data.pop("packed", None)
+    context.user_data.pop("defective", None)
+    context.user_data.pop("rework", None)
+    return SELECT_SIZE
 
 
 async def back_to_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
