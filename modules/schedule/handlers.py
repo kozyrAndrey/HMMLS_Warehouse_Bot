@@ -33,7 +33,6 @@ from modules.schedule.config import (
 from modules.schedule.excel import create_schedule_xlsx
 from modules.schedule.google_sheets import (
     append_schedule_export,
-    build_personal_schedule_text,
     get_active_schedule_reminder,
     get_latest_schedule_export,
     get_missing_schedule_employees,
@@ -80,11 +79,10 @@ def schedule_menu_keyboard(employee):
     if can_employee_submit_schedule(employee):
         rows.append([InlineKeyboardButton("📅 Составить расписание", callback_data="sch:create")])
 
-    rows.append([InlineKeyboardButton("👀 Посмотреть свое расписание", callback_data="sch:view_mine")])
-
     if manager:
         rows.extend(
             [
+                [InlineKeyboardButton("👀 Посмотреть расписание", callback_data="sch:view_all")],
                 [InlineKeyboardButton("📤 Выгрузить расписание в тему", callback_data="sch:export_topic")],
                 [InlineKeyboardButton("🛠 Изменить расписание", callback_data="sch:edit")],
                 [InlineKeyboardButton("🧹 Назначить дежурных", callback_data="sch:duties")],
@@ -166,6 +164,7 @@ def edit_next_keyboard():
         [
             [InlineKeyboardButton("➕ Внести еще изменение", callback_data="schedit:again")],
             [InlineKeyboardButton("✅ Завершить и обновить выгрузку", callback_data="schedit:export_final")],
+            [InlineKeyboardButton("📅 В модуль расписания", callback_data="sch:menu")],
         ]
     )
 
@@ -531,15 +530,6 @@ async def schedule_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 
-async def schedule_view_mine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    employee = current_employee(update)
-    week_start = next_week_start()
-    text = build_personal_schedule_text(employee["employee_id"], week_start) if employee else "Сотрудник не найден."
-    await query.edit_message_text(text, reply_markup=schedule_menu_keyboard(employee) if employee else build_main_menu_keyboard())
-
-
 async def schedule_view_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -547,12 +537,14 @@ async def schedule_view_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_schedule_manager(employee):
         await query.edit_message_text("Недостаточно прав.", reply_markup=schedule_menu_keyboard(employee))
-        return
+        return ConversationHandler.END
 
-    week_start = next_week_start()
-    rebuild_current_schedule_sheet(week_start)
-    await export_schedule_excel_to_user(context, query.message.chat_id, week_start)
-    await query.edit_message_text("Файл расписания отправлен ✅", reply_markup=schedule_menu_keyboard(employee))
+    context.user_data["schedule_manager_action"] = "view"
+    await query.edit_message_text(
+        "За какую неделю посмотреть расписание?",
+        reply_markup=manager_week_keyboard("view"),
+    )
+    return SCHEDULE_MANAGER_WEEK
 
 
 async def schedule_export_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,6 +577,16 @@ async def schedule_manager_week_selected(update: Update, context: ContextTypes.D
     week_start = current_week_start() if selected_week == "current" else next_week_start()
     context.user_data["schedule_week_start"] = date_to_str(week_start)
     context.user_data["schedule_manager_action"] = action
+
+    if action == "view":
+        rebuild_current_schedule_sheet(week_start)
+        await export_schedule_excel_to_user(context, query.from_user.id, week_start)
+        context.user_data.clear()
+        await query.edit_message_text(
+            "Файл расписания отправлен в личный чат ✅",
+            reply_markup=schedule_menu_keyboard(manager_employee),
+        )
+        return ConversationHandler.END
 
     if action == "export":
         rebuild_current_schedule_sheet(week_start)
@@ -1082,6 +1084,7 @@ def get_schedule_conversation_handler():
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(schedule_create_start, pattern=r"^sch:create$"),
+            CallbackQueryHandler(schedule_view_all, pattern=r"^sch:view_all$"),
             CallbackQueryHandler(schedule_export_topic, pattern=r"^sch:export_topic$"),
             CallbackQueryHandler(schedule_edit_start, pattern=r"^sch:edit$"),
             CallbackQueryHandler(schedule_duties_start, pattern=r"^sch:duties$"),
@@ -1124,6 +1127,7 @@ def get_schedule_conversation_handler():
                 CallbackQueryHandler(schedule_edit_again, pattern=r"^schedit:again$"),
                 CallbackQueryHandler(schedule_edit_export_final, pattern=r"^schedit:export_final$"),
                 CallbackQueryHandler(schedule_edit_done, pattern=r"^schedit:done$"),
+                CallbackQueryHandler(schedule_menu, pattern=r"^sch:menu$"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
             SCHEDULE_DUTY_DAY: [
@@ -1145,6 +1149,6 @@ def get_schedule_conversation_handler():
 def get_schedule_handlers():
     return [
         CallbackQueryHandler(schedule_menu, pattern=r"^section:schedule$"),
-        CallbackQueryHandler(schedule_view_mine, pattern=r"^sch:view_mine$"),
+        CallbackQueryHandler(schedule_menu, pattern=r"^sch:menu$"),
         get_schedule_conversation_handler(),
     ]
