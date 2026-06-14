@@ -31,6 +31,7 @@ from modules.payroll.google_sheets import (
     append_penalty,
     cleanup_old_operational_data,
     create_active_period,
+    delete_expense,
     find_employee_for_telegram_user,
     find_report_row,
     get_active_period,
@@ -39,6 +40,7 @@ from modules.payroll.google_sheets import (
     get_kpi_items,
     get_periods,
     is_manager,
+    list_expenses_in_period,
     kpi_from_json,
     kpi_to_json,
     calculate_kpi_sum,
@@ -77,6 +79,7 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     EXPENSE_DATE,
     EXPENSE_COMMENT,
     EXPENSE_AMOUNT,
+    EXPENSE_DELETE_SELECT,
     PENALTY_EMPLOYEE,
     PENALTY_DATE,
     PENALTY_TYPE_GROUP,
@@ -92,7 +95,7 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     PERIOD_EDIT_FIELD,
     PERIOD_EDIT_VALUE,
     CLEANUP_CONFIRM,
-) = range(300, 333)
+) = range(300, 334)
 
 
 # ============================================================
@@ -105,7 +108,7 @@ def payroll_main_keyboard(manager=False):
         [InlineKeyboardButton("📝 Создать ежедневный отчет", callback_data="pay:create_report")],
         [InlineKeyboardButton("✏️ Изменить отчет", callback_data="pay:edit_report")],
         [InlineKeyboardButton("💰 Проверить свою ЗП", callback_data="pay:check_salary")],
-        [InlineKeyboardButton("💸 Добавить расход", callback_data="pay:add_expense")],
+        [InlineKeyboardButton("💸 Расходы", callback_data="pay:expenses")],
     ]
 
     if manager:
@@ -125,6 +128,19 @@ def payroll_main_keyboard(manager=False):
 def payroll_back_keyboard():
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")]]
+    )
+
+
+def expenses_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Добавить расход", callback_data="expense:add")],
+            [
+                InlineKeyboardButton("Удалить расход", callback_data="expense:delete"),
+                InlineKeyboardButton("Посмотреть расходы", callback_data="expense:view"),
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
+        ]
     )
 
 
@@ -1230,6 +1246,61 @@ async def salary_employee_selected(update: Update, context: ContextTypes.DEFAULT
 # ============================================================
 
 
+def format_expense_line(expense, index=None):
+    prefix = f"{index}. " if index is not None else ""
+    comment = str(expense.get("comment", "") or "—")
+    if len(comment) > 80:
+        comment = comment[:77] + "..."
+    return (
+        f"{prefix}{expense['date']} — {expense['full_name']} — {money(expense['amount'])}\n"
+        f"Комментарий: {comment}"
+    )
+
+
+def expense_delete_keyboard(expenses):
+    rows = []
+    for index, expense in enumerate(expenses, start=1):
+        text = f"{index}. {expense['date']} — {expense['full_name']} — {money(expense['amount'])}"
+        rows.append([InlineKeyboardButton(text[:60], callback_data=f"expdel:{expense['expense_id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="pay:expenses")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def expense_delete_confirm_keyboard(expense_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Да, удалить", callback_data=f"expdelconfirm:{expense_id}")],
+            [InlineKeyboardButton("⬅️ Назад к списку", callback_data="expense:delete")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+        ]
+    )
+
+
+def expenses_for_current_period(employee):
+    period = get_active_period()
+    if not period:
+        return None, []
+
+    employee_id = None if is_manager(employee) else employee["employee_id"]
+    expenses = list_expenses_in_period(period["start_date"], period["end_date"], employee_id=employee_id)
+    return period, expenses
+
+
+async def expenses_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not employee:
+        await deny_unknown_user(update)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Расходы", reply_markup=expenses_keyboard())
+    return ConversationHandler.END
+
+
 async def expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1245,7 +1316,7 @@ async def expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EXPENSE_EMPLOYEE
 
     context.user_data["employee_id"] = employee["employee_id"]
-    await query.edit_message_text("Выберите дату расхода:", reply_markup=date_keyboard("exdate"))
+    await query.edit_message_text("Введите дату расхода в формате ДД.ММ.ГГГГ:", reply_markup=payroll_back_keyboard())
     return EXPENSE_DATE
 
 
@@ -1258,15 +1329,17 @@ async def expense_employee_selected(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("Сотрудник не найден.", reply_markup=payroll_back_keyboard())
         return EXPENSE_EMPLOYEE
     context.user_data["employee_id"] = employee_id
-    await query.edit_message_text("Выберите дату расхода:", reply_markup=date_keyboard("exdate"))
+    await query.edit_message_text("Введите дату расхода в формате ДД.ММ.ГГГГ:", reply_markup=payroll_back_keyboard())
     return EXPENSE_DATE
 
 
-async def expense_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["expense_date"] = query.data.replace("exdate:", "")
-    await query.edit_message_text("Введите комментарий к расходу:", reply_markup=payroll_back_keyboard())
+async def expense_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    expense_date = update.message.text.strip()
+    if not validate_date(expense_date):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return EXPENSE_DATE
+    context.user_data["expense_date"] = expense_date
+    await update.message.reply_text("Введите комментарий к расходу:", reply_markup=payroll_back_keyboard())
     return EXPENSE_COMMENT
 
 
@@ -1298,6 +1371,121 @@ async def expense_amount_received(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(
         f"Расход добавлен ✅\n\nСотрудник: {employee['full_name']}\nДата: {context.user_data['expense_date']}\nСумма: {money(amount)}",
         reply_markup=payroll_main_keyboard(manager=is_manager(current_employee)),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def expense_view_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not employee:
+        await deny_unknown_user(update)
+        return ConversationHandler.END
+
+    period, expenses = expenses_for_current_period(employee)
+    if not period:
+        await query.edit_message_text(
+            "Активный расчетный период не настроен.",
+            reply_markup=expenses_keyboard(),
+        )
+        return ConversationHandler.END
+
+    if not expenses:
+        await query.edit_message_text(
+            f"Расходов за период {period['start_date']} — {period['end_date']} нет.",
+            reply_markup=expenses_keyboard(),
+        )
+        return ConversationHandler.END
+
+    total = sum(expense["amount"] for expense in expenses)
+    lines = [
+        f"Расходы за период {period['start_date']} — {period['end_date']}",
+        f"Итого: {money(total)}",
+        "",
+    ]
+    for index, expense in enumerate(expenses, start=1):
+        lines.append(format_expense_line(expense, index=index))
+        lines.append("")
+
+    text = "\n".join(lines).strip()
+    if len(text) <= 3900:
+        await query.edit_message_text(text, reply_markup=expenses_keyboard())
+    else:
+        await query.edit_message_text("Список расходов длинный. Отправляю частями...", reply_markup=expenses_keyboard())
+        for chunk in split_long_message(text):
+            await query.message.reply_text(chunk)
+    return ConversationHandler.END
+
+
+async def expense_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    employee = current_employee_or_none(update)
+    if not employee:
+        await deny_unknown_user(update)
+        return ConversationHandler.END
+
+    period, expenses = expenses_for_current_period(employee)
+    if not period:
+        await query.edit_message_text(
+            "Активный расчетный период не настроен.",
+            reply_markup=expenses_keyboard(),
+        )
+        return ConversationHandler.END
+
+    if not expenses:
+        await query.edit_message_text(
+            f"Расходов за период {period['start_date']} — {period['end_date']} нет.",
+            reply_markup=expenses_keyboard(),
+        )
+        return ConversationHandler.END
+
+    context.user_data["expense_delete_allowed_employee_id"] = None if is_manager(employee) else employee["employee_id"]
+    context.user_data["expense_delete_items"] = {expense["expense_id"]: expense for expense in expenses}
+    await query.edit_message_text(
+        f"Выберите расход для удаления за период {period['start_date']} — {period['end_date']}:",
+        reply_markup=expense_delete_keyboard(expenses),
+    )
+    return EXPENSE_DELETE_SELECT
+
+
+async def expense_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    expense_id = query.data.replace("expdel:", "")
+    expense = (context.user_data.get("expense_delete_items") or {}).get(expense_id)
+    if not expense:
+        await query.edit_message_text("Расход не найден в текущем списке.", reply_markup=expenses_keyboard())
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Удалить этот расход?\n\n" + format_expense_line(expense),
+        reply_markup=expense_delete_confirm_keyboard(expense_id),
+    )
+    return EXPENSE_DELETE_SELECT
+
+
+async def expense_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    expense_id = query.data.replace("expdelconfirm:", "")
+    employee_id = context.user_data.get("expense_delete_allowed_employee_id")
+    deleted = delete_expense(expense_id, employee_id=employee_id)
+
+    if not deleted:
+        await query.edit_message_text("Расход не найден или уже удален.", reply_markup=expenses_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Расход удален ✅\n\n" + format_expense_line(deleted),
+        reply_markup=expenses_keyboard(),
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -1912,7 +2100,10 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(create_report_start, pattern=r"^pay:create_report$"),
             CallbackQueryHandler(edit_report_start, pattern=r"^pay:edit_report$"),
             CallbackQueryHandler(check_salary_start, pattern=r"^pay:check_salary$"),
-            CallbackQueryHandler(expense_start, pattern=r"^pay:add_expense$"),
+            CallbackQueryHandler(expenses_menu_start, pattern=r"^pay:expenses$"),
+            CallbackQueryHandler(expense_start, pattern=r"^(pay:add_expense|expense:add)$"),
+            CallbackQueryHandler(expense_view_start, pattern=r"^expense:view$"),
+            CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
             CallbackQueryHandler(penalty_start, pattern=r"^pay:add_penalty$"),
             CallbackQueryHandler(periods_menu_start, pattern=r"^pay:periods$"),
             CallbackQueryHandler(period_create_start, pattern=r"^period:create$"),
@@ -1985,7 +2176,7 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EXPENSE_DATE: [
-                CallbackQueryHandler(expense_date_selected, pattern=r"^exdate:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, expense_date_received),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EXPENSE_COMMENT: [
@@ -1994,6 +2185,13 @@ def get_payroll_conversation_handler():
             ],
             EXPENSE_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, expense_amount_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            EXPENSE_DELETE_SELECT: [
+                CallbackQueryHandler(expense_delete_selected, pattern=r"^expdel:"),
+                CallbackQueryHandler(expense_delete_confirmed, pattern=r"^expdelconfirm:"),
+                CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
+                CallbackQueryHandler(expenses_menu_start, pattern=r"^pay:expenses$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             PENALTY_EMPLOYEE: [

@@ -699,6 +699,19 @@ def append_expense(employee, expense_date, comment, amount, created_by):
     ])
 
 
+def expense_record_from_row(record):
+    return {
+        "expense_id": str(record.get("expense_id", "")),
+        "employee_id": str(record.get("employee_id", "")),
+        "full_name": str(record.get("ФИО", "")),
+        "amount": safe_float(record.get("Сумма")),
+        "comment": str(record.get("Комментарий", "")),
+        "date": str(record.get("Дата", "")),
+        "created_by": str(record.get("Создал", "")),
+        "created_at": str(record.get("Создано", "")),
+    }
+
+
 def append_penalty(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     ws = get_worksheet(PENALTIES_SHEET)
     ws.append_row([
@@ -725,17 +738,38 @@ def get_reports_in_period(start_date, end_date):
 
 
 def get_expenses_in_period(start_date, end_date):
+    return list_expenses_in_period(start_date, end_date)
+
+
+def list_expenses_in_period(start_date, end_date, employee_id=None):
     ws = get_worksheet(EXPENSES_SHEET)
     expenses = []
     for record in records_from_worksheet(ws):
-        if date_in_range(record.get("Дата", ""), start_date, end_date):
-            expenses.append({
-                "employee_id": str(record.get("employee_id", "")),
-                "amount": safe_float(record.get("Сумма")),
-                "comment": str(record.get("Комментарий", "")),
-                "date": str(record.get("Дата", "")),
-            })
+        if not date_in_range(record.get("Дата", ""), start_date, end_date):
+            continue
+        if employee_id and str(record.get("employee_id", "")) != str(employee_id):
+            continue
+        expenses.append(expense_record_from_row(record))
     return expenses
+
+
+def delete_expense(expense_id, employee_id=None):
+    ws = get_worksheet(EXPENSES_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None
+
+    headers = values[0]
+    for row_index, row in enumerate(values[1:], start=2):
+        data = dict(zip(headers, row))
+        if str(data.get("expense_id", "")) != str(expense_id):
+            continue
+        if employee_id and str(data.get("employee_id", "")) != str(employee_id):
+            return None
+        expense = expense_record_from_row(data)
+        ws.delete_rows(row_index)
+        return expense
+    return None
 
 
 def get_penalties_in_period(start_date, end_date):
