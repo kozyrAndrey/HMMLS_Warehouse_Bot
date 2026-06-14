@@ -10,10 +10,13 @@ from modules.payroll.google_sheets import (
     get_penalties_in_period,
     get_reports_in_period,
     money,
+    normalize_payment_mode,
+    PAYMENT_MODE_SHIFT,
 )
 
 
-def calculate_payroll_for_period(start_date, end_date):
+def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
+    payment_mode = normalize_payment_mode(payment_mode)
     employees = {employee["employee_id"]: employee for employee in get_employees()}
     reports = get_reports_in_period(start_date, end_date)
     expenses = get_expenses_in_period(start_date, end_date)
@@ -28,6 +31,8 @@ def calculate_payroll_for_period(start_date, end_date):
         totals[employee_id] = {
             "employee": employee,
             "hours": 0.0,
+            "paid_hours": 0.0,
+            "payment_mode": payment_mode,
             "hourly_rate": employee["hourly_rate"],
             "hourly_pay": 0.0,
             "kpi_sum": 0.0,
@@ -47,6 +52,7 @@ def calculate_payroll_for_period(start_date, end_date):
         if employee_id not in totals:
             continue
         totals[employee_id]["hours"] += report["hours"]
+        totals[employee_id]["paid_hours"] += 8 if payment_mode == PAYMENT_MODE_SHIFT else report["hours"]
         totals[employee_id]["kpi_sum"] += report["kpi_sum"]
         totals[employee_id]["reports_count"] += 1
 
@@ -69,7 +75,7 @@ def calculate_payroll_for_period(start_date, end_date):
         totals[PENALTY_BONUS_EMPLOYEE_ID]["penalty_bonus"] = penalty_bonus_base * PENALTY_BONUS_RATE
 
     for item in totals.values():
-        item["hourly_pay"] = item["hours"] * item["hourly_rate"]
+        item["hourly_pay"] = item["paid_hours"] * item["hourly_rate"]
         item["warehouse_gross"] = item["hourly_pay"] + item["kpi_sum"]
         item["salary_without_expenses"] = (
             item["warehouse_gross"]
@@ -124,12 +130,20 @@ def format_employee_salary_block(item):
     lines = [
         f"{employee['full_name']}",
         f"Часы: {money(item['hours'])}",
-        f"Ставка: {money(item['hourly_rate'])}",
-        f"Почасовая ЗП: {money(item['hourly_pay'])}",
-        f"KPI: {money(item['kpi_sum'])}",
-        f"Оклад / 2: {money(item['fixed_half'])}",
-        f"Штрафы: {money(item['penalties'])}",
     ]
+
+    if item.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        lines.append(f"Оплачиваемые часы: {money(item['paid_hours'])}")
+
+    lines.extend(
+        [
+            f"Ставка: {money(item['hourly_rate'])}",
+            f"Почасовая ЗП: {money(item['hourly_pay'])}",
+            f"KPI: {money(item['kpi_sum'])}",
+            f"Оклад / 2: {money(item['fixed_half'])}",
+            f"Штрафы: {money(item['penalties'])}",
+        ]
+    )
 
     if item["penalty_bonus"]:
         lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
@@ -150,7 +164,11 @@ def build_personal_salary_text(employee, period=None):
     if not period:
         return "Активный расчетный период не настроен. Обратитесь к руководителю."
 
-    totals = calculate_payroll_for_period(period["start_date"], period["end_date"])
+    totals = calculate_payroll_for_period(
+        period["start_date"],
+        period["end_date"],
+        period.get("payment_mode"),
+    )
     item = totals.get(employee["employee_id"])
 
     if not item:
@@ -218,7 +236,11 @@ def build_full_payroll_text(period=None):
     if not period:
         return "Активный расчетный период не настроен."
 
-    totals = calculate_payroll_for_period(period["start_date"], period["end_date"])
+    totals = calculate_payroll_for_period(
+        period["start_date"],
+        period["end_date"],
+        period.get("payment_mode"),
+    )
 
     managers = []
     warehouse = []

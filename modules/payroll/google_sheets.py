@@ -22,6 +22,12 @@ PENALTIES_SHEET = "Штрафы"
 KPI_SHEET = "KPI"
 PERIODS_SHEET = "Расчетные периоды"
 KPI_DAILY_SHEET = "KPI за день"
+PAYMENT_MODE_HOURLY = "hourly"
+PAYMENT_MODE_SHIFT = "shift"
+PAYMENT_MODE_LABELS = {
+    PAYMENT_MODE_HOURLY: "По часам",
+    PAYMENT_MODE_SHIFT: "Посменно",
+}
 
 EMPLOYEE_HEADERS = [
     "employee_id",
@@ -112,6 +118,7 @@ PERIOD_HEADERS = [
     "Название",
     "Дата начала",
     "Дата конца",
+    "Режим оплаты",
     "Статус",
     "Создал",
     "Создано",
@@ -140,6 +147,18 @@ def validate_date(value):
         return True
     except ValueError:
         return False
+
+
+def normalize_payment_mode(value):
+    value = str(value or "").strip().lower()
+    if value in {PAYMENT_MODE_SHIFT, "посменно", "смена"}:
+        return PAYMENT_MODE_SHIFT
+    return PAYMENT_MODE_HOURLY
+
+
+def payment_mode_label(value):
+    mode = normalize_payment_mode(value)
+    return PAYMENT_MODE_LABELS.get(mode, PAYMENT_MODE_LABELS[PAYMENT_MODE_HOURLY])
 
 
 def date_in_range(value, start_date, end_date):
@@ -757,6 +776,7 @@ def get_periods():
             "name": str(record.get("Название", "")),
             "start_date": str(record.get("Дата начала", "")),
             "end_date": str(record.get("Дата конца", "")),
+            "payment_mode": normalize_payment_mode(record.get("Режим оплаты")),
             "status": str(record.get("Статус", "")),
             "created_by": str(record.get("Создал", "")),
             "created_at": str(record.get("Создано", "")),
@@ -787,6 +807,7 @@ def get_active_period():
         "name": data.get("Название", ""),
         "start_date": data.get("Дата начала", ""),
         "end_date": data.get("Дата конца", ""),
+        "payment_mode": normalize_payment_mode(data.get("Режим оплаты")),
         "status": data.get("Статус", ""),
         "created_by": data.get("Создал", ""),
         "created_at": data.get("Создано", ""),
@@ -805,10 +826,10 @@ def close_active_periods():
         if str(data.get("Статус", "")).lower() == "active":
             data["Статус"] = "closed"
             data["Обновлено"] = now_str()
-            ws.update(f"A{index}:H{index}", [[data.get(header, "") for header in PERIOD_HEADERS]])
+            ws.update(f"A{index}:I{index}", [[data.get(header, "") for header in PERIOD_HEADERS]])
 
 
-def create_active_period(name, start_date, end_date, created_by):
+def create_active_period(name, start_date, end_date, created_by, payment_mode=PAYMENT_MODE_HOURLY):
     close_active_periods()
     ws = get_worksheet(PERIODS_SHEET)
     created_at = now_str()
@@ -818,6 +839,7 @@ def create_active_period(name, start_date, end_date, created_by):
         name,
         start_date,
         end_date,
+        normalize_payment_mode(payment_mode),
         "active",
         created_by,
         created_at,
@@ -826,7 +848,7 @@ def create_active_period(name, start_date, end_date, created_by):
     return period_id
 
 
-def update_active_period(name=None, start_date=None, end_date=None):
+def update_active_period(name=None, start_date=None, end_date=None, payment_mode=None):
     ws = get_worksheet(PERIODS_SHEET)
     row_index, data = find_active_period_row()
     if not data:
@@ -837,8 +859,10 @@ def update_active_period(name=None, start_date=None, end_date=None):
         data["Дата начала"] = start_date
     if end_date is not None:
         data["Дата конца"] = end_date
+    if payment_mode is not None:
+        data["Режим оплаты"] = normalize_payment_mode(payment_mode)
     data["Обновлено"] = now_str()
-    ws.update(f"A{row_index}:H{row_index}", [[data.get(header, "") for header in PERIOD_HEADERS]])
+    ws.update(f"A{row_index}:I{row_index}", [[data.get(header, "") for header in PERIOD_HEADERS]])
     return True
 
 

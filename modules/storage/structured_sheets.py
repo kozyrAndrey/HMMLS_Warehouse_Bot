@@ -82,6 +82,7 @@ SHEET_TABLES = {
             ("Название", "name"),
             ("Дата начала", "start_date"),
             ("Дата конца", "end_date"),
+            ("Режим оплаты", "payment_mode"),
             ("Статус", "status"),
             ("Создал", "created_by"),
             ("Создано", "created_at_text"),
