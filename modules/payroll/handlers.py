@@ -27,14 +27,17 @@ from modules.payroll.config import (
 from modules.payroll.calculations import build_full_payroll_text, build_personal_salary_text
 from modules.payroll.google_sheets import (
     append_daily_report,
+    append_bonus,
     append_expense,
     append_penalty,
     cleanup_old_operational_data,
     create_active_period,
+    delete_bonus,
     delete_expense,
     find_employee_for_telegram_user,
     find_report_row,
     get_active_period,
+    list_bonuses_in_period,
     get_employee_by_id,
     get_employees,
     get_kpi_items,
@@ -88,14 +91,20 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     PENALTY_AMOUNT,
     PENALTY_PHOTOS,
     PENALTY_CONFIRM,
+    PAYROLL_PERIOD_SELECT,
     PERIOD_NAME,
     PERIOD_START,
     PERIOD_END,
     PERIOD_PAYMENT_MODE,
     PERIOD_EDIT_FIELD,
     PERIOD_EDIT_VALUE,
+    BONUS_EMPLOYEE,
+    BONUS_DATE,
+    BONUS_AMOUNT,
+    BONUS_COMMENT,
+    BONUS_DELETE_SELECT,
     CLEANUP_CONFIRM,
-) = range(300, 334)
+) = range(300, 340)
 
 
 # ============================================================
@@ -115,6 +124,7 @@ def payroll_main_keyboard(manager=False):
         rows.extend(
             [
                 [InlineKeyboardButton("⚠️ Штраф", callback_data="pay:add_penalty")],
+                [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
                 [InlineKeyboardButton("📊 Рассчитать ЗП за период", callback_data="pay:calculate_period")],
                 [InlineKeyboardButton("⚙️ Расчетные периоды", callback_data="pay:periods")],
                 [InlineKeyboardButton("🧹 Очистить данные старше 1 года", callback_data="pay:cleanup")],
@@ -144,6 +154,19 @@ def expenses_keyboard():
     )
 
 
+def bonuses_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Назначить премиальные", callback_data="bonus:add")],
+            [
+                InlineKeyboardButton("Удалить запись", callback_data="bonus:delete"),
+                InlineKeyboardButton("Просмотр последних 10 записей", callback_data="bonus:view"),
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
+        ]
+    )
+
+
 def date_keyboard(prefix):
     today = datetime.now()
     yesterday = today - timedelta(days=1)
@@ -166,6 +189,16 @@ def employees_keyboard(prefix, include_cancel=True):
         )
     if include_cancel:
         rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def payroll_periods_keyboard(periods):
+    rows = []
+    for period in reversed(periods[-20:]):
+        status = "активный" if period["status"] == "active" else "закрытый"
+        label = f"{period['name']} ({period['start_date']} — {period['end_date']}, {status})"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"payperiod:{period['period_id']}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1236,8 +1269,234 @@ async def salary_employee_selected(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("Сотрудник не найден.", reply_markup=payroll_main_keyboard(manager=True))
         return ConversationHandler.END
 
-    text = build_personal_salary_text(employee)
+    text = build_personal_salary_text(employee, show_bonus_details=True)
     await query.edit_message_text(text, reply_markup=payroll_main_keyboard(manager=True))
+    return ConversationHandler.END
+
+
+# ============================================================
+# ПРЕМИАЛЬНЫЕ
+# ============================================================
+
+
+def format_bonus_line(bonus, index=None):
+    prefix = f"{index}. " if index is not None else ""
+    comment = str(bonus.get("comment", "") or "—")
+    if len(comment) > 80:
+        comment = comment[:77] + "..."
+    return (
+        f"{prefix}{bonus['date']} — {bonus['full_name']} — {money(bonus['amount'])}\n"
+        f"Комментарий: {comment}\n"
+        f"Назначил: {bonus.get('assigned_by', '—') or '—'}"
+    )
+
+
+def bonus_delete_keyboard(bonuses):
+    rows = []
+    for index, bonus in enumerate(bonuses, start=1):
+        text = f"{index}. {bonus['date']} — {bonus['full_name']} — {money(bonus['amount'])}"
+        rows.append([InlineKeyboardButton(text[:60], callback_data=f"bonusdel:{bonus['bonus_id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="pay:bonuses")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def bonus_delete_confirm_keyboard(bonus_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Да, удалить", callback_data=f"bonusdelconfirm:{bonus_id}")],
+            [InlineKeyboardButton("⬅️ Назад к списку", callback_data="bonus:delete")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+        ]
+    )
+
+
+async def bonuses_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    await query.edit_message_text("Премиальные", reply_markup=bonuses_keyboard())
+    return ConversationHandler.END
+
+
+async def bonus_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    await query.edit_message_text("Выберите сотрудника для премиальных:", reply_markup=employees_keyboard("bnemp"))
+    return BONUS_EMPLOYEE
+
+
+async def bonus_employee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    employee_id = query.data.replace("bnemp:", "")
+    employee = get_employee_by_id(employee_id)
+    if not employee:
+        await query.edit_message_text("Сотрудник не найден.", reply_markup=payroll_back_keyboard())
+        return BONUS_EMPLOYEE
+
+    context.user_data["employee_id"] = employee_id
+    await query.edit_message_text("Введите дату премии в формате ДД.ММ.ГГГГ:", reply_markup=payroll_back_keyboard())
+    return BONUS_DATE
+
+
+async def bonus_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bonus_date = update.message.text.strip()
+    if not validate_date(bonus_date):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return BONUS_DATE
+
+    context.user_data["bonus_date"] = bonus_date
+    await update.message.reply_text("Введите сумму премии:", reply_markup=payroll_back_keyboard())
+    return BONUS_AMOUNT
+
+
+async def bonus_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    amount = parse_positive_amount(update.message.text)
+    if amount is None:
+        await update.message.reply_text("Введите сумму числом больше 0:")
+        return BONUS_AMOUNT
+
+    context.user_data["bonus_amount"] = amount
+    await update.message.reply_text("Введите комментарий, за что премия:", reply_markup=payroll_back_keyboard())
+    return BONUS_COMMENT
+
+
+async def bonus_comment_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    comment = update.message.text.strip()
+    if not comment:
+        await update.message.reply_text("Комментарий не должен быть пустым. Введите комментарий:")
+        return BONUS_COMMENT
+
+    employee = get_employee_by_id(context.user_data.get("employee_id"))
+    current_employee = current_employee_or_none(update)
+    if not employee or not is_manager(current_employee):
+        await update.message.reply_text("Недостаточно прав или сотрудник не найден.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    bonus_id = append_bonus(
+        employee=employee,
+        bonus_date=context.user_data["bonus_date"],
+        comment=comment,
+        amount=context.user_data["bonus_amount"],
+        assigned_by=current_employee["full_name"],
+    )
+
+    await update.message.reply_text(
+        "Премия добавлена ✅\n\n"
+        f"ID: {bonus_id}\n"
+        f"Сотрудник: {employee['full_name']}\n"
+        f"Дата: {context.user_data['bonus_date']}\n"
+        f"Сумма: {money(context.user_data['bonus_amount'])}\n"
+        f"Комментарий: {comment}",
+        reply_markup=payroll_main_keyboard(manager=True),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def bonus_view_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    bonuses = list_bonuses_in_period(limit=10)
+    if not bonuses:
+        await query.edit_message_text("Премиальных пока нет.", reply_markup=bonuses_keyboard())
+        return ConversationHandler.END
+
+    total = sum(bonus["amount"] for bonus in bonuses)
+    lines = ["Последние 10 записей премиальных", f"Итого в списке: {money(total)}", ""]
+    for index, bonus in enumerate(bonuses, start=1):
+        lines.append(format_bonus_line(bonus, index=index))
+        lines.append("")
+
+    await query.edit_message_text("\n".join(lines).strip(), reply_markup=bonuses_keyboard())
+    return ConversationHandler.END
+
+
+async def bonus_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    bonuses = list_bonuses_in_period(limit=10)
+    if not bonuses:
+        await query.edit_message_text("Премиальных пока нет.", reply_markup=bonuses_keyboard())
+        return ConversationHandler.END
+
+    context.user_data["bonus_delete_items"] = {bonus["bonus_id"]: bonus for bonus in bonuses}
+    await query.edit_message_text(
+        "Выберите запись премиальных для удаления:",
+        reply_markup=bonus_delete_keyboard(bonuses),
+    )
+    return BONUS_DELETE_SELECT
+
+
+async def bonus_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    bonus_id = query.data.replace("bonusdel:", "")
+    bonus = (context.user_data.get("bonus_delete_items") or {}).get(bonus_id)
+    if not bonus:
+        await query.edit_message_text("Запись не найдена в текущем списке.", reply_markup=bonuses_keyboard())
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Удалить эту запись премиальных?\n\n" + format_bonus_line(bonus),
+        reply_markup=bonus_delete_confirm_keyboard(bonus_id),
+    )
+    return BONUS_DELETE_SELECT
+
+
+async def bonus_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    bonus_id = query.data.replace("bonusdelconfirm:", "")
+    deleted = delete_bonus(bonus_id)
+
+    if not deleted:
+        await query.edit_message_text("Запись не найдена или уже удалена.", reply_markup=bonuses_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Запись премиальных удалена ✅\n\n" + format_bonus_line(deleted),
+        reply_markup=bonuses_keyboard(),
+    )
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -2010,33 +2269,22 @@ def split_long_message(text, limit=3900):
         chunks.append(current)
     return chunks
 
-async def calculate_period_payroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    current_employee = current_employee_or_none(update)
-    if not is_manager(current_employee):
-        await query.edit_message_text("Недостаточно прав.")
-        return ConversationHandler.END
 
-    active = get_active_period()
-    if not active:
-        await query.edit_message_text(
-            "Активный расчетный период не настроен. Создайте его в разделе «Расчетные периоды».",
-            reply_markup=payroll_main_keyboard(manager=True),
-        )
-        return ConversationHandler.END
-
-    text = build_full_payroll_text(active)
+async def send_payroll_for_period(query, context: ContextTypes.DEFAULT_TYPE, period):
+    text = build_full_payroll_text(period)
 
     if len(text) <= 3900:
         await query.edit_message_text(text, reply_markup=payroll_main_keyboard(manager=True))
     else:
-        await query.edit_message_text("Отчет получился длинным. Отправляю частями и PDF...", reply_markup=payroll_main_keyboard(manager=True))
+        await query.edit_message_text(
+            "Отчет получился длинным. Отправляю частями и PDF...",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
         for chunk in split_long_message(text):
             await context.bot.send_message(chat_id=query.message.chat_id, text=chunk)
 
     try:
-        filename = f"payroll_{active['start_date'].replace('.', '-')}_{active['end_date'].replace('.', '-')}.pdf"
+        filename = f"payroll_{period['start_date'].replace('.', '-')}_{period['end_date'].replace('.', '-')}.pdf"
         pdf_path = create_payroll_pdf(text, filename=filename)
         with open(pdf_path, "rb") as file:
             await context.bot.send_document(
@@ -2052,6 +2300,54 @@ async def calculate_period_payroll(update: Update, context: ContextTypes.DEFAULT
             text=f"PDF не удалось создать ⚠️\nОшибка: {error}",
         )
 
+
+async def calculate_period_payroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    periods = get_periods()
+    if not periods:
+        await query.edit_message_text(
+            "Расчетные периоды не настроены. Создайте период в разделе «Расчетные периоды».",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        return ConversationHandler.END
+
+    context.user_data["payroll_periods"] = {period["period_id"]: period for period in periods}
+    await query.edit_message_text(
+        "Выберите расчетный период для расчета ЗП:",
+        reply_markup=payroll_periods_keyboard(periods),
+    )
+    return PAYROLL_PERIOD_SELECT
+
+
+async def payroll_period_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    period_id = query.data.replace("payperiod:", "")
+    period = (context.user_data.get("payroll_periods") or {}).get(period_id)
+    if not period:
+        period = next((item for item in get_periods() if item["period_id"] == period_id), None)
+
+    if not period:
+        await query.edit_message_text(
+            "Расчетный период не найден. Попробуйте выбрать период заново.",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await send_payroll_for_period(query, context, period)
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -2069,7 +2365,7 @@ async def cleanup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await query.edit_message_text(
-        "Удалить данные старше 1 года из листов «Ежедневные отчеты», «Расходы», «Штрафы»?\n\n"
+        "Удалить данные старше 1 года из разделов «Ежедневные отчеты», «Расходы», «Штрафы», «Премиальные»?\n\n"
         "Справочники сотрудников, KPI и расчетные периоды не будут удалены.",
         reply_markup=cleanup_confirm_keyboard(),
     )
@@ -2105,6 +2401,10 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(expense_view_start, pattern=r"^expense:view$"),
             CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
             CallbackQueryHandler(penalty_start, pattern=r"^pay:add_penalty$"),
+            CallbackQueryHandler(bonuses_menu_start, pattern=r"^pay:bonuses$"),
+            CallbackQueryHandler(bonus_start, pattern=r"^bonus:add$"),
+            CallbackQueryHandler(bonus_view_start, pattern=r"^bonus:view$"),
+            CallbackQueryHandler(bonus_delete_start, pattern=r"^bonus:delete$"),
             CallbackQueryHandler(periods_menu_start, pattern=r"^pay:periods$"),
             CallbackQueryHandler(period_create_start, pattern=r"^period:create$"),
             CallbackQueryHandler(period_edit_start, pattern=r"^period:edit$"),
@@ -2194,6 +2494,29 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(expenses_menu_start, pattern=r"^pay:expenses$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
+            BONUS_EMPLOYEE: [
+                CallbackQueryHandler(bonus_employee_selected, pattern=r"^bnemp:"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            BONUS_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_date_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            BONUS_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_amount_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            BONUS_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_comment_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            BONUS_DELETE_SELECT: [
+                CallbackQueryHandler(bonus_delete_selected, pattern=r"^bonusdel:"),
+                CallbackQueryHandler(bonus_delete_confirmed, pattern=r"^bonusdelconfirm:"),
+                CallbackQueryHandler(bonus_delete_start, pattern=r"^bonus:delete$"),
+                CallbackQueryHandler(bonuses_menu_start, pattern=r"^pay:bonuses$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
             PENALTY_EMPLOYEE: [
                 CallbackQueryHandler(penalty_employee_selected, pattern=r"^pnemp:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
@@ -2225,6 +2548,10 @@ def get_payroll_conversation_handler():
             ],
             PENALTY_CONFIRM: [
                 CallbackQueryHandler(penalty_confirm_received, pattern=r"^penalty:confirm$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            PAYROLL_PERIOD_SELECT: [
+                CallbackQueryHandler(payroll_period_selected, pattern=r"^payperiod:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             PERIOD_NAME: [

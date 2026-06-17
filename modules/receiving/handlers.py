@@ -23,6 +23,37 @@ from handlers.common import show_main_menu, show_receiving_menu
 SELECT_DATE, SELECT_CATEGORY, SELECT_MODEL, SELECT_COLOR, SELECT_SIZE, ENTER_PACKED, ENTER_DEFECTIVE, ENTER_REWORK = range(8)
 
 
+def build_incoming_category_keyboard():
+    return build_category_keyboard(
+        back_callback="back:dates",
+        back_text="⬅️ Назад к датам",
+    )
+
+
+def build_incoming_models_keyboard(category_id):
+    return build_models_keyboard(
+        category_id,
+        home_callback="back:dates",
+        home_text="⬅️ Назад к датам",
+    )
+
+
+def build_incoming_product_colors_keyboard(category_id, model_id):
+    return build_product_colors_keyboard(
+        category_id,
+        model_id,
+        home_callback="back:categories",
+        home_text="⬅️ Назад к группам",
+    )
+
+
+def build_incoming_sizes_keyboard():
+    return build_sizes_keyboard(
+        home_callback="back:models",
+        home_text="⬅️ Назад к моделям",
+    )
+
+
 def parse_non_negative_number(text):
     text = text.strip()
 
@@ -72,7 +103,7 @@ async def incoming_date_selected(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text(
         f"Дата оприходования: {record_date}\n\n"
         "Выберите группу товара:",
-        reply_markup=build_category_keyboard(),
+        reply_markup=build_incoming_category_keyboard(),
     )
 
     return SELECT_CATEGORY
@@ -94,7 +125,7 @@ async def category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата: {context.user_data.get('record_date', '-')}\n"
         f"Группа: {CATEGORIES[category_id]['name']}\n\n"
         "Выберите модель:",
-        reply_markup=build_models_keyboard(category_id),
+        reply_markup=build_incoming_models_keyboard(category_id),
     )
 
     return SELECT_MODEL
@@ -131,7 +162,7 @@ async def model_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Дата: {context.user_data.get('record_date', '-')}\n"
             f"Товар: {variant_data['name']}\n\n"
             "Выберите размер:",
-            reply_markup=build_sizes_keyboard(),
+            reply_markup=build_incoming_sizes_keyboard(),
         )
 
         return SELECT_SIZE
@@ -140,7 +171,7 @@ async def model_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата: {context.user_data.get('record_date', '-')}\n"
         f"Модель: {models[model_id]['name']}\n\n"
         "Выберите цвет / вариант:",
-        reply_markup=build_product_colors_keyboard(category_id, model_id),
+        reply_markup=build_incoming_product_colors_keyboard(category_id, model_id),
     )
 
     return SELECT_COLOR
@@ -169,7 +200,7 @@ async def product_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата: {context.user_data.get('record_date', '-')}\n"
         f"Товар: {products[product_id]}\n\n"
         "Выберите размер:",
-        reply_markup=build_sizes_keyboard(),
+        reply_markup=build_incoming_sizes_keyboard(),
     )
 
     return SELECT_SIZE
@@ -287,7 +318,7 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Доработка: {rework}\n\n"
         "PostgreSQL: запись добавлена ✅\n\n"
         "Выберите размер для следующей записи:",
-        reply_markup=build_sizes_keyboard(),
+        reply_markup=build_incoming_sizes_keyboard(),
     )
 
     context.user_data.pop("size", None)
@@ -325,7 +356,7 @@ async def back_to_categories(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         f"Дата: {record_date or '-'}\n\n"
         "Выберите группу товара:",
-        reply_markup=build_category_keyboard(),
+        reply_markup=build_incoming_category_keyboard(),
     )
 
     return SELECT_CATEGORY
@@ -349,7 +380,7 @@ async def back_to_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата: {context.user_data.get('record_date', '-')}\n"
         f"Группа: {CATEGORIES[category_id]['name']}\n\n"
         "Выберите модель:",
-        reply_markup=build_models_keyboard(category_id),
+        reply_markup=build_incoming_models_keyboard(category_id),
     )
 
     return SELECT_MODEL
@@ -378,7 +409,7 @@ async def back_to_colors(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Дата: {context.user_data.get('record_date', '-')}\n"
             f"Группа: {CATEGORIES[category_id]['name']}\n\n"
             "Выберите модель:",
-            reply_markup=build_models_keyboard(category_id),
+            reply_markup=build_incoming_models_keyboard(category_id),
         )
 
         return SELECT_MODEL
@@ -386,7 +417,7 @@ async def back_to_colors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"Дата: {context.user_data.get('record_date', '-')}\n"
         "Выберите цвет / вариант:",
-        reply_markup=build_product_colors_keyboard(category_id, model_id),
+        reply_markup=build_incoming_product_colors_keyboard(category_id, model_id),
     )
 
     return SELECT_COLOR
@@ -413,22 +444,18 @@ def get_incoming_conversation_handler():
             SELECT_CATEGORY: [
                 CallbackQueryHandler(category_selected, pattern=r"^cat:"),
                 CallbackQueryHandler(back_to_dates, pattern=r"^back:dates$"),
-                CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"),
             ],
             SELECT_MODEL: [
                 CallbackQueryHandler(model_selected, pattern=r"^model:"),
                 CallbackQueryHandler(back_to_categories, pattern=r"^back:categories$"),
-                CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"),
             ],
             SELECT_COLOR: [
                 CallbackQueryHandler(product_selected, pattern=r"^prod:"),
                 CallbackQueryHandler(back_to_models, pattern=r"^back:models$"),
-                CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"),
             ],
             SELECT_SIZE: [
                 CallbackQueryHandler(size_selected, pattern=r"^size:"),
                 CallbackQueryHandler(back_to_colors, pattern=r"^back:colors$"),
-                CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"),
             ],
             ENTER_PACKED: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, packed_received),

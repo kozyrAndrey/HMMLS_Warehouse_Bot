@@ -5,6 +5,7 @@ from modules.payroll.config import (
 )
 from modules.payroll.google_sheets import (
     get_active_period,
+    get_bonuses_in_period,
     get_employees,
     get_expenses_in_period,
     get_penalties_in_period,
@@ -21,6 +22,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
     reports = get_reports_in_period(start_date, end_date)
     expenses = get_expenses_in_period(start_date, end_date)
     penalties = get_penalties_in_period(start_date, end_date)
+    bonuses = get_bonuses_in_period(start_date, end_date)
 
     totals = {}
 
@@ -41,6 +43,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             "fixed_half": fixed_half,
             "expenses": 0.0,
             "penalties": 0.0,
+            "bonuses": 0.0,
             "penalty_bonus": 0.0,
             "salary_without_expenses": 0.0,
             "salary_with_expenses": 0.0,
@@ -66,6 +69,11 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
         if employee_id in totals:
             totals[employee_id]["penalties"] += penalty["amount"]
 
+    for bonus in bonuses:
+        employee_id = bonus["employee_id"]
+        if employee_id in totals:
+            totals[employee_id]["bonuses"] += bonus["amount"]
+
     penalty_bonus_base = sum(
         penalty["amount"]
         for penalty in penalties
@@ -81,6 +89,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             item["warehouse_gross"]
             + item["fixed_half"]
             + item["penalty_bonus"]
+            + item["bonuses"]
             - item["penalties"]
         )
         item["salary_with_expenses"] = item["salary_without_expenses"] + item["expenses"]
@@ -145,6 +154,9 @@ def format_employee_salary_block(item):
         ]
     )
 
+    if item["bonuses"]:
+        lines.append(f"Премиальные: {money(item['bonuses'])}")
+
     if item["penalty_bonus"]:
         lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
 
@@ -159,7 +171,7 @@ def format_employee_salary_block(item):
     return "\n".join(lines)
 
 
-def build_personal_salary_text(employee, period=None):
+def build_personal_salary_text(employee, period=None, show_bonus_details=False):
     period = period or get_active_period()
     if not period:
         return "Активный расчетный период не настроен. Обратитесь к руководителю."
@@ -183,6 +195,9 @@ def build_personal_salary_text(employee, period=None):
 
     if item["penalty_bonus"]:
         lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
+
+    if show_bonus_details and item["bonuses"]:
+        lines.append(f"Премиальные: {money(item['bonuses'])}")
 
     lines.extend(
         [
@@ -222,6 +237,10 @@ def format_payroll_statement_line(item):
     penalty_bonus = item.get("penalty_bonus", 0)
     if penalty_bonus:
         parts.append(f"{money_pretty(penalty_bonus)} (40% штрафов)")
+
+    bonuses = item.get("bonuses", 0)
+    if bonuses:
+        parts.append(f"{money_pretty(bonuses)} (премиальные)")
 
     if expenses:
         parts.append(f"{money_pretty(expenses)} (расходы)")

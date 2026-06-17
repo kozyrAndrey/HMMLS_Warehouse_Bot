@@ -14,6 +14,7 @@ from config import BOT_TOKEN
 from core.access import access_guard
 from modules.receiving.postgres_storage import init_receiving_storage
 from modules.consumables.storage import init_consumables_storage
+from modules.recruitment.storage import init_recruitment_storage
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
 from handlers.common import (
@@ -32,6 +33,7 @@ from modules.returns.handlers import get_returns_conversation_handler
 from modules.payroll.handlers import get_payroll_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 from modules.consumables.handlers import get_consumables_handlers
+from modules.recruitment.handlers import get_recruitment_handlers
 
 
 def setup_logging():
@@ -72,18 +74,12 @@ def main():
 
     init_receiving_storage()
     init_consumables_storage()
+    init_recruitment_storage()
 
-    payroll_ready = False
     try:
-        payroll_ready = init_payroll_sheet()
+        init_payroll_sheet()
     except Exception:
         logging.exception("Не удалось инициализировать модуль ЗП")
-
-    if not payroll_ready:
-        logging.warning(
-            "Payroll Google Sheets не настроен. "
-            "Модуль ЗП будет работать только после настройки PAYROLL_GOOGLE_SHEET_ID."
-        )
 
     schedule_ready = False
     try:
@@ -170,6 +166,10 @@ def main():
 
     # Расходники.
     for handler in get_consumables_handlers():
+        app.add_handler(handler)
+
+    # Резюме кандидатов.
+    for handler in get_recruitment_handlers():
         app.add_handler(handler)
 
     setup_schedule_jobs(app)

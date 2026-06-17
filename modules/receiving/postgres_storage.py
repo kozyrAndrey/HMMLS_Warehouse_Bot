@@ -1,7 +1,7 @@
 from collections import defaultdict
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Index, Integer, String, desc, inspect, select, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, desc, inspect, select, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from modules.receiving.products import CATEGORIES
@@ -38,8 +38,57 @@ class IncomingGood(Base):
     export_message_ids: Mapped[str | None] = mapped_column(String(1000))
 
 
+class SpecialReceivingReport(Base):
+    __tablename__ = "special_receiving_reports"
+    __table_args__ = (
+        Index("ix_special_receiving_reports_type", "report_type"),
+        Index("ix_special_receiving_reports_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    report_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    store_from: Mapped[str | None] = mapped_column(String(255))
+    removal_date: Mapped[date | None] = mapped_column(Date)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    chat_id: Mapped[str | None] = mapped_column(String(100))
+    thread_id: Mapped[str | None] = mapped_column(String(100))
+    message_ids: Mapped[str | None] = mapped_column(String(1000))
+
+
+class SpecialReceivingReportItem(Base):
+    __tablename__ = "special_receiving_report_items"
+    __table_args__ = (
+        Index("ix_special_receiving_report_items_report_id", "report_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("special_receiving_reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    category_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    size: Mapped[str] = mapped_column(String(50), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    packed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    defective: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rework: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 def init_receiving_storage():
-    Base.metadata.create_all(get_engine(), tables=[IncomingGood.__table__])
+    Base.metadata.create_all(
+        get_engine(),
+        tables=[
+            IncomingGood.__table__,
+            SpecialReceivingReport.__table__,
+            SpecialReceivingReportItem.__table__,
+        ],
+    )
     ensure_receiving_columns()
 
 
@@ -58,6 +107,15 @@ def ensure_receiving_columns():
 
     with get_engine().begin() as connection:
         for statement in statements:
+            connection.execute(text(statement))
+
+        special_item_statements = [
+            "alter table special_receiving_report_items add column if not exists packed integer not null default 0",
+            "alter table special_receiving_report_items add column if not exists defective integer not null default 0",
+            "alter table special_receiving_report_items add column if not exists rework integer not null default 0",
+            "update special_receiving_report_items set packed = quantity where packed = 0 and defective = 0 and rework = 0 and quantity > 0",
+        ]
+        for statement in special_item_statements:
             connection.execute(text(statement))
 
 
@@ -428,3 +486,235 @@ def save_incoming_good(
                 rework=rework,
             )
         )
+
+
+def report_type_title(report_type):
+    titles = {
+        "illiquid": "Неликвид",
+        "rejected": "Отбракованный товар",
+    }
+    return titles.get(report_type, report_type)
+
+
+def special_report_to_dict(report, items=None):
+    return {
+        "id": report.id,
+        "created_at": report.created_at.strftime("%d.%m.%Y %H:%M:%S") if report.created_at else "",
+        "updated_at": report.updated_at.strftime("%d.%m.%Y %H:%M:%S") if report.updated_at else "",
+        "report_type": report.report_type,
+        "report_title": report_type_title(report.report_type),
+        "store_from": report.store_from or "",
+        "removal_date": report.removal_date.strftime("%d.%m.%Y") if report.removal_date else "",
+        "created_by": report.created_by or "",
+        "chat_id": report.chat_id or "",
+        "thread_id": report.thread_id or "",
+        "message_ids": split_message_ids(report.message_ids),
+        "items": items or [],
+    }
+
+
+def special_item_to_dict(item, report_type=None):
+    result = {
+        "id": item.id,
+        "category_id": item.category_id,
+        "category_name": item.category_name,
+        "product_id": item.product_id,
+        "product_name": item.product_name,
+        "size": item.size,
+        "quantity": int(item.quantity or 0),
+    }
+
+    if report_type == "illiquid":
+        result["packed"] = int(item.packed or 0)
+        result["defective"] = int(item.defective or 0)
+        result["rework"] = int(item.rework or 0)
+
+    return result
+
+
+def special_item_counts(item):
+    packed = int(item.get("packed", item.get("quantity", 0)) or 0)
+    defective = int(item.get("defective", 0) or 0)
+    rework = int(item.get("rework", 0) or 0)
+    quantity = int(item.get("quantity", packed + defective + rework) or 0)
+
+    if quantity <= 0:
+        quantity = packed + defective + rework
+
+    return packed, defective, rework, quantity
+
+
+def create_special_receiving_report(report_type, store_from, removal_date, created_by, items, telegram_data):
+    parsed_removal_date = parse_report_date(removal_date) if removal_date else None
+    now_value = datetime.now()
+
+    with session_scope() as session:
+        report = SpecialReceivingReport(
+            created_at=now_value,
+            updated_at=now_value,
+            report_type=report_type,
+            store_from=store_from or None,
+            removal_date=parsed_removal_date,
+            created_by=created_by,
+            chat_id=str(telegram_data.get("chat_id", "")),
+            thread_id=str(telegram_data.get("thread_id", "")),
+            message_ids=",".join(str(message_id) for message_id in telegram_data.get("message_ids", [])),
+        )
+        session.add(report)
+        session.flush()
+
+        for item in items:
+            category_id = item["category_id"]
+            product_id = item["product_id"]
+            packed, defective, rework, quantity = special_item_counts(item)
+            session.add(
+                SpecialReceivingReportItem(
+                    report_id=report.id,
+                    category_id=category_id,
+                    category_name=CATEGORIES[category_id]["name"],
+                    product_id=product_id,
+                    product_name=CATEGORIES[category_id]["products"][product_id],
+                    size=item["size"],
+                    quantity=quantity,
+                    packed=packed,
+                    defective=defective,
+                    rework=rework,
+                )
+            )
+
+        return report.id
+
+
+def get_special_receiving_reports(report_type=None, limit=10):
+    with session_scope() as session:
+        statement = select(SpecialReceivingReport).order_by(desc(SpecialReceivingReport.id))
+
+        if report_type:
+            statement = statement.where(SpecialReceivingReport.report_type == report_type)
+
+        reports = session.execute(statement.limit(limit)).scalars().all()
+
+        result = []
+        for report in reports:
+            items = (
+                session.execute(
+                    select(SpecialReceivingReportItem)
+                    .where(SpecialReceivingReportItem.report_id == report.id)
+                    .order_by(SpecialReceivingReportItem.id)
+                )
+                .scalars()
+                .all()
+            )
+            result.append(
+                special_report_to_dict(
+                    report,
+                    [special_item_to_dict(item, report.report_type) for item in items],
+                )
+            )
+
+    return result
+
+
+def get_special_receiving_report(report_id):
+    with session_scope() as session:
+        report = session.get(SpecialReceivingReport, int(report_id))
+
+        if not report:
+            return None
+
+        items = (
+            session.execute(
+                select(SpecialReceivingReportItem)
+                .where(SpecialReceivingReportItem.report_id == report.id)
+                .order_by(SpecialReceivingReportItem.id)
+            )
+            .scalars()
+            .all()
+        )
+
+        return special_report_to_dict(
+            report,
+            [special_item_to_dict(item, report.report_type) for item in items],
+        )
+
+
+def update_special_receiving_report(report_id, store_from=None, removal_date=None, items=None, telegram_data=None):
+    parsed_removal_date = parse_report_date(removal_date) if removal_date else None
+
+    with session_scope() as session:
+        report = session.get(SpecialReceivingReport, int(report_id))
+
+        if not report:
+            raise RuntimeError("Отчет не найден.")
+
+        report.store_from = store_from or None
+        report.removal_date = parsed_removal_date
+        report.updated_at = datetime.now()
+
+        if telegram_data is not None:
+            report.chat_id = str(telegram_data.get("chat_id", ""))
+            report.thread_id = str(telegram_data.get("thread_id", ""))
+            report.message_ids = ",".join(
+                str(message_id) for message_id in telegram_data.get("message_ids", [])
+            )
+
+        if items is not None:
+            old_items = (
+                session.execute(
+                    select(SpecialReceivingReportItem).where(
+                        SpecialReceivingReportItem.report_id == report.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for item in old_items:
+                session.delete(item)
+
+            for item in items:
+                category_id = item["category_id"]
+                product_id = item["product_id"]
+                packed, defective, rework, quantity = special_item_counts(item)
+                session.add(
+                    SpecialReceivingReportItem(
+                        report_id=report.id,
+                        category_id=category_id,
+                        category_name=CATEGORIES[category_id]["name"],
+                        product_id=product_id,
+                        product_name=CATEGORIES[category_id]["products"][product_id],
+                        size=item["size"],
+                        quantity=quantity,
+                        packed=packed,
+                        defective=defective,
+                        rework=rework,
+                    )
+                )
+
+
+def delete_special_receiving_report(report_id):
+    with session_scope() as session:
+        report = session.get(SpecialReceivingReport, int(report_id))
+
+        if not report:
+            raise RuntimeError("Отчет не найден.")
+
+        items = (
+            session.execute(
+                select(SpecialReceivingReportItem)
+                .where(SpecialReceivingReportItem.report_id == report.id)
+            )
+            .scalars()
+            .all()
+        )
+
+        result = special_report_to_dict(
+            report,
+            [special_item_to_dict(item, report.report_type) for item in items],
+        )
+
+        for item in items:
+            session.delete(item)
+
+        session.delete(report)
+
+        return result

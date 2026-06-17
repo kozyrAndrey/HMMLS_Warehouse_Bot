@@ -126,6 +126,18 @@ def build_chz_photo_keyboard():
     )
 
 
+def build_showroom_label_photo_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Этикетки нет", callback_data="ret:label_missing")],
+            [
+                InlineKeyboardButton("⬅️ Назад", callback_data="ret:back"),
+                InlineKeyboardButton("❌ Отмена", callback_data="ret:cancel"),
+            ],
+        ]
+    )
+
+
 def get_return_type(context: ContextTypes.DEFAULT_TYPE):
     return context.user_data.get("return_type", "cdek")
 
@@ -146,7 +158,7 @@ def get_return_type_label(context: ContextTypes.DEFAULT_TYPE):
 def get_employee_full_name_for_user(user):
     """Возвращает ФИО сотрудника из модуля ЗП по Telegram user_id/username.
 
-    Если сотрудник не найден или Google Таблица временно недоступна,
+    Если сотрудник не найден или справочник временно недоступен,
     используем Telegram full_name как безопасный fallback.
     """
     try:
@@ -156,9 +168,9 @@ def get_employee_full_name_for_user(user):
         if employee and employee.get("full_name"):
             return employee["full_name"]
     except Exception:
-        logging.exception("Не удалось получить ФИО сотрудника из Google Таблицы ЗП")
+        logging.exception("Не удалось получить ФИО сотрудника из справочника ЗП")
 
-    # Fallback по локальному payroll_config.py, чтобы не зависеть полностью от Google Sheets.
+    # Fallback по локальному payroll_config.py, чтобы не зависеть полностью от БД.
     try:
         from modules.payroll.config import PAYROLL_EMPLOYEES, normalize_username
 
@@ -350,7 +362,7 @@ async def ask_next_item_or_finish(target, context: ContextTypes.DEFAULT_TYPE, us
     if len(items) < total:
         next_item_no = len(items) + 1
 
-        step_text = "Шаг 5/6" if is_cdek_return(context) else "Шаг 3/4"
+        step_text = "Шаг 5/6" if is_cdek_return(context) else "Шаг 4/5"
 
         await send_or_edit_text(
             target,
@@ -428,10 +440,11 @@ async def return_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["return_type"] = "showroom"
         await query.edit_message_text(
             "↩️ Возврат из шоу-рума\n\n"
-            "Шаг 1/4. Введите ФИО контрагента:",
-            reply_markup=build_return_nav_keyboard(),
+            "Шаг 1/5. Отправьте фото этикетки с информацией о возврате "
+            "или нажмите кнопку «Этикетки нет».",
+            reply_markup=build_showroom_label_photo_keyboard(),
         )
-        return RET_COUNTERPARTY
+        return RET_PHOTO
 
     context.user_data["return_type"] = "cdek"
 
@@ -459,6 +472,25 @@ async def return_back_from_photo(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def invoice_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_cdek_return(context):
+        if not update.message.photo:
+            await update.message.reply_text(
+                "Пожалуйста, отправьте именно фото этикетки "
+                "или нажмите кнопку «Этикетки нет».",
+                reply_markup=build_showroom_label_photo_keyboard(),
+            )
+            return RET_PHOTO
+
+        context.user_data["return_label_photo_file_id"] = update.message.photo[-1].file_id
+        context.user_data["return_label_status"] = "Фото этикетки приложено"
+
+        await update.message.reply_text(
+            "Шаг 2/5. Введите ФИО контрагента:",
+            reply_markup=build_return_nav_keyboard(),
+        )
+
+        return RET_COUNTERPARTY
+
     if not update.message.photo:
         await update.message.reply_text(
             "Пожалуйста, отправьте именно фото накладной.",
@@ -474,6 +506,38 @@ async def invoice_photo_received(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     return RET_COUNTERPARTY
+
+
+async def showroom_label_missing_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data["return_label_status"] = "Этикетки нет"
+    context.user_data.pop("return_label_photo_file_id", None)
+
+    await query.edit_message_text(
+        "Этикетка отмечена как отсутствующая.\n\n"
+        "Шаг 2/5. Введите ФИО контрагента:",
+        reply_markup=build_return_nav_keyboard(),
+    )
+
+    return RET_COUNTERPARTY
+
+
+async def back_to_showroom_label_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.pop("return_label_photo_file_id", None)
+    context.user_data.pop("return_label_status", None)
+
+    await query.edit_message_text(
+        "Шаг 1/5. Отправьте фото этикетки с информацией о возврате "
+        "или нажмите кнопку «Этикетки нет»:",
+        reply_markup=build_showroom_label_photo_keyboard(),
+    )
+
+    return RET_PHOTO
 
 
 async def back_to_invoice_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -559,16 +623,7 @@ async def back_from_counterparty_step(update: Update, context: ContextTypes.DEFA
     if is_cdek_return(context):
         return await back_to_invoice_photo(update, context)
 
-    query = update.callback_query
-    await query.answer()
-    context.user_data.clear()
-
-    await query.edit_message_text(
-        "Главное меню:",
-        reply_markup=build_main_menu_keyboard(),
-    )
-
-    return ConversationHandler.END
+    return await back_to_showroom_label_photo(update, context)
 
 
 # ============================================================
@@ -595,7 +650,7 @@ async def counterparty_received(update: Update, context: ContextTypes.DEFAULT_TY
         return RET_TRACK_NUMBER
 
     await update.message.reply_text(
-        "Шаг 2/4. Введите количество вещей в возврате:",
+        "Шаг 3/5. Введите количество вещей в возврате:",
         reply_markup=build_return_nav_keyboard(),
     )
     return RET_ITEMS_COUNT
@@ -665,7 +720,7 @@ async def back_from_items_count_step(update: Update, context: ContextTypes.DEFAU
     clear_current_item(context)
 
     await query.edit_message_text(
-        "Шаг 1/4. Введите ФИО контрагента заново:",
+        "Шаг 2/5. Введите ФИО контрагента заново:",
         reply_markup=build_return_nav_keyboard(),
     )
 
@@ -697,7 +752,7 @@ async def items_count_received(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["return_items"] = []
     clear_current_item(context)
 
-    step_text = "Шаг 5/6" if is_cdek_return(context) else "Шаг 3/4"
+    step_text = "Шаг 5/6" if is_cdek_return(context) else "Шаг 4/5"
 
     await update.message.reply_text(
         f"{step_text}. Товар 1 из {value}.\n\n"
@@ -717,7 +772,9 @@ async def back_to_items_count(update: Update, context: ContextTypes.DEFAULT_TYPE
     clear_current_item(context)
 
     await query.edit_message_text(
-        "Шаг 4/6. Введите количество товаров в возврате заново:",
+        "Шаг 4/6. Введите количество товаров в возврате заново:"
+        if is_cdek_return(context)
+        else "Шаг 3/5. Введите количество товаров в возврате заново:",
         reply_markup=build_return_nav_keyboard(),
     )
 
@@ -782,7 +839,8 @@ async def back_from_item_category(update: Update, context: ContextTypes.DEFAULT_
     total = total_items_count(context)
 
     await query.edit_message_text(
-        f"Шаг 5/6. Товар {item_no} из {total}.\n\n"
+        f"{'Шаг 5/6' if is_cdek_return(context) else 'Шаг 4/5'}. "
+        f"Товар {item_no} из {total}.\n\n"
         "Выберите группу товара заново:",
         reply_markup=build_return_category_keyboard(),
     )
@@ -1323,6 +1381,8 @@ def format_return_summary(context: ContextTypes.DEFAULT_TYPE, user):
 
     if is_cdek_return(context):
         lines.append(f"Трек-номер: {track_number}")
+    else:
+        lines.append(f"Этикетка возврата: {context.user_data.get('return_label_status', 'не указано')}")
 
     lines.extend(
         [
@@ -1364,9 +1424,13 @@ def get_return_photo_file_ids(context: ContextTypes.DEFAULT_TYPE):
     photo_file_ids = []
 
     invoice_photo_file_id = context.user_data.get("return_invoice_photo_file_id")
+    label_photo_file_id = context.user_data.get("return_label_photo_file_id")
 
     if invoice_photo_file_id:
         photo_file_ids.append(invoice_photo_file_id)
+
+    if label_photo_file_id:
+        photo_file_ids.append(label_photo_file_id)
 
     for item in get_return_items(context):
         extra_photo_file_id = item.get("extra_photo_file_id")
@@ -1452,6 +1516,8 @@ def get_returns_conversation_handler():
         states={
             RET_PHOTO: [
                 MessageHandler(filters.PHOTO, invoice_photo_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, invoice_photo_received),
+                CallbackQueryHandler(showroom_label_missing_selected, pattern=r"^ret:label_missing$"),
                 CallbackQueryHandler(return_back_from_photo, pattern=r"^ret:back$"),
                 CallbackQueryHandler(return_cancel, pattern=r"^ret:cancel$"),
             ],

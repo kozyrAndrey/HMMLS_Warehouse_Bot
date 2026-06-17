@@ -29,6 +29,7 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")
 RETURNS_TOPIC_ID = os.getenv("RETURNS_TOPIC_ID", "")
 
 RECEIVING_REPORT_TOPIC_ID = os.getenv("RECEIVING_REPORT_TOPIC_ID", "")
+SPECIAL_RECEIVING_REPORT_TOPIC_ID = os.getenv("SPECIAL_RECEIVING_REPORT_TOPIC_ID", "115")
 # ============================================================
 # НАСТРОЙКИ МОДУЛЯ ЗП
 # ============================================================
@@ -42,6 +43,13 @@ PAYROLL_REPORT_TOPIC_ID = os.getenv("PAYROLL_REPORT_TOPIC_ID", "")
 # ============================================================
 
 CONSUMABLES_TOPIC_ID = os.getenv("CONSUMABLES_TOPIC_ID", "103")
+
+
+# ============================================================
+# НАСТРОЙКИ МОДУЛЯ РЕЗЮМЕ
+# ============================================================
+
+RECRUITMENT_TOPIC_ID = os.getenv("RECRUITMENT_TOPIC_ID", "")
 
 
 # ============================================================

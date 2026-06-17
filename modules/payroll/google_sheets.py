@@ -3,11 +3,11 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 
-from config import PAYROLL_GOOGLE_SHEET_ID
 from modules.storage.google_archive import DatabaseWorksheet
 from modules.payroll.config import (
     KPI_DAILY_COLUMN_BY_KPI_ID,
     KPI_DAILY_COLUMNS,
+    MANAGER_ROLES,
     PAYROLL_EMPLOYEES,
     PAYROLL_KPI,
     find_penalty_category_by_type_name,
@@ -19,6 +19,7 @@ EMPLOYEES_SHEET = "Сотрудники"
 REPORTS_SHEET = "Ежедневные отчеты"
 EXPENSES_SHEET = "Расходы"
 PENALTIES_SHEET = "Штрафы"
+BONUSES_SHEET = "Премиальные"
 KPI_SHEET = "KPI"
 PERIODS_SHEET = "Расчетные периоды"
 KPI_DAILY_SHEET = "KPI за день"
@@ -77,6 +78,17 @@ PENALTY_HEADERS = [
     "ФИО",
     "Категория штрафа",
     "Тип штрафа",
+    "Комментарий",
+    "Сумма",
+    "Назначил",
+    "Создано",
+]
+
+BONUS_HEADERS = [
+    "bonus_id",
+    "Дата",
+    "employee_id",
+    "ФИО",
     "Комментарий",
     "Сумма",
     "Назначил",
@@ -183,7 +195,7 @@ def safe_float(value):
 def safe_hourly_rate(value):
     rate = safe_float(value)
 
-    # Защита от ошибки локали Google Таблицы: иногда 437.5 может превратиться в 4375.
+    # Защита от старых импортов: иногда 437.5 могло превратиться в 4375.
     # Для складских ставок значения выше 1000 считаем потерянной десятичной точкой.
     if 1000 <= rate < 10000:
         return rate / 10
@@ -226,14 +238,15 @@ def get_worksheet(title, rows=1000, cols=30):
         REPORTS_SHEET: REPORT_HEADERS,
         EXPENSES_SHEET: EXPENSE_HEADERS,
         PENALTIES_SHEET: PENALTY_HEADERS,
+        BONUSES_SHEET: BONUS_HEADERS,
         KPI_SHEET: KPI_HEADERS,
         PERIODS_SHEET: PERIOD_HEADERS,
         KPI_DAILY_SHEET: KPI_DAILY_HEADERS,
     }
     headers = headers_by_title.get(title)
     if not headers:
-        raise RuntimeError(f"Неизвестный payroll-лист: {title}")
-    return DatabaseWorksheet("payroll", PAYROLL_GOOGLE_SHEET_ID, title, headers)
+        raise RuntimeError(f"Неизвестный payroll-раздел: {title}")
+    return DatabaseWorksheet("payroll", "payroll", title, headers)
 
 
 def ensure_headers(worksheet, headers):
@@ -291,14 +304,9 @@ def ensure_penalty_headers(worksheet):
 
 
 def records_from_worksheet(worksheet):
-    # Важно: отключаем авто-преобразование чисел от gspread.
-    #
-    # Без этого значения с запятой в русской локали Google Таблиц
-    # могут читаться неправильно:
-    #   "4,5" -> 45
-    #
-    # После отключения numericise мы сами аккуратно приводим числа
-    # через safe_float(), где "4,5" корректно становится 4.5.
+    # Исторически этот параметр защищал импортированные значения от
+    # авто-преобразования. DB-backed адаптер его игнорирует, но сигнатура
+    # совместима со старым worksheet API.
     return worksheet.get_all_records(numericise_ignore=["all"])
 
 
@@ -392,6 +400,7 @@ def init_payroll_sheet():
     reports_ws = get_worksheet(REPORTS_SHEET, rows=3000, cols=20)
     expenses_ws = get_worksheet(EXPENSES_SHEET, rows=1000, cols=12)
     penalties_ws = get_worksheet(PENALTIES_SHEET, rows=1000, cols=12)
+    bonuses_ws = get_worksheet(BONUSES_SHEET, rows=1000, cols=12)
     kpi_ws = get_worksheet(KPI_SHEET, rows=100, cols=6)
     periods_ws = get_worksheet(PERIODS_SHEET, rows=200, cols=10)
     kpi_daily_ws = get_worksheet(KPI_DAILY_SHEET, rows=3000, cols=20)
@@ -400,13 +409,14 @@ def init_payroll_sheet():
     ensure_headers(reports_ws, REPORT_HEADERS)
     ensure_headers(expenses_ws, EXPENSE_HEADERS)
     ensure_penalty_headers(penalties_ws)
+    ensure_headers(bonuses_ws, BONUS_HEADERS)
     ensure_headers(kpi_ws, KPI_HEADERS)
     ensure_headers(periods_ws, PERIOD_HEADERS)
     ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
 
     # Справочники синхронизируем при каждом запуске, а не только при первом создании.
     # Это гарантирует, что новые user_id, ставки, KPI и исправления попадут
-    # в уже существующую Google Таблицу.
+    # в справочники, которыми пользуется бот.
     sync_employees_sheet(employees_ws)
     sync_kpi_sheet(kpi_ws)
 
@@ -461,7 +471,7 @@ def find_employee_for_telegram_user(user):
 
 
 def is_manager(employee):
-    return bool(employee and employee.get("role") in {"warehouse_manager", "admin"})
+    return bool(employee and employee.get("role") in MANAGER_ROLES)
 
 
 def get_kpi_items(active_only=True):
@@ -712,6 +722,78 @@ def expense_record_from_row(record):
     }
 
 
+def bonus_record_from_row(record):
+    return {
+        "bonus_id": str(record.get("bonus_id", "")),
+        "employee_id": str(record.get("employee_id", "")),
+        "full_name": str(record.get("ФИО", "")),
+        "amount": safe_float(record.get("Сумма")),
+        "comment": str(record.get("Комментарий", "")),
+        "date": str(record.get("Дата", "")),
+        "assigned_by": str(record.get("Назначил", "")),
+        "created_at": str(record.get("Создано", "")),
+    }
+
+
+def append_bonus(employee, bonus_date, comment, amount, assigned_by):
+    ws = get_worksheet(BONUSES_SHEET)
+    bonus_id = generate_id("bonus")
+    ws.append_row([
+        bonus_id,
+        bonus_date,
+        employee["employee_id"],
+        employee["full_name"],
+        comment,
+        safe_float(amount),
+        assigned_by,
+        now_str(),
+    ])
+    return bonus_id
+
+
+def list_bonuses_in_period(start_date=None, end_date=None, employee_id=None, limit=None):
+    ws = get_worksheet(BONUSES_SHEET)
+    bonuses = []
+    for record in records_from_worksheet(ws):
+        if start_date and end_date and not date_in_range(record.get("Дата", ""), start_date, end_date):
+            continue
+        if employee_id and str(record.get("employee_id", "")) != str(employee_id):
+            continue
+        bonuses.append(bonus_record_from_row(record))
+
+    def sort_key(item):
+        try:
+            return parse_date(item["date"])
+        except ValueError:
+            return datetime.min
+
+    bonuses.sort(key=sort_key, reverse=True)
+    if limit:
+        return bonuses[:limit]
+    return bonuses
+
+
+def get_bonuses_in_period(start_date, end_date):
+    return list_bonuses_in_period(start_date, end_date)
+
+
+def delete_bonus(bonus_id):
+    ws = get_worksheet(BONUSES_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None
+
+    headers = values[0]
+    for row_index, row in enumerate(values[1:], start=2):
+        data = dict(zip(headers, row))
+        if str(data.get("bonus_id", "")) != str(bonus_id):
+            continue
+        bonus = bonus_record_from_row(data)
+        ws.delete_rows(row_index)
+        return bonus
+    return None
+
+
 def append_penalty(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     ws = get_worksheet(PENALTIES_SHEET)
     ws.append_row([
@@ -908,6 +990,7 @@ def cleanup_old_operational_data(days=365):
         (REPORTS_SHEET, "Дата"),
         (EXPENSES_SHEET, "Дата"),
         (PENALTIES_SHEET, "Дата"),
+        (BONUSES_SHEET, "Дата"),
     ]:
         ws = get_worksheet(title)
         values = ws.get_all_values()

@@ -66,6 +66,19 @@ SHEET_TABLES = {
             ("Создано", "created_at_text"),
         ],
     },
+    ("payroll", "Премиальные"): {
+        "table": "payroll_bonuses",
+        "columns": [
+            ("bonus_id", "bonus_id"),
+            ("Дата", "bonus_date"),
+            ("employee_id", "employee_id"),
+            ("ФИО", "full_name"),
+            ("Комментарий", "comment"),
+            ("Сумма", "amount"),
+            ("Назначил", "assigned_by"),
+            ("Создано", "created_at_text"),
+        ],
+    },
     ("payroll", "KPI"): {
         "table": "payroll_kpi",
         "columns": [

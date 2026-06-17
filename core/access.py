@@ -3,9 +3,9 @@ import logging
 # ============================================================
 # ДОСТУПЫ
 # ============================================================
-# Основные роли берутся из листа «Сотрудники».
+# Основные роли берутся из справочника «Сотрудники» в БД.
 # Дополнительно есть fallback на payroll_config.py, чтобы доступ не ломался,
-# если Google Sheets временно недоступен.
+# если справочник временно недоступен.
 
 ROLE_PERMISSIONS = {
     "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
@@ -34,7 +34,7 @@ def safe_bool(value):
 
 
 def find_employee_in_config(user):
-    """Fallback-поиск сотрудника в payroll_config.py без обращения к Google Sheets."""
+    """Fallback-поиск сотрудника в payroll_config.py без обращения к БД."""
     try:
         from modules.payroll.config import PAYROLL_EMPLOYEES
     except Exception:
@@ -57,7 +57,7 @@ def find_employee_in_config(user):
 
 
 def find_registered_employee(user):
-    """Ищет пользователя в листе «Сотрудники», затем в payroll_config.py."""
+    """Ищет пользователя в справочнике «Сотрудники», затем в payroll_config.py."""
     if not user:
         return None
 
@@ -68,7 +68,7 @@ def find_registered_employee(user):
         if employee:
             return employee
     except Exception:
-        logging.exception("Не удалось проверить сотрудника через Google Sheets, используем fallback payroll_config.py")
+        logging.exception("Не удалось проверить сотрудника через БД, используем fallback payroll_config.py")
 
     return find_employee_in_config(user)
 
@@ -84,11 +84,18 @@ def is_registered_bot_user(user):
     return is_active and role in ALLOWED_BOT_ROLES
 
 
+def is_recruitment_update(update, context):
+    return False
+
+
 async def access_guard(update, context):
     """Глобальная защита бота от пользователей вне списка сотрудников."""
     from telegram.ext import ApplicationHandlerStop
 
     if is_registered_bot_user(update.effective_user):
+        return
+
+    if is_recruitment_update(update, context):
         return
 
     chat = update.effective_chat

@@ -7,12 +7,15 @@ from modules.receiving.postgres_storage import get_last_records_text, get_receiv
 from core.keyboards import (
     build_main_menu_keyboard,
     build_receiving_menu_keyboard,
+    build_receiving_report_type_keyboard,
     build_returns_menu_keyboard,
     build_start_keyboard,
 )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+
     await update.message.reply_text(
         "Привет! Нажмите кнопку ниже, чтобы открыть меню бота.",
         reply_markup=build_start_keyboard(),
@@ -41,7 +44,7 @@ async def show_receiving_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.edit_message_text(
         "📦 Отчет оприходований:",
-        reply_markup=build_receiving_menu_keyboard(),
+        reply_markup=build_receiving_report_type_keyboard(),
     )
 
     return ConversationHandler.END
