@@ -17,6 +17,7 @@ from modules.consumables.storage import init_consumables_storage
 from modules.recruitment.storage import init_recruitment_storage
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
+from modules.tasks.storage import init_tasks_storage
 from handlers.common import (
     last_records,
     menu_last_records,
@@ -32,6 +33,7 @@ from modules.receiving.reports import get_report_handlers
 from modules.returns.handlers import get_returns_conversation_handler
 from modules.payroll.handlers import get_payroll_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
+from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
 from modules.consumables.handlers import get_consumables_handlers
 from modules.recruitment.handlers import get_recruitment_handlers
 
@@ -93,6 +95,10 @@ def main():
             "Проверьте OPERATIONS_GOOGLE_SHEET_ID и доступ service account к новой таблице."
         )
 
+    try:
+        init_tasks_storage()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль задач")
 
     request = HTTPXRequest(
         connect_timeout=30,
@@ -164,6 +170,10 @@ def main():
     for handler in get_schedule_handlers():
         app.add_handler(handler)
 
+    # Задачи.
+    for handler in get_tasks_handlers():
+        app.add_handler(handler)
+
     # Расходники.
     for handler in get_consumables_handlers():
         app.add_handler(handler)
@@ -173,6 +183,7 @@ def main():
         app.add_handler(handler)
 
     setup_schedule_jobs(app)
+    setup_tasks_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))

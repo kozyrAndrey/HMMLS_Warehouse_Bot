@@ -22,6 +22,7 @@ def build_main_menu_keyboard(recruitment_tester=False):
         [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
         [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
         [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
+        [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
     ]
 
