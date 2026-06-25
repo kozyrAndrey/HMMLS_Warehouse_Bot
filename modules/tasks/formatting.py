@@ -3,6 +3,7 @@ from modules.tasks.config import (
     ASSIGNEE_MODE_NONE,
     ASSIGNEE_MODE_SPECIFIC,
     ASSIGNEE_MODE_WORKING_TODAY,
+    TASK_SOURCE_TEMPLATE,
     TASK_STATUS_CANCELLED,
     TASK_STATUS_DONE,
     TASK_TYPE_GENERAL,
@@ -29,12 +30,18 @@ def format_assignees(record):
     return str(record.get("Исполнители", "")).strip() or "не назначены"
 
 
-def format_task_line(index, record, include_assignees=True):
+def task_source_label(record):
+    return "из шаблона" if str(record.get("Источник", "")).strip() == TASK_SOURCE_TEMPLATE else "разовая"
+
+
+def format_task_line(index, record, include_assignees=True, include_source=False):
     status = str(record.get("Статус", "")).strip()
     description = str(record.get("Описание", "")).strip()
     deadline = str(record.get("Дедлайн", "")).strip()
 
     lines = [f"{task_checkbox(status)} {index}. {description}"]
+    if include_source:
+        lines.append(f"Источник: {task_source_label(record)}")
     if include_assignees:
         lines.append(f"Исполнители: {format_assignees(record)}")
     if deadline:
@@ -81,7 +88,7 @@ def format_all_tasks_for_private_view(day, tasks):
     lines = [f"📋 Задачи на {date_to_str(day)}", "", "Складские:"]
     if warehouse_tasks:
         for index, task in enumerate(warehouse_tasks, start=1):
-            lines.append(format_task_line(index, task, include_assignees=True))
+            lines.append(format_task_line(index, task, include_assignees=True, include_source=True))
             lines.append("")
     else:
         lines.append("Задач пока нет")
@@ -90,7 +97,7 @@ def format_all_tasks_for_private_view(day, tasks):
     lines.append("Нескладские:")
     if general_tasks:
         for index, task in enumerate(general_tasks, start=1):
-            lines.append(format_task_line(index, task, include_assignees=False))
+            lines.append(format_task_line(index, task, include_assignees=False, include_source=True))
             lines.append("")
     else:
         lines.append("Задач пока нет")
@@ -109,7 +116,7 @@ def template_assignee_label(template):
 
 def format_regular_tasks_view(templates):
     if not templates:
-        return "📋 Регулярные задачи\n\nРегулярных задач пока нет."
+        return "📋 Шаблоны регулярных задач\n\nШаблонов пока нет."
 
     grouped = {weekday: [] for weekday in range(7)}
     for template in templates:
@@ -120,7 +127,7 @@ def format_regular_tasks_view(templates):
         if weekday in grouped:
             grouped[weekday].append(template)
 
-    lines = ["📋 Регулярные задачи", ""]
+    lines = ["📋 Шаблоны регулярных задач", ""]
     for weekday, day_name in enumerate(WEEKDAY_NAMES):
         day_templates = grouped[weekday]
         if not day_templates:

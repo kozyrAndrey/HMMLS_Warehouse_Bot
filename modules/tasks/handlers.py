@@ -37,9 +37,7 @@ from modules.tasks.storage import (
     can_user_complete_task,
     create_task,
     create_task_template,
-    delete_task,
     delete_task_template,
-    get_manual_tasks_by_date,
     get_task_by_id,
     get_task_export,
     get_task_template_by_id,
@@ -110,9 +108,11 @@ def ensure_tasks_manager(update: Update):
 
 def tasks_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Регулярные задачи", callback_data="task:regular")],
-        [InlineKeyboardButton("🧩 Нерегулярные задачи", callback_data="task:irregular")],
-        [InlineKeyboardButton("👀 Просмотр задач на день", callback_data="task:view")],
+        [InlineKeyboardButton("👀 Задачи на день", callback_data="task:view")],
+        [InlineKeyboardButton("➕ Добавить разовую задачу", callback_data="task:add")],
+        [InlineKeyboardButton("✏️ Изменить задачу на день", callback_data="task:edit")],
+        [InlineKeyboardButton("🚫 Отменить задачу на день", callback_data="task:delete")],
+        [InlineKeyboardButton("📋 Шаблоны регулярных задач", callback_data="task:regular")],
         [InlineKeyboardButton("📤 Выгрузить задачи", callback_data="task:export")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ])
@@ -120,20 +120,10 @@ def tasks_menu_keyboard():
 
 def regular_tasks_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить задачу", callback_data="reg:add")],
-        [InlineKeyboardButton("✏️ Изменить задачу", callback_data="reg:edit")],
-        [InlineKeyboardButton("🗑 Удалить задачу", callback_data="reg:delete")],
-        [InlineKeyboardButton("👀 Просмотр задач", callback_data="reg:view")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="section:tasks")],
-    ])
-
-
-def irregular_tasks_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить задачу", callback_data="irreg:add")],
-        [InlineKeyboardButton("✏️ Изменить задачу", callback_data="irreg:edit")],
-        [InlineKeyboardButton("🗑 Удалить задачу", callback_data="irreg:delete")],
-        [InlineKeyboardButton("👀 Просмотр задач", callback_data="irreg:view")],
+        [InlineKeyboardButton("➕ Добавить шаблон", callback_data="reg:add")],
+        [InlineKeyboardButton("✏️ Изменить шаблон", callback_data="reg:edit")],
+        [InlineKeyboardButton("🗑 Удалить шаблон", callback_data="reg:delete")],
+        [InlineKeyboardButton("👀 Просмотр шаблонов", callback_data="reg:view")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="section:tasks")],
     ])
 
@@ -281,7 +271,7 @@ def status_keyboard():
 
 def confirm_keyboard(prefix, item_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑 Да, удалить", callback_data=f"{prefix}:yes:{item_id}")],
+        [InlineKeyboardButton("✅ Да", callback_data=f"{prefix}:yes:{item_id}")],
         [InlineKeyboardButton("Отмена", callback_data="task:cancel")],
     ])
 
@@ -312,7 +302,7 @@ async def regular_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.edit_message_text("📋 Регулярные задачи:", reply_markup=regular_tasks_menu_keyboard())
+    await query.edit_message_text("📋 Шаблоны регулярных задач:", reply_markup=regular_tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -320,14 +310,14 @@ async def irregular_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.edit_message_text("🧩 Нерегулярные задачи:", reply_markup=irregular_tasks_menu_keyboard())
+    await query.edit_message_text("🧩 Задачи:", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
 async def tasks_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     section = context.user_data.get("task_section")
     context.user_data.clear()
-    reply_markup = regular_tasks_menu_keyboard() if section == "regular" else irregular_tasks_menu_keyboard() if section == "irregular" else tasks_menu_keyboard()
+    reply_markup = regular_tasks_menu_keyboard() if section == "regular" else tasks_menu_keyboard()
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -341,8 +331,8 @@ async def irregular_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    context.user_data["task_section"] = "irregular"
-    await query.edit_message_text("Выберите тип нерегулярной задачи:", reply_markup=task_type_keyboard())
+    context.user_data["task_section"] = "daily"
+    await query.edit_message_text("Выберите тип разовой задачи:", reply_markup=task_type_keyboard())
     return TASK_ADD_TYPE
 
 
@@ -400,7 +390,7 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
             set_task_assignees(context.user_data["edit_task_id"], [])
             await refresh_existing_exports_for_date(context, day)
             context.user_data.clear()
-            await query.edit_message_text("Исполнители очищены ✅", reply_markup=irregular_tasks_menu_keyboard())
+            await query.edit_message_text("Исполнители очищены ✅", reply_markup=tasks_menu_keyboard())
             return ConversationHandler.END
         await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
         return TASK_ADD_DEADLINE
@@ -412,7 +402,7 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
             set_task_assignees(context.user_data["edit_task_id"], selected)
             await refresh_existing_exports_for_date(context, day)
             context.user_data.clear()
-            await query.edit_message_text("Исполнители обновлены ✅", reply_markup=irregular_tasks_menu_keyboard())
+            await query.edit_message_text("Исполнители обновлены ✅", reply_markup=tasks_menu_keyboard())
             return ConversationHandler.END
         await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
         return TASK_ADD_DEADLINE
@@ -435,13 +425,13 @@ async def task_deadline_selected(update: Update, context: ContextTypes.DEFAULT_T
         _, task = get_task_by_id(context.user_data["edit_task_id"])
         await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
         context.user_data.clear()
-        await query.edit_message_text("Дедлайн обновлен ✅", reply_markup=irregular_tasks_menu_keyboard())
+        await query.edit_message_text("Дедлайн обновлен ✅", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
 
     if "edit_template_id" in context.user_data:
         update_task_template_fields(context.user_data["edit_template_id"], **{"Дедлайн": deadline})
         context.user_data.clear()
-        await query.edit_message_text("Дедлайн регулярной задачи обновлен ✅", reply_markup=regular_tasks_menu_keyboard())
+        await query.edit_message_text("Дедлайн шаблона обновлен ✅", reply_markup=regular_tasks_menu_keyboard())
         return ConversationHandler.END
 
     if context.user_data.get("task_section") == "regular":
@@ -466,7 +456,7 @@ async def task_deadline_selected(update: Update, context: ContextTypes.DEFAULT_T
     )
     await refresh_existing_exports_for_date(context, day)
     context.user_data.clear()
-    await query.edit_message_text("Нерегулярная задача создана ✅", reply_markup=irregular_tasks_menu_keyboard())
+    await query.edit_message_text("Разовая задача создана ✅", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -474,9 +464,8 @@ async def irregular_view_start(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    context.user_data["task_section"] = "irregular"
-    context.user_data["view_mode"] = "irregular"
-    await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskviewdate"))
+    context.user_data["view_mode"] = "all"
+    await query.edit_message_text("Выберите дату для просмотра задач:", reply_markup=date_keyboard("taskviewdate"))
     return TASK_VIEW_DATE
 
 
@@ -493,13 +482,9 @@ async def task_view_date_selected(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     day = parse_date(query.data.replace("taskviewdate:", ""))
-    if context.user_data.get("view_mode") == "irregular":
-        tasks = get_manual_tasks_by_date(day)
-        reply_markup = irregular_tasks_menu_keyboard()
-    else:
-        materialize_templates_for_date(day)
-        tasks = get_tasks_by_date(day)
-        reply_markup = tasks_menu_keyboard()
+    materialize_templates_for_date(day)
+    tasks = get_tasks_by_date(day)
+    reply_markup = tasks_menu_keyboard()
     await query.edit_message_text(format_all_tasks_for_private_view(day, tasks), reply_markup=reply_markup)
     return ConversationHandler.END
 
@@ -524,7 +509,7 @@ async def irregular_edit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    context.user_data["task_section"] = "irregular"
+    context.user_data["task_section"] = "daily"
     await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskeditdate"))
     return TASK_EDIT_DATE
 
@@ -534,9 +519,10 @@ async def task_edit_date_selected(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     day = parse_date(query.data.replace("taskeditdate:", ""))
     context.user_data["edit_task_date"] = date_to_str(day)
-    tasks = get_manual_tasks_by_date(day)
+    materialize_templates_for_date(day)
+    tasks = get_tasks_by_date(day, include_cancelled=False)
     if not tasks:
-        await query.edit_message_text("На эту дату нерегулярных задач пока нет.", reply_markup=irregular_tasks_menu_keyboard())
+        await query.edit_message_text("На эту дату задач пока нет.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
     await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit"))
     return TASK_EDIT_SELECT
@@ -547,8 +533,8 @@ async def task_edit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     task_id = query.data.replace("taskedit:", "")
     _, task = get_task_by_id(task_id)
-    if not task or task.get("Источник") != TASK_SOURCE_MANUAL:
-        await query.edit_message_text("Нерегулярная задача не найдена.", reply_markup=irregular_tasks_menu_keyboard())
+    if not task:
+        await query.edit_message_text("Задача не найдена.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
     context.user_data["edit_task_id"] = task_id
     await query.edit_message_text("Что изменить?", reply_markup=edit_field_keyboard(task))
@@ -587,7 +573,7 @@ async def task_edit_description_received(update: Update, context: ContextTypes.D
     _, task = get_task_by_id(task_id)
     await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
     context.user_data.clear()
-    await update.message.reply_text("Описание обновлено ✅", reply_markup=irregular_tasks_menu_keyboard())
+    await update.message.reply_text("Описание обновлено ✅", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -603,7 +589,7 @@ async def task_status_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     _, task = get_task_by_id(context.user_data["edit_task_id"])
     await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
     context.user_data.clear()
-    await query.edit_message_text("Статус обновлен ✅", reply_markup=irregular_tasks_menu_keyboard())
+    await query.edit_message_text("Статус обновлен ✅", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -611,7 +597,7 @@ async def irregular_delete_start(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    context.user_data["task_section"] = "irregular"
+    context.user_data["task_section"] = "daily"
     await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskdeldate"))
     return TASK_DELETE_DATE
 
@@ -621,11 +607,12 @@ async def task_delete_date_selected(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     day = parse_date(query.data.replace("taskdeldate:", ""))
     context.user_data["delete_task_date"] = date_to_str(day)
-    tasks = get_manual_tasks_by_date(day)
+    materialize_templates_for_date(day)
+    tasks = get_tasks_by_date(day, include_cancelled=False)
     if not tasks:
-        await query.edit_message_text("На эту дату нерегулярных задач пока нет.", reply_markup=irregular_tasks_menu_keyboard())
+        await query.edit_message_text("На эту дату задач пока нет.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
-    await query.edit_message_text("Выберите задачу для удаления:", reply_markup=task_select_keyboard(tasks, "taskdel"))
+    await query.edit_message_text("Выберите задачу для отмены на эту дату:", reply_markup=task_select_keyboard(tasks, "taskdel"))
     return TASK_DELETE_SELECT
 
 
@@ -634,11 +621,11 @@ async def task_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     task_id = query.data.replace("taskdel:", "")
     _, task = get_task_by_id(task_id)
-    if not task or task.get("Источник") != TASK_SOURCE_MANUAL:
-        await query.edit_message_text("Нерегулярная задача не найдена.", reply_markup=irregular_tasks_menu_keyboard())
+    if not task:
+        await query.edit_message_text("Задача не найдена.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
     await query.edit_message_text(
-        f"Удалить задачу?\n\n{task.get('Описание', '')}",
+        f"Отменить задачу на эту дату?\n\n{task.get('Описание', '')}",
         reply_markup=confirm_keyboard("taskdelconfirm", task_id),
     )
     return TASK_DELETE_CONFIRM
@@ -648,11 +635,12 @@ async def task_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     _, _, task_id = query.data.split(":", 2)
-    deleted = delete_task(task_id)
-    if deleted:
-        await refresh_existing_exports_for_date(context, parse_date(deleted["Дата"]))
+    _, task = get_task_by_id(task_id)
+    if task:
+        update_task_fields(task_id, **{"Статус": TASK_STATUS_CANCELLED})
+        await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
     context.user_data.clear()
-    await query.edit_message_text("Нерегулярная задача удалена ✅", reply_markup=irregular_tasks_menu_keyboard())
+    await query.edit_message_text("Задача отменена на выбранную дату ✅", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -680,7 +668,7 @@ async def regular_add_weekday_selected(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     context.user_data["regular_weekday"] = int(query.data.replace("regweekday:", ""))
-    await query.edit_message_text("Выберите тип регулярной задачи:", reply_markup=task_type_keyboard())
+    await query.edit_message_text("Выберите тип шаблона:", reply_markup=task_type_keyboard())
     return REG_ADD_TYPE
 
 
@@ -688,7 +676,7 @@ async def regular_add_type_selected(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
     context.user_data["regular_task_type"] = query.data.replace("tasktype:", "")
-    await query.edit_message_text("Введите описание регулярной задачи:")
+    await query.edit_message_text("Введите описание шаблона:")
     return REG_ADD_DESCRIPTION
 
 
@@ -721,7 +709,7 @@ async def regular_assignee_mode_selected(update: Update, context: ContextTypes.D
     if "edit_template_id" in context.user_data:
         set_task_template_assignees(context.user_data["edit_template_id"], mode, [])
         context.user_data.clear()
-        await query.edit_message_text("Исполнители регулярной задачи обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
+        await query.edit_message_text("Исполнители шаблона обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
         return ConversationHandler.END
     await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
     return REG_ADD_DEADLINE
@@ -738,7 +726,7 @@ async def regular_assignee_selected(update: Update, context: ContextTypes.DEFAUL
         if "edit_template_id" in context.user_data:
             set_task_template_assignees(context.user_data["edit_template_id"], ASSIGNEE_MODE_SPECIFIC, employees)
             context.user_data.clear()
-            await query.edit_message_text("Исполнители регулярной задачи обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
+            await query.edit_message_text("Исполнители шаблона обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
             return ConversationHandler.END
         await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
         return REG_ADD_DEADLINE
@@ -761,7 +749,7 @@ async def finish_regular_task_creation(update: Update, context: ContextTypes.DEF
         deadline=context.user_data.get("regular_deadline", ""),
     )
     context.user_data.clear()
-    await update.callback_query.edit_message_text(f"Регулярная задача создана ✅\n{template_id}", reply_markup=regular_tasks_menu_keyboard())
+    await update.callback_query.edit_message_text(f"Шаблон создан ✅\n{template_id}", reply_markup=regular_tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -787,7 +775,7 @@ async def regular_edit_day_selected(update: Update, context: ContextTypes.DEFAUL
         )
         return ConversationHandler.END
     await query.edit_message_text(
-        f"{WEEKDAY_NAMES[weekday]}. Выберите регулярную задачу:",
+        f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон:",
         reply_markup=regular_task_select_keyboard(templates, "regedit"),
     )
     return REG_EDIT_SELECT
@@ -811,7 +799,7 @@ async def regular_edit_field_selected(update: Update, context: ContextTypes.DEFA
     await query.answer()
     field = query.data.replace("regeditfield:", "")
     if field == "description":
-        await query.edit_message_text("Введите новое описание регулярной задачи:")
+        await query.edit_message_text("Введите новое описание шаблона:")
         return REG_EDIT_DESCRIPTION
     if field == "weekday":
         await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regeditweekday"))
@@ -835,7 +823,7 @@ async def regular_edit_description_received(update: Update, context: ContextType
         return REG_EDIT_DESCRIPTION
     update_task_template_fields(context.user_data["edit_template_id"], **{"Описание": description})
     context.user_data.clear()
-    await update.message.reply_text("Описание регулярной задачи обновлено ✅", reply_markup=regular_tasks_menu_keyboard())
+    await update.message.reply_text("Описание шаблона обновлено ✅", reply_markup=regular_tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -857,7 +845,7 @@ async def regular_edit_type_selected(update: Update, context: ContextTypes.DEFAU
         fields.update({"Тип исполнителей": ASSIGNEE_MODE_NONE, "Исполнители ID": "", "Исполнители": ""})
     update_task_template_fields(context.user_data["edit_template_id"], **fields)
     context.user_data.clear()
-    await query.edit_message_text("Тип регулярной задачи обновлен ✅", reply_markup=regular_tasks_menu_keyboard())
+    await query.edit_message_text("Тип шаблона обновлен ✅", reply_markup=regular_tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -883,7 +871,7 @@ async def regular_delete_day_selected(update: Update, context: ContextTypes.DEFA
         )
         return ConversationHandler.END
     await query.edit_message_text(
-        f"{WEEKDAY_NAMES[weekday]}. Выберите регулярную задачу для удаления:",
+        f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон для удаления:",
         reply_markup=regular_task_select_keyboard(templates, "regdel"),
     )
     return REG_DELETE_SELECT
@@ -898,7 +886,7 @@ async def regular_delete_selected(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("Регулярная задача не найдена.", reply_markup=regular_tasks_menu_keyboard())
         return ConversationHandler.END
     await query.edit_message_text(
-        f"Удалить регулярную задачу?\n\n{template.get('Описание', '')}",
+        f"Удалить шаблон?\n\n{template.get('Описание', '')}",
         reply_markup=confirm_keyboard("regdelconfirm", template_id),
     )
     return REG_DELETE_CONFIRM
@@ -1062,6 +1050,9 @@ def setup_tasks_jobs(app):
 def get_tasks_handlers():
     conversation = ConversationHandler(
         entry_points=[
+            CallbackQueryHandler(irregular_add_start, pattern=r"^task:add$"),
+            CallbackQueryHandler(irregular_edit_start, pattern=r"^task:edit$"),
+            CallbackQueryHandler(irregular_delete_start, pattern=r"^task:delete$"),
             CallbackQueryHandler(irregular_add_start, pattern=r"^irreg:add$"),
             CallbackQueryHandler(irregular_view_start, pattern=r"^irreg:view$"),
             CallbackQueryHandler(irregular_edit_start, pattern=r"^irreg:edit$"),
