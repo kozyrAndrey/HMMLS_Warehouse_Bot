@@ -13,7 +13,10 @@ INFO_FILES = {
     "phones": ("Телефоны сотрудников", INFO_DIR / "employee_phones.txt"),
     "guards": ("Охранники", INFO_DIR / "guards.txt"),
     "license_plates": ("Номерные знаки", INFO_DIR / "license_plates.txt"),
+    "warehouse_duties": ("Обязанности сотрудника склада", INFO_DIR / "warehouse_duties.txt"),
 }
+
+POWER_OF_ATTORNEY_GLOB = "power_of_attorney.*"
 
 ROLE_LABELS = {
     "warehouse_employee": "Сотрудник склада",
@@ -38,10 +41,12 @@ def instructions_keyboard():
 
 
 def info_keyboard():
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton(label, callback_data=f"ref:info:{key}")]
         for key, (label, _path) in INFO_FILES.items()
-    ])
+    ]
+    rows.append([InlineKeyboardButton("Доверенность", callback_data="ref:info:power_of_attorney")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def instructions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,6 +93,10 @@ async def info_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(build_employee_phones_text())
         return
 
+    if key == "power_of_attorney":
+        await send_power_of_attorney(update, context)
+        return
+
     label, path = INFO_FILES.get(key, ("Информация", None))
     if not path or not path.exists():
         await query.edit_message_text(f"Раздел «{label}» пока не заполнен.")
@@ -95,6 +104,31 @@ async def info_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = path.read_text(encoding="utf-8").strip()
     await query.edit_message_text(text or f"Раздел «{label}» пока пуст.")
+
+
+def power_of_attorney_file():
+    files = sorted(INFO_DIR.glob(POWER_OF_ATTORNEY_GLOB), key=lambda path: path.name.lower())
+    return files[0] if files else None
+
+
+async def send_power_of_attorney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    path = power_of_attorney_file()
+    if not path:
+        await query.edit_message_text(
+            "Файл доверенности пока не найден.\n\n"
+            f"Добавьте его в папку {INFO_DIR} с именем power_of_attorney.pdf или power_of_attorney.docx."
+        )
+        return
+
+    await query.edit_message_text("Отправляю доверенность...")
+    with open(path, "rb") as file:
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=file,
+            filename=path.name,
+            caption="Доверенность",
+        )
 
 
 def build_employee_phones_text():
