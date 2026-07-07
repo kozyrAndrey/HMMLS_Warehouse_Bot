@@ -22,7 +22,10 @@ from handlers.common import (
     last_records,
     menu_last_records,
     db_status,
+    show_employees_menu,
     show_main_menu,
+    show_marking_menu,
+    show_products_menu,
     show_receiving_menu,
     show_returns_menu,
     start,
@@ -36,6 +39,10 @@ from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
 from modules.consumables.handlers import get_consumables_handlers
 from modules.recruitment.handlers import get_recruitment_handlers
+from modules.marking.handlers import get_marking_handlers
+from modules.reference.handlers import get_reference_handlers
+from modules.employees.handlers import get_employee_handlers
+from modules.products.handlers import get_product_handlers
 
 
 def setup_logging():
@@ -154,6 +161,10 @@ def main():
     app.add_handler(CommandHandler("db_status", db_status))
     app.add_handler(CommandHandler("whereami", whereami))
 
+    # Справочная информация.
+    for handler in get_reference_handlers():
+        app.add_handler(handler)
+
     # Основные сценарии.
     app.add_handler(get_incoming_conversation_handler())
     app.add_handler(get_returns_conversation_handler())
@@ -182,6 +193,18 @@ def main():
     for handler in get_recruitment_handlers():
         app.add_handler(handler)
 
+    # Маркировка.
+    for handler in get_marking_handlers():
+        app.add_handler(handler)
+
+    # Сотрудники.
+    for handler in get_employee_handlers():
+        app.add_handler(handler)
+
+    # Товары.
+    for handler in get_product_handlers():
+        app.add_handler(handler)
+
     setup_schedule_jobs(app)
     setup_tasks_jobs(app)
 
@@ -189,6 +212,9 @@ def main():
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
     app.add_handler(CallbackQueryHandler(show_receiving_menu, pattern=r"^section:receiving$"))
     app.add_handler(CallbackQueryHandler(show_returns_menu, pattern=r"^section:returns$"))
+    app.add_handler(CallbackQueryHandler(show_marking_menu, pattern=r"^section:marking$"))
+    app.add_handler(CallbackQueryHandler(show_employees_menu, pattern=r"^section:employees$"))
+    app.add_handler(CallbackQueryHandler(show_products_menu, pattern=r"^section:products$"))
     app.add_handler(CallbackQueryHandler(menu_last_records, pattern=r"^menu:last$"))
 
     print("Bot started...")

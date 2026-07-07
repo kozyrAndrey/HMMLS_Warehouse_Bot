@@ -50,11 +50,19 @@ def format_task_line(index, record, include_assignees=True, include_source=False
 
 
 def filter_active_export_tasks(tasks, task_type):
-    return [
+    filtered = [
         task for task in tasks
         if str(task.get("Тип задачи", "")).strip() == task_type
         and str(task.get("Статус", "")).strip() != TASK_STATUS_CANCELLED
     ]
+    return sorted(filtered, key=task_deadline_sort_key)
+
+
+def task_deadline_sort_key(task):
+    deadline = str(task.get("Дедлайн", "")).strip()
+    if not deadline:
+        return (1, "99:99")
+    return (0, deadline)
 
 
 def format_warehouse_tasks_message(day, tasks):
@@ -82,8 +90,14 @@ def format_general_tasks_message(day, tasks):
 
 
 def format_all_tasks_for_private_view(day, tasks):
-    warehouse_tasks = [task for task in tasks if str(task.get("Тип задачи", "")).strip() == TASK_TYPE_WAREHOUSE]
-    general_tasks = [task for task in tasks if str(task.get("Тип задачи", "")).strip() == TASK_TYPE_GENERAL]
+    warehouse_tasks = sorted(
+        [task for task in tasks if str(task.get("Тип задачи", "")).strip() == TASK_TYPE_WAREHOUSE],
+        key=task_deadline_sort_key,
+    )
+    general_tasks = sorted(
+        [task for task in tasks if str(task.get("Тип задачи", "")).strip() == TASK_TYPE_GENERAL],
+        key=task_deadline_sort_key,
+    )
 
     lines = [f"📋 Задачи на {date_to_str(day)}", "", "Складские:"]
     if warehouse_tasks:

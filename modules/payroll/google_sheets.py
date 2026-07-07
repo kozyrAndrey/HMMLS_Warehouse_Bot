@@ -33,6 +33,7 @@ PAYMENT_MODE_LABELS = {
 EMPLOYEE_HEADERS = [
     "employee_id",
     "ФИО",
+    "Телефон",
     "telegram_user_id",
     "telegram_username",
     "role",
@@ -349,6 +350,7 @@ def sync_employees_sheet(worksheet):
         row = [
             employee["employee_id"],
             employee["full_name"],
+            str(employee.get("phone", "")),
             str(employee.get("telegram_user_id", "")),
             employee.get("telegram_username", ""),
             employee["role"],
@@ -361,6 +363,9 @@ def sync_employees_sheet(worksheet):
         found = existing_by_id.get(employee["employee_id"])
         if found:
             row_index = found["row_index"]
+            row[2] = str(found["row_data"].get("Телефон", "")).strip()
+            existing_active = found["row_data"].get("is_active")
+            row[9] = str(safe_bool(existing_active) if str(existing_active).strip() else employee["is_active"]).upper()
             worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
         else:
             rows_to_append.append(row)
@@ -433,6 +438,7 @@ def get_employees(include_inactive=False):
         employee = {
             "employee_id": str(record.get("employee_id", "")).strip(),
             "full_name": str(record.get("ФИО", "")).strip(),
+            "phone": str(record.get("Телефон", "")).strip(),
             "telegram_user_id": str(record.get("telegram_user_id", "")).strip(),
             "telegram_username": normalize_username(record.get("telegram_username", "")),
             "role": str(record.get("role", "warehouse_employee")).strip(),
@@ -451,6 +457,97 @@ def get_employee_by_id(employee_id):
         if employee["employee_id"] == str(employee_id):
             return employee
     return None
+
+
+def append_employee(
+    full_name,
+    phone="",
+    telegram_user_id="",
+    telegram_username="",
+    role="warehouse_employee",
+    hourly_rate=0,
+    fixed_salary=0,
+    include_in_common_fund=True,
+):
+    ws = get_worksheet(EMPLOYEES_SHEET)
+    employee_id = generate_id("emp")
+    row = [
+        employee_id,
+        str(full_name).strip(),
+        str(phone or "").strip(),
+        str(telegram_user_id or "").strip(),
+        normalize_username(telegram_username),
+        str(role or "warehouse_employee").strip(),
+        str(hourly_rate or 0).replace(".", ","),
+        str(fixed_salary or 0).replace(".", ","),
+        str(bool(include_in_common_fund)).upper(),
+        "TRUE",
+    ]
+    ws.append_row(row)
+    return get_employee_by_id(employee_id)
+
+
+def set_employee_active(employee_id, is_active):
+    ws = get_worksheet(EMPLOYEES_SHEET)
+    values = ws.get_all_values()
+    employees_by_id, _ = rows_to_dict_by_key(values, "employee_id")
+    found = employees_by_id.get(str(employee_id))
+    if not found:
+        return None
+
+    row_index = found["row_index"]
+    data = found["row_data"]
+    data["is_active"] = str(bool(is_active)).upper()
+
+    row = [data.get(header, "") for header in EMPLOYEE_HEADERS]
+    end_col = column_letter(len(EMPLOYEE_HEADERS))
+    ws.update(f"A{row_index}:{end_col}{row_index}", [row])
+    return get_employee_by_id(employee_id)
+
+
+def update_employee_fields(employee_id, **fields):
+    ws = get_worksheet(EMPLOYEES_SHEET)
+    values = ws.get_all_values()
+    employees_by_id, _ = rows_to_dict_by_key(values, "employee_id")
+    found = employees_by_id.get(str(employee_id))
+    if not found:
+        return None
+
+    field_headers = {
+        "full_name": "ФИО",
+        "phone": "Телефон",
+        "telegram_user_id": "telegram_user_id",
+        "telegram_username": "telegram_username",
+        "role": "role",
+        "hourly_rate": "hourly_rate",
+        "fixed_salary": "fixed_salary",
+        "include_in_common_fund": "include_in_common_fund",
+        "is_active": "is_active",
+    }
+
+    row_index = found["row_index"]
+    data = found["row_data"]
+
+    for field_name, value in fields.items():
+        header = field_headers.get(field_name)
+        if not header:
+            continue
+
+        if field_name == "telegram_username":
+            value = normalize_username(value)
+        elif field_name in {"hourly_rate", "fixed_salary"}:
+            value = str(safe_float(value)).replace(".", ",")
+        elif field_name in {"include_in_common_fund", "is_active"}:
+            value = str(bool(value)).upper()
+        else:
+            value = str(value or "").strip()
+
+        data[header] = value
+
+    row = [data.get(header, "") for header in EMPLOYEE_HEADERS]
+    end_col = column_letter(len(EMPLOYEE_HEADERS))
+    ws.update(f"A{row_index}:{end_col}{row_index}", [row])
+    return get_employee_by_id(employee_id)
 
 
 def find_employee_for_telegram_user(user):

@@ -1,3 +1,9 @@
+import hashlib
+import json
+from copy import deepcopy
+from pathlib import Path
+
+
 # ============================================================
 # СПИСОК ТОВАРОВ
 # ============================================================
@@ -685,6 +691,55 @@ PRODUCT_CATALOG = {
 }
 
 
+CUSTOM_PRODUCTS_PATH = Path(__file__).resolve().parents[2] / "resources" / "products" / "custom_products.json"
+
+
+def _hash_key(*parts):
+    raw = "|".join(str(part or "").strip().lower() for part in parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+
+
+def _generated_key(prefix, *parts):
+    return f"{prefix}_{_hash_key(*parts)}"
+
+
+def _read_custom_catalog():
+    if not CUSTOM_PRODUCTS_PATH.exists():
+        return {}
+
+    try:
+        with CUSTOM_PRODUCTS_PATH.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def _write_custom_catalog(catalog):
+    CUSTOM_PRODUCTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with CUSTOM_PRODUCTS_PATH.open("w", encoding="utf-8") as file:
+        json.dump(catalog, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+
+def _find_category_id_by_name(category_name):
+    target = str(category_name or "").strip().lower()
+    for category_id, category_data in CATEGORIES.items():
+        if str(category_data.get("name", "")).strip().lower() == target:
+            return category_id
+    return None
+
+
+def _find_model_id_by_name(category_id, model_name):
+    target = str(model_name or "").strip().lower()
+    models = CATEGORIES.get(category_id, {}).get("models", {})
+    for model_id, model_data in models.items():
+        if str(model_data.get("name", "")).strip().lower() == target:
+            return model_id
+    return None
+
+
 def _build_flat_products(category_data):
     products = {}
 
@@ -697,12 +752,97 @@ def _build_flat_products(category_data):
 
 CATEGORIES = {}
 
-for category_id, category_data in PRODUCT_CATALOG.items():
+def _merge_category(category_id, category_data):
     CATEGORIES[category_id] = {
         "name": category_data["name"],
-        "models": category_data["models"],
+        "models": deepcopy(category_data["models"]),
         "products": _build_flat_products(category_data),
     }
+
+
+def _refresh_category_products(category_id):
+    CATEGORIES[category_id]["products"] = _build_flat_products(CATEGORIES[category_id])
+
+
+def _merge_custom_catalog(catalog):
+    for category_id, category_data in catalog.items():
+        if category_id not in CATEGORIES:
+            CATEGORIES[category_id] = {
+                "name": category_data.get("name", category_id),
+                "models": {},
+                "products": {},
+            }
+
+        if category_data.get("name"):
+            CATEGORIES[category_id]["name"] = category_data["name"]
+
+        for model_id, model_data in category_data.get("models", {}).items():
+            if model_id not in CATEGORIES[category_id]["models"]:
+                CATEGORIES[category_id]["models"][model_id] = {
+                    "name": model_data.get("name", model_id),
+                    "variants": {},
+                }
+
+            if model_data.get("name"):
+                CATEGORIES[category_id]["models"][model_id]["name"] = model_data["name"]
+
+            CATEGORIES[category_id]["models"][model_id]["variants"].update(model_data.get("variants", {}))
+
+        _refresh_category_products(category_id)
+
+
+def reload_product_catalog():
+    CATEGORIES.clear()
+    for category_id, category_data in PRODUCT_CATALOG.items():
+        _merge_category(category_id, category_data)
+    _merge_custom_catalog(_read_custom_catalog())
+
+
+def add_custom_product(category_name, model_name, color):
+    category_name = str(category_name or "").strip()
+    model_name = str(model_name or "").strip()
+    color = str(color or "").strip()
+
+    if not category_name or not model_name:
+        raise ValueError("Нужно указать группу и модель.")
+
+    if not color:
+        color = "ONE COLOR"
+
+    reload_product_catalog()
+
+    category_id = _find_category_id_by_name(category_name) or _generated_key("cat", category_name)
+    model_id = _find_model_id_by_name(category_id, model_name) or _generated_key("model", category_name, model_name)
+    variant_id = _generated_key("variant", category_name, model_name, color)
+    product_id = _generated_key("custom", category_name, model_name, color)
+    product_name = model_name if color.upper() == "ONE COLOR" else f"{model_name} {color}"
+
+    catalog = _read_custom_catalog()
+    category_data = catalog.setdefault(category_id, {"name": category_name, "models": {}})
+    category_data["name"] = CATEGORIES.get(category_id, {}).get("name", category_name)
+    model_data = category_data.setdefault("models", {}).setdefault(model_id, {"name": model_name, "variants": {}})
+    model_data["name"] = CATEGORIES.get(category_id, {}).get("models", {}).get(model_id, {}).get("name", model_name)
+    model_data.setdefault("variants", {})[variant_id] = {
+        "id": product_id,
+        "color": color.upper(),
+        "name": product_name,
+    }
+
+    _write_custom_catalog(catalog)
+    reload_product_catalog()
+
+    return {
+        "category_id": category_id,
+        "category_name": CATEGORIES[category_id]["name"],
+        "model_id": model_id,
+        "model_name": CATEGORIES[category_id]["models"][model_id]["name"],
+        "product_id": product_id,
+        "product_name": CATEGORIES[category_id]["products"][product_id],
+        "color": color.upper(),
+    }
+
+
+reload_product_catalog()
 
 
 SIZES = ["2XS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "ONE SIZE"]

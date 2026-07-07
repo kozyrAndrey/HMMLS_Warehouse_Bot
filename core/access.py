@@ -8,9 +8,9 @@ import logging
 # если справочник временно недоступен.
 
 ROLE_PERMISSIONS = {
-    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
-    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
-    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables"},
+    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
+    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
+    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
     "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables"},
     "viewer": {"last_records"},
 }

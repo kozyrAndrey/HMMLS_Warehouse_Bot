@@ -1,6 +1,11 @@
 import os
-from dotenv import load_dotenv
 from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 load_dotenv()
 
@@ -80,3 +85,16 @@ SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TO
 
 RETURN_CHZ_CHAT_ID = os.getenv("RETURN_CHZ_CHAT_ID", "-1002637764298")
 RETURN_CHZ_TOPIC_ID = os.getenv("RETURN_CHZ_TOPIC_ID", "740")
+
+
+# ============================================================
+# НАСТРОЙКИ ИНТЕГРАЦИИ С МОИМСКЛАДОМ
+# ============================================================
+
+MOYSKLAD_TOKEN = os.getenv("MOYSKLAD_TOKEN", "")
+MOYSKLAD_API_BASE_URL = os.getenv(
+    "MOYSKLAD_API_BASE_URL",
+    "https://api.moysklad.ru/api/remap/1.2",
+)
+MOYSKLAD_CA_FILE = os.getenv("MOYSKLAD_CA_FILE", "")
+MOYSKLAD_SSL_VERIFY = os.getenv("MOYSKLAD_SSL_VERIFY", "true")

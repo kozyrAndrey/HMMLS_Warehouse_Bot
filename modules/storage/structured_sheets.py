@@ -9,6 +9,7 @@ SHEET_TABLES = {
         "columns": [
             ("employee_id", "employee_id"),
             ("ФИО", "full_name"),
+            ("Телефон", "phone"),
             ("telegram_user_id", "telegram_user_id"),
             ("telegram_username", "telegram_username"),
             ("role", "role"),

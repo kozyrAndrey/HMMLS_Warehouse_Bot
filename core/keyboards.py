@@ -16,7 +16,7 @@ def build_start_keyboard():
 # ГЛАВНОЕ МЕНЮ: ВЫБОР РАЗДЕЛА
 # ============================================================
 
-def build_main_menu_keyboard(recruitment_tester=False):
+def build_main_menu_keyboard(recruitment_tester=False, manager=False):
     keyboard = [
         [InlineKeyboardButton("📦 Отчет оприходований", callback_data="section:receiving")],
         [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
@@ -26,6 +26,37 @@ def build_main_menu_keyboard(recruitment_tester=False):
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
     ]
 
+    if manager:
+        keyboard.append([InlineKeyboardButton("🏷 Маркировка", callback_data="section:marking")])
+        keyboard.append([InlineKeyboardButton("👥 Сотрудники", callback_data="section:employees")])
+        keyboard.append([InlineKeyboardButton("🧺 Товары", callback_data="section:products")])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_marking_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📤 Выгрузка кодов для Trend Island", callback_data="marking:trend_export")],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_employees_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить сотрудника", callback_data="emp:add")],
+        [InlineKeyboardButton("✏️ Изменить сотрудника", callback_data="emp:edit")],
+        [InlineKeyboardButton("🚫 Уволить сотрудника", callback_data="emp:fire")],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_products_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить товар", callback_data="prodadmin:add")],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 

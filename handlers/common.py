@@ -3,9 +3,13 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
+from modules.payroll.google_sheets import find_employee_for_telegram_user, is_manager
 from modules.receiving.postgres_storage import get_last_records_text, get_receiving_db_status
 from core.keyboards import (
+    build_employees_menu_keyboard,
+    build_marking_menu_keyboard,
     build_main_menu_keyboard,
+    build_products_menu_keyboard,
     build_receiving_menu_keyboard,
     build_receiving_report_type_keyboard,
     build_returns_menu_keyboard,
@@ -27,10 +31,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     context.user_data.clear()
+    employee = find_employee_for_telegram_user(update.effective_user)
 
     await query.edit_message_text(
         "Выберите раздел:",
-        reply_markup=build_main_menu_keyboard(),
+        reply_markup=build_main_menu_keyboard(manager=is_manager(employee)),
     )
 
     return ConversationHandler.END
@@ -64,20 +69,88 @@ async def show_returns_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def show_marking_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+
+    employee = find_employee_for_telegram_user(update.effective_user)
+    if not is_manager(employee):
+        await query.edit_message_text(
+            "⛔️ Раздел маркировки доступен только руководителям.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "🏷 Маркировка:",
+        reply_markup=build_marking_menu_keyboard(),
+    )
+
+    return ConversationHandler.END
+
+
+async def show_employees_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+
+    employee = find_employee_for_telegram_user(update.effective_user)
+    if not is_manager(employee):
+        await query.edit_message_text(
+            "⛔️ Раздел сотрудников доступен только руководителям.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "👥 Сотрудники:",
+        reply_markup=build_employees_menu_keyboard(),
+    )
+
+    return ConversationHandler.END
+
+
+async def show_products_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+
+    employee = find_employee_for_telegram_user(update.effective_user)
+    if not is_manager(employee):
+        await query.edit_message_text(
+            "⛔️ Раздел товаров доступен только руководителям.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "🧺 Товары:",
+        reply_markup=build_products_menu_keyboard(),
+    )
+
+    return ConversationHandler.END
+
+
 async def send_main_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Выберите раздел:"):
     context.user_data.clear()
+    employee = find_employee_for_telegram_user(update.effective_user)
+    reply_markup = build_main_menu_keyboard(manager=is_manager(employee))
 
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         await query.edit_message_text(
             text,
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=reply_markup,
         )
     else:
         await update.message.reply_text(
             text,
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=reply_markup,
         )
 
     return ConversationHandler.END

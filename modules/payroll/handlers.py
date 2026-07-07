@@ -61,6 +61,8 @@ from modules.payroll.google_sheets import (
     now_str,
 )
 from modules.payroll.pdf_reports import create_payroll_pdf
+from modules.tasks.config import TASK_TYPE_GENERAL, TASK_TYPE_WAREHOUSE
+from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_date
 
 
 (
@@ -71,6 +73,13 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     CREATE_TASKS,
     CREATE_KPI_SELECT,
     CREATE_KPI_QTY,
+    CREATE_MANAGER_VOLUMES,
+    CREATE_MANAGER_SPEED,
+    CREATE_MANAGER_ERRORS,
+    CREATE_MANAGER_PROBLEMS,
+    CREATE_MANAGER_PERSONAL_PLAN,
+    CREATE_MANAGER_WAREHOUSE_PLAN,
+    CREATE_MANAGER_COMPLETION,
     EDIT_EMPLOYEE,
     EDIT_DATE,
     EDIT_FIELD,
@@ -104,7 +113,7 @@ from modules.payroll.pdf_reports import create_payroll_pdf
     BONUS_COMMENT,
     BONUS_DELETE_SELECT,
     CLEANUP_CONFIRM,
-) = range(300, 340)
+) = range(300, 347)
 
 
 # ============================================================
@@ -331,6 +340,11 @@ def penalty_photos_keyboard(has_photos=False):
     return InlineKeyboardMarkup(rows)
 
 
+def manager_wizard_choice_keyboard(rows):
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ============================================================
 # ОБЩИЕ ХЕЛПЕРЫ
 # ============================================================
@@ -450,14 +464,209 @@ def format_kpi_lines(kpi_items):
     return "\n".join(lines)
 
 
-def format_daily_report_text(report_model):
-    employee = report_model["employee"]
+def is_warehouse_manager(employee):
+    return bool(employee and employee.get("role") == "warehouse_manager")
+
+
+def get_brand_managers():
+    return [
+        employee for employee in get_employees(include_inactive=True)
+        if employee.get("role") == "brand_manager" and str(employee.get("telegram_user_id", "")).strip()
+    ]
+
+
+def parse_report_date(value):
+    return datetime.strptime(value, "%d.%m.%Y")
+
+
+def report_tomorrow_date(report_date):
+    return parse_report_date(report_date) + timedelta(days=1)
+
+
+def tasks_for_report_plan(report_date, task_type):
+    day = report_tomorrow_date(report_date).date()
+    try:
+        materialize_templates_for_date(day)
+        tasks = get_tasks_by_date(day, include_cancelled=False)
+    except Exception:
+        logging.exception("Не удалось получить задачи на завтра для отчета")
+        return []
+    return [task for task in tasks if str(task.get("Тип задачи", "")).strip() == task_type]
+
+
+def format_plan_tasks_for_report(tasks):
+    if not tasks:
+        return "—"
+    lines = []
+    for index, task in enumerate(tasks, start=1):
+        description = str(task.get("Описание", "")).strip()
+        deadline = str(task.get("Дедлайн", "")).strip()
+        if deadline:
+            description = f"{description} (дедлайн: {deadline})"
+        lines.append(f"{index}. {description}")
+    return "\n".join(lines)
+
+
+MANAGER_VOLUME_STEPS = [
+    ("sent_orders", "Отправлено заказов", "Сколько заказов отправлено за день?"),
+    ("accepted_goods", "Принятых товаров", "Сколько товаров принято за день?"),
+    ("posted_goods", "Оприходованных товаров", "Сколько товаров оприходовано?"),
+    ("posted_returns", "Оприходованных возвратов", "Сколько возвратов оприходовано?"),
+    ("stock_shipments", "Отправка стока в магазины", "Сколько было отправок стока в магазины?"),
+    (
+        "no_shipments_work",
+        "Если не было отправок, то что сделали за день",
+        "Если отправок не было, что сделали за день? Если отправки были, напишите «не актуально».",
+    ),
+]
+
+MANAGER_ERROR_STEPS = [
+    ("shipping_error", "Ошибка в отправке", "Были ли ошибки в отправке?"),
+    ("receiving_error", "Ошибка в оприходовании", "Были ли ошибки в оприходовании?"),
+    ("discipline_violation", "Нарушение дисциплины/порядка", "Были ли нарушения дисциплины или порядка?"),
+    ("sanction", "Была ли применена санкция? Если да, то какая", "Была ли применена санкция? Если да, то какая?"),
+]
+
+MANAGER_COMPLETION_STEPS = [
+    ("all_tasks_done", "Были ли выполнены все задачи на день?", "Были ли выполнены все задачи на день?"),
+    (
+        "postponed_reason",
+        "Если нет, то почему и на какой срок перенесена задача",
+        "Если не все выполнено, почему и на какой срок перенесена задача? Если все выполнено, напишите «не актуально».",
+    ),
+    ("day_score", "Общая оценка дня", "Оцените день от 1 до 10."),
+]
+
+
+def manager_step_prompt(step):
+    for steps in (MANAGER_VOLUME_STEPS, MANAGER_ERROR_STEPS, MANAGER_COMPLETION_STEPS):
+        for key, _label, prompt in steps:
+            if key == step:
+                return prompt
+
+    prompts = {
+        "speed_task": "Блок «СКОРОСТЬ».\n\nКакую задачу описываем?",
+        "speed_time": "Сколько времени ушло на эту задачу?",
+        "speed_blockers": "Было ли что-то, что замедляло выполнение этой задачи?",
+        "problem_description": "Блок «ПРОБЛЕМЫ».\n\nОпишите проблему.",
+        "problem_reason": "Какая причина проблемы?",
+        "problem_solution": "Какое решение принято для её решения?",
+        "personal_plan_extra": "Напишите задачу, которую нужно добавить в личный план на завтра.",
+        "warehouse_plan_extra": "Напишите задачу, которую нужно добавить в складской план на завтра.",
+    }
+    return prompts.get(step, "Введите ответ:")
+
+
+def format_labeled_lines(steps, values):
+    return "\n".join(
+        f"• {label}: {str(values.get(key, '')).strip() or '—'}"
+        for key, label, _prompt in steps
+    )
+
+
+def format_speed_entries(entries):
+    if not entries:
+        return "—"
+    lines = []
+    for index, entry in enumerate(entries, start=1):
+        lines.extend(
+            [
+                f"{index}. Задача: {entry.get('task') or '—'}",
+                f"   Какое количество времени ушло на задачу: {entry.get('time') or '—'}",
+                f"   Было ли то, что замедляло выполнение задач: {entry.get('blockers') or '—'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_problem_entries(entries):
+    if not entries:
+        return "—"
+    lines = []
+    for index, entry in enumerate(entries, start=1):
+        lines.extend(
+            [
+                f"{index}. Описание проблем/ы: {entry.get('description') or '—'}",
+                f"   Причина проблем/ы: {entry.get('reason') or '—'}",
+                f"   Какое решение принято для её решения: {entry.get('solution') or '—'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_plan_with_extra(auto_plan, extra_items):
+    extra_items = [str(item).strip() for item in extra_items or [] if str(item).strip()]
+    if not extra_items:
+        return str(auto_plan or "—").strip() or "—"
+
+    lines = []
+    base = str(auto_plan or "").strip()
+    if base and base != "—":
+        lines.append(base)
+        start_index = len(base.splitlines()) + 1
+    else:
+        start_index = 1
+    for offset, item in enumerate(extra_items, start=start_index):
+        lines.append(f"{offset}. {item}")
+    return "\n".join(lines)
+
+
+def build_manager_report_from_wizard(context):
+    values = context.user_data.get("manager_wizard_values") or {}
+    return {
+        "volumes": format_labeled_lines(MANAGER_VOLUME_STEPS, values),
+        "speed": format_speed_entries(context.user_data.get("manager_speed_entries") or []),
+        "errors": format_labeled_lines(MANAGER_ERROR_STEPS, values),
+        "problems": format_problem_entries(context.user_data.get("manager_problem_entries") or []),
+        "personal_plan": context.user_data.get("manager_personal_plan") or "—",
+        "warehouse_plan": context.user_data.get("manager_warehouse_plan") or "—",
+        "completion": format_labeled_lines(MANAGER_COMPLETION_STEPS, values),
+    }
+
+
+def manager_report_block(report_model):
+    manager_report = report_model.get("manager_report") or {}
     return "\n".join(
         [
-            "📝 Ежедневный отчет",
+            "",
+            "1️⃣ ОБЪЁМЫ",
+            manager_report.get("volumes") or "—",
+            "",
+            "2️⃣ СКОРОСТЬ",
+            manager_report.get("speed") or "—",
+            "",
+            "3️⃣ ОШИБКИ",
+            manager_report.get("errors") or "—",
+            "",
+            "4️⃣ ПРОБЛЕМЫ",
+            manager_report.get("problems") or "—",
+            "",
+            "5️⃣ ЛИЧНЫЙ ПЛАН НА ЗАВТРА",
+            manager_report.get("personal_plan") or "—",
+            "",
+            "6️⃣ СКЛАДСКОЙ ПЛАН НА ЗАВТРА",
+            manager_report.get("warehouse_plan") or "—",
+            "",
+            "7️⃣ ВЫПОЛНЕНИЕ ПЛАНА И ОЦЕНКА ДНЯ",
+            manager_report.get("completion") or "—",
+        ]
+    )
+
+
+def format_daily_report_text(report_model):
+    employee = report_model["employee"]
+    title = "📝 Личный отчет" if report_model.get("manager_report") else "📝 Ежедневный отчет"
+    parts = [
+        f"🗓 Дата: {report_model['date']}" if report_model.get("manager_report") else title,
+    ]
+    if report_model.get("manager_report"):
+        parts.extend(["", title])
+
+    parts.extend(
+        [
             "",
             f"Сотрудник: {employee['full_name']}",
-            f"Дата: {report_model['date']}",
+            *([] if report_model.get("manager_report") else [f"Дата: {report_model['date']}"]),
             f"Время работы: {report_model['interval']}",
             f"Отработано часов: {money(report_model['hours'])}",
             "",
@@ -468,9 +677,29 @@ def format_daily_report_text(report_model):
             format_kpi_lines(report_model["kpi_items"]),
         ]
     )
+    if report_model.get("manager_report"):
+        parts.append(manager_report_block(report_model))
+    return "\n".join(parts)
 
 
 async def send_daily_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_model):
+    employee = report_model.get("employee")
+    if is_warehouse_manager(employee):
+        telegram_user_id = str(employee.get("telegram_user_id", "")).strip()
+        if not telegram_user_id:
+            raise RuntimeError("У руководителя склада не указан telegram_user_id.")
+
+        message = await context.bot.send_message(
+            chat_id=int(telegram_user_id),
+            text=format_daily_report_text(report_model),
+        )
+
+        return {
+            "chat_id": int(telegram_user_id),
+            "thread_id": "",
+            "message_id": message.message_id,
+        }
+
     if not GROUP_CHAT_ID or not PAYROLL_REPORT_TOPIC_ID:
         return {"chat_id": "", "thread_id": "", "message_id": ""}
 
@@ -782,6 +1011,9 @@ async def create_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
     kpi_id = query.data.replace("crkpi:", "")
 
     if kpi_id == "done":
+        employee = get_employee_by_id(context.user_data.get("employee_id"))
+        if is_warehouse_manager(employee):
+            return await start_manager_report_wizard(query, context)
         return await finish_create_report(query, context, update.effective_user)
 
     kpi_items = get_kpi_items()
@@ -827,6 +1059,293 @@ async def create_kpi_qty_received(update: Update, context: ContextTypes.DEFAULT_
     return CREATE_KPI_SELECT
 
 
+async def send_manager_wizard_prompt(target, context: ContextTypes.DEFAULT_TYPE, text=None, reply_markup=None):
+    text = text or manager_step_prompt(context.user_data.get("manager_wizard_step"))
+    reply_markup = reply_markup or payroll_back_keyboard()
+    if hasattr(target, "edit_message_text"):
+        await target.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await target.reply_text(text, reply_markup=reply_markup)
+
+
+async def start_manager_report_wizard(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_values"] = {}
+    context.user_data["manager_speed_entries"] = []
+    context.user_data["manager_problem_entries"] = []
+    context.user_data["manager_personal_extra"] = []
+    context.user_data["manager_warehouse_extra"] = []
+    context.user_data["manager_wizard_step"] = MANAGER_VOLUME_STEPS[0][0]
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=f"Блок 1 «ОБЪЁМЫ».\n\n{MANAGER_VOLUME_STEPS[0][2]}",
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_next_manager_step(target, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("manager_wizard_step")
+    prefix = ""
+    if step in {item[0] for item in MANAGER_VOLUME_STEPS}:
+        prefix = "Блок 1 «ОБЪЁМЫ».\n\n"
+    elif step in {item[0] for item in MANAGER_ERROR_STEPS}:
+        prefix = "Блок 3 «ОШИБКИ».\n\n"
+    elif step in {item[0] for item in MANAGER_COMPLETION_STEPS}:
+        prefix = "Блок 7 «ВЫПОЛНЕНИЕ ПЛАНА И ОЦЕНКА ДНЯ».\n\n"
+    await send_manager_wizard_prompt(target, context, text=f"{prefix}{manager_step_prompt(step)}")
+    return CREATE_MANAGER_VOLUMES
+
+
+def next_step_after_linear(current_step, steps):
+    keys = [item[0] for item in steps]
+    index = keys.index(current_step)
+    return keys[index + 1] if index + 1 < len(keys) else None
+
+
+async def ask_speed_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    count = len(context.user_data.get("manager_speed_entries") or [])
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=f"Задача по скорости добавлена. Сейчас описано задач: {count}.",
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("➕ Добавить еще задачу", callback_data="mgrwiz:speed:add")],
+                [InlineKeyboardButton("➡️ Перейти к ошибкам", callback_data="mgrwiz:speed:next")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_problem_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    count = len(context.user_data.get("manager_problem_entries") or [])
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=f"Проблема добавлена. Сейчас описано проблем: {count}.",
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("➕ Добавить еще проблему", callback_data="mgrwiz:problem:add")],
+                [InlineKeyboardButton("➡️ Перейти к личному плану", callback_data="mgrwiz:problem:next")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_personal_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
+    plan = format_plan_tasks_for_report(tasks_for_report_plan(context.user_data["report_date"], TASK_TYPE_GENERAL))
+    context.user_data["auto_personal_plan"] = plan
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=(
+            "Блок 5 «ЛИЧНЫЙ ПЛАН НА ЗАВТРА».\n\n"
+            f"Автоплан:\n{plan}\n\n"
+            "Можно оставить как есть, отметить выходной или добавить задачи по одной."
+        ),
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("✅ Оставить автоплан", callback_data="mgrwiz:personal:keep")],
+                [InlineKeyboardButton("➕ Добавить задачу", callback_data="mgrwiz:personal:add")],
+                [InlineKeyboardButton("Не работаю завтра", callback_data="mgrwiz:personal:off")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_personal_plan_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    count = len(context.user_data.get("manager_personal_extra") or [])
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=f"Задача добавлена в личный план. Дополнительно добавлено: {count}.",
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("➕ Добавить еще", callback_data="mgrwiz:personal:add")],
+                [InlineKeyboardButton("➡️ Перейти к складскому плану", callback_data="mgrwiz:personal:next")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_warehouse_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
+    plan = format_plan_tasks_for_report(tasks_for_report_plan(context.user_data["report_date"], TASK_TYPE_WAREHOUSE))
+    context.user_data["auto_warehouse_plan"] = plan
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=(
+            "Блок 6 «СКЛАДСКОЙ ПЛАН НА ЗАВТРА».\n\n"
+            f"Автоплан:\n{plan}\n\n"
+            "Можно оставить как есть или добавить задачи по одной."
+        ),
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("✅ Оставить автоплан", callback_data="mgrwiz:warehouse:keep")],
+                [InlineKeyboardButton("➕ Добавить задачу", callback_data="mgrwiz:warehouse:add")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def ask_warehouse_plan_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    count = len(context.user_data.get("manager_warehouse_extra") or [])
+    await send_manager_wizard_prompt(
+        target,
+        context,
+        text=f"Задача добавлена в складской план. Дополнительно добавлено: {count}.",
+        reply_markup=manager_wizard_choice_keyboard(
+            [
+                [InlineKeyboardButton("➕ Добавить еще", callback_data="mgrwiz:warehouse:add")],
+                [InlineKeyboardButton("➡️ Перейти к оценке дня", callback_data="mgrwiz:warehouse:next")],
+            ]
+        ),
+    )
+    return CREATE_MANAGER_VOLUMES
+
+
+async def manager_report_wizard_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = update.message.text.strip()
+    if not value:
+        await update.message.reply_text("Ответ не должен быть пустым. Введите значение:")
+        return CREATE_MANAGER_VOLUMES
+
+    step = context.user_data.get("manager_wizard_step")
+    values = context.user_data.setdefault("manager_wizard_values", {})
+
+    volume_keys = [item[0] for item in MANAGER_VOLUME_STEPS]
+    error_keys = [item[0] for item in MANAGER_ERROR_STEPS]
+    completion_keys = [item[0] for item in MANAGER_COMPLETION_STEPS]
+
+    if step in volume_keys:
+        values[step] = value
+        next_step = next_step_after_linear(step, MANAGER_VOLUME_STEPS)
+        if next_step:
+            context.user_data["manager_wizard_step"] = next_step
+            return await ask_next_manager_step(update.message, context)
+        context.user_data["manager_wizard_step"] = "speed_task"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "speed_task":
+        context.user_data["manager_current_speed"] = {"task": value}
+        context.user_data["manager_wizard_step"] = "speed_time"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "speed_time":
+        context.user_data.setdefault("manager_current_speed", {})["time"] = value
+        context.user_data["manager_wizard_step"] = "speed_blockers"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "speed_blockers":
+        current = context.user_data.pop("manager_current_speed", {})
+        current["blockers"] = value
+        context.user_data.setdefault("manager_speed_entries", []).append(current)
+        return await ask_speed_continue(update.message, context)
+
+    if step in error_keys:
+        values[step] = value
+        next_step = next_step_after_linear(step, MANAGER_ERROR_STEPS)
+        if next_step:
+            context.user_data["manager_wizard_step"] = next_step
+            return await ask_next_manager_step(update.message, context)
+        context.user_data["manager_wizard_step"] = "problem_description"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "problem_description":
+        context.user_data["manager_current_problem"] = {"description": value}
+        context.user_data["manager_wizard_step"] = "problem_reason"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "problem_reason":
+        context.user_data.setdefault("manager_current_problem", {})["reason"] = value
+        context.user_data["manager_wizard_step"] = "problem_solution"
+        return await ask_next_manager_step(update.message, context)
+
+    if step == "problem_solution":
+        current = context.user_data.pop("manager_current_problem", {})
+        current["solution"] = value
+        context.user_data.setdefault("manager_problem_entries", []).append(current)
+        return await ask_problem_continue(update.message, context)
+
+    if step == "personal_plan_extra":
+        context.user_data.setdefault("manager_personal_extra", []).append(value)
+        return await ask_personal_plan_continue(update.message, context)
+
+    if step == "warehouse_plan_extra":
+        context.user_data.setdefault("manager_warehouse_extra", []).append(value)
+        return await ask_warehouse_plan_continue(update.message, context)
+
+    if step in completion_keys:
+        values[step] = value
+        next_step = next_step_after_linear(step, MANAGER_COMPLETION_STEPS)
+        if next_step:
+            context.user_data["manager_wizard_step"] = next_step
+            return await ask_next_manager_step(update.message, context)
+        context.user_data["manager_report"] = build_manager_report_from_wizard(context)
+        return await finish_create_report(update.message, context, update.effective_user)
+
+    await update.message.reply_text("Я потерял текущий шаг отчета. Начните создание отчета заново.")
+    return ConversationHandler.END
+
+
+async def manager_report_wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data.replace("mgrwiz:", "")
+
+    if action == "speed:add":
+        context.user_data["manager_wizard_step"] = "speed_task"
+        return await ask_next_manager_step(query, context)
+    if action == "speed:next":
+        context.user_data["manager_wizard_step"] = MANAGER_ERROR_STEPS[0][0]
+        return await ask_next_manager_step(query, context)
+
+    if action == "problem:add":
+        context.user_data["manager_wizard_step"] = "problem_description"
+        return await ask_next_manager_step(query, context)
+    if action == "problem:next":
+        return await ask_personal_plan_choice(query, context)
+
+    if action == "personal:keep":
+        context.user_data["manager_personal_plan"] = context.user_data.get("auto_personal_plan") or "—"
+        return await ask_warehouse_plan_choice(query, context)
+    if action == "personal:off":
+        context.user_data["manager_personal_plan"] = "Не работаю завтра"
+        return await ask_warehouse_plan_choice(query, context)
+    if action == "personal:add":
+        context.user_data["manager_wizard_step"] = "personal_plan_extra"
+        return await ask_next_manager_step(query, context)
+    if action == "personal:next":
+        context.user_data["manager_personal_plan"] = format_plan_with_extra(
+            context.user_data.get("auto_personal_plan"),
+            context.user_data.get("manager_personal_extra"),
+        )
+        return await ask_warehouse_plan_choice(query, context)
+
+    if action == "warehouse:keep":
+        context.user_data["manager_warehouse_plan"] = context.user_data.get("auto_warehouse_plan") or "—"
+        context.user_data["manager_wizard_step"] = MANAGER_COMPLETION_STEPS[0][0]
+        return await ask_next_manager_step(query, context)
+    if action == "warehouse:add":
+        context.user_data["manager_wizard_step"] = "warehouse_plan_extra"
+        return await ask_next_manager_step(query, context)
+    if action == "warehouse:next":
+        context.user_data["manager_warehouse_plan"] = format_plan_with_extra(
+            context.user_data.get("auto_warehouse_plan"),
+            context.user_data.get("manager_warehouse_extra"),
+        )
+        context.user_data["manager_wizard_step"] = MANAGER_COMPLETION_STEPS[0][0]
+        return await ask_next_manager_step(query, context)
+
+    await query.edit_message_text("Неизвестное действие.", reply_markup=payroll_back_keyboard())
+    return CREATE_MANAGER_VOLUMES
+
+
 async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, telegram_user):
     employee = get_employee_by_id(context.user_data.get("employee_id"))
     if not employee:
@@ -847,6 +1366,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         "tasks": tasks,
         "kpi_items": kpi_items,
         "kpi_sum": calculate_kpi_sum(kpi_items),
+        "manager_report": context.user_data.get("manager_report") or None,
         "telegram_chat_id": "",
         "telegram_message_id": "",
     }
@@ -854,16 +1374,20 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
     try:
         telegram_data = await send_daily_report_to_topic(context, report_model)
         append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data)
-        status = "Отчет сохранен и отправлен в тему ✅"
+        if is_warehouse_manager(employee):
+            status = "Отчет сохранен и отправлен руководителю склада в личные сообщения ✅"
+        else:
+            status = "Отчет сохранен и отправлен в тему ✅"
     except Exception as error:
         logging.exception("Ошибка создания ежедневного отчета")
         status = f"Отчет не удалось сохранить/отправить ⚠️\nОшибка: {error}"
 
     manager = is_manager(find_employee_for_telegram_user(telegram_user))
-    await target.edit_message_text(
-        f"{format_daily_report_text(report_model)}\n\n{status}",
-        reply_markup=payroll_main_keyboard(manager=manager),
-    )
+    text = f"{format_daily_report_text(report_model)}\n\n{status}"
+    if hasattr(target, "edit_message_text"):
+        await target.edit_message_text(text, reply_markup=payroll_main_keyboard(manager=manager))
+    else:
+        await target.reply_text(text, reply_markup=payroll_main_keyboard(manager=manager))
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1219,7 +1743,10 @@ async def finish_edit_report(query, context: ContextTypes.DEFAULT_TYPE, telegram
         report_data["telegram_thread_id"] = telegram_data.get("thread_id", "")
         report_data["telegram_message_id"] = telegram_data.get("message_id", "")
         update_daily_report(row_index, report_data)
-        status = "Отчет обновлен и новое сообщение отправлено в тему ✅"
+        if is_warehouse_manager(model.get("employee")):
+            status = "Отчет обновлен и новое сообщение отправлено руководителю склада в личные сообщения ✅"
+        else:
+            status = "Отчет обновлен и новое сообщение отправлено в тему ✅"
     except Exception as error:
         logging.exception("Ошибка обновления отчета")
         status = f"Отчет не удалось обновить полностью ⚠️\nОшибка: {error}"
@@ -2439,6 +2966,11 @@ def get_payroll_conversation_handler():
             ],
             CREATE_KPI_QTY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_kpi_qty_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            CREATE_MANAGER_VOLUMES: [
+                CallbackQueryHandler(manager_report_wizard_callback, pattern=r"^mgrwiz:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manager_report_wizard_text_received),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EDIT_EMPLOYEE: [
