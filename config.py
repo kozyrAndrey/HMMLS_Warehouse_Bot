@@ -80,6 +80,16 @@ SCHEDULE_REMINDER_TOPIC_ID = os.getenv("SCHEDULE_REMINDER_TOPIC_ID", SCHEDULE_TO
 
 
 # ============================================================
+# НАСТРОЙКИ ВНУТРЕННЕГО ИИ-АГЕНТА
+# ============================================================
+
+AI_WEATHER_AGENT_ENABLED = os.getenv("AI_WEATHER_AGENT_ENABLED", "true")
+AI_WEATHER_CITY = os.getenv("AI_WEATHER_CITY", "Москва")
+AI_WEATHER_LATITUDE = os.getenv("AI_WEATHER_LATITUDE", "55.7558")
+AI_WEATHER_LONGITUDE = os.getenv("AI_WEATHER_LONGITUDE", "37.6173")
+
+
+# ============================================================
 # НАСТРОЙКИ ОТПРАВКИ ФОТО ЧЕСТНОГО ЗНАКА ПО ВОЗВРАТАМ
 # ============================================================
 

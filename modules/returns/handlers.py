@@ -19,6 +19,13 @@ from core.keyboards import (
     build_return_sizes_keyboard,
 )
 from modules.receiving.products import CATEGORIES, SIZES
+from modules.returns.storage import (
+    create_return_record,
+    get_recent_return_records,
+    get_return_record,
+    mark_return_record_deleted,
+    update_return_record,
+)
 
 
 # ============================================================
@@ -49,7 +56,11 @@ SUPPORT_MANAGER_MENTION = "@meelxw1"
     RET_ITEM_CONDITION,
     RET_ITEM_EXTRA_PHOTO,
     RET_ITEM_CONDITION_COMMENT,
-) = range(100, 113)
+    RET_ADMIN_SELECT,
+    RET_ADMIN_EDIT_FIELD,
+    RET_ADMIN_EDIT_VALUE,
+    RET_ADMIN_DELETE_CONFIRM,
+) = range(100, 117)
 
 
 # ============================================================
@@ -138,6 +149,180 @@ def build_showroom_label_photo_keyboard():
     )
 
 
+def build_return_records_keyboard(records, action):
+    rows = []
+    for record in records:
+        label = format_return_record_button(record)
+        rows.append([InlineKeyboardButton(label, callback_data=f"retadmin:{action}:{record['id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="section:returns")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_return_edit_field_keyboard(record):
+    rows = [[InlineKeyboardButton("👤 ФИО контрагента", callback_data="retadminfield:counterparty")]]
+    if record.get("return_type") == "cdek":
+        rows.append([InlineKeyboardButton("🔢 Трек-номер", callback_data="retadminfield:track_number")])
+    else:
+        rows.append([InlineKeyboardButton("🏷 Статус этикетки", callback_data="retadminfield:label_status")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_return_delete_confirm_keyboard(record_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Удалить", callback_data=f"retadmindel:yes:{record_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")],
+        ]
+    )
+
+
+def build_return_admin_record_keyboard(record):
+    record_id = record["id"]
+    rows = [
+        [InlineKeyboardButton("👷 Сотрудник", callback_data="retadminfield:employee_name")],
+        [InlineKeyboardButton("👤 ФИО контрагента", callback_data="retadminfield:counterparty")],
+        [InlineKeyboardButton("🔁 Тип возврата", callback_data=f"retadmintype:{record_id}")],
+    ]
+    if record.get("return_type") == "cdek":
+        rows.append([InlineKeyboardButton("🔢 Трек-номер", callback_data="retadminfield:track_number")])
+    else:
+        rows.append([InlineKeyboardButton("🏷 Статус этикетки", callback_data="retadminfield:label_status")])
+    rows.extend(
+        [
+            [InlineKeyboardButton("📄 Фото накладной / этикетки", callback_data=f"retadminbasephoto:{record_id}")],
+            [InlineKeyboardButton("🧺 Товары", callback_data=f"retadminitems:{record_id}")],
+            [InlineKeyboardButton("📤 Перевыгрузить в тему", callback_data=f"retadminresend:{record_id}")],
+            [InlineKeyboardButton("⬅️ К списку", callback_data="retadmin:edit")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def build_return_admin_type_keyboard(record_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🚚 СДЭК", callback_data=f"retadmintypeset:{record_id}:cdek")],
+            [InlineKeyboardButton("🏬 Шоу-рум", callback_data=f"retadmintypeset:{record_id}:showroom")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"retadmin:edit:{record_id}")],
+        ]
+    )
+
+
+def build_return_admin_items_keyboard(record):
+    record_id = record["id"]
+    rows = []
+    for index, item in enumerate(record.get("items") or []):
+        product_name = CATEGORIES[item["category_id"]]["products"][item["product_id"]]
+        rows.append(
+            [InlineKeyboardButton(f"{index + 1}. {product_name}, {item['size']}", callback_data=f"retadminitem:{record_id}:{index}")]
+        )
+    rows.extend(
+        [
+            [InlineKeyboardButton("➕ Добавить товар", callback_data=f"retadminitemadd:{record_id}")],
+            [InlineKeyboardButton("⬅️ Назад к записи", callback_data=f"retadmin:edit:{record_id}")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def build_return_admin_item_keyboard(record_id, item_index):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧥 Товар / модель / цвет", callback_data=f"retadminitemfield:{record_id}:{item_index}:product")],
+            [InlineKeyboardButton("📏 Размер", callback_data=f"retadminitemfield:{record_id}:{item_index}:size")],
+            [InlineKeyboardButton("📌 Состояние", callback_data=f"retadminitemfield:{record_id}:{item_index}:condition")],
+            [InlineKeyboardButton("💬 Комментарий", callback_data=f"retadminitemfield:{record_id}:{item_index}:comment")],
+            [InlineKeyboardButton("🔖 Честный знак", callback_data=f"retadminitemfield:{record_id}:{item_index}:chz")],
+            [InlineKeyboardButton("📷 Фото переупаковки", callback_data=f"retadminitemfield:{record_id}:{item_index}:photo")],
+            [InlineKeyboardButton("🗑 Удалить товар", callback_data=f"retadminitemdelete:{record_id}:{item_index}")],
+            [InlineKeyboardButton("⬅️ К товарам", callback_data=f"retadminitems:{record_id}")],
+        ]
+    )
+
+
+def build_admin_category_keyboard(record_id, item_index):
+    rows = [
+        [InlineKeyboardButton(category_data["name"], callback_data=f"retadmincat:{record_id}:{item_index}:{category_id}")]
+        for category_id, category_data in CATEGORIES.items()
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_models_keyboard(record_id, item_index, category_id):
+    rows = [
+        [InlineKeyboardButton(model_data["name"], callback_data=f"retadminmodel:{record_id}:{item_index}:{model_id}")]
+        for model_id, model_data in CATEGORIES[category_id]["models"].items()
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_products_keyboard(record_id, item_index, category_id, model_id):
+    rows = []
+    for variant_data in CATEGORIES[category_id]["models"][model_id]["variants"].values():
+        color = variant_data["color"]
+        text = "Выбрать" if color == "ONE COLOR" else color
+        rows.append(
+            [InlineKeyboardButton(text, callback_data=f"retadminprod:{record_id}:{item_index}:{variant_data['id']}")]
+        )
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_sizes_keyboard(record_id, item_index):
+    rows = []
+    row = []
+    for size in SIZES:
+        row.append(InlineKeyboardButton(size, callback_data=f"retadminsizeset:{record_id}:{item_index}:{size}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_conditions_keyboard(record_id, item_index):
+    rows = [
+        [InlineKeyboardButton(data["label"], callback_data=f"retadmincondset:{record_id}:{item_index}:{condition_key}")]
+        for condition_key, data in RETURN_CONDITIONS.items()
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_chz_keyboard(record_id, item_index):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Фото отправлено", callback_data=f"retadminchzset:{record_id}:{item_index}:Фото отправлено")],
+            [InlineKeyboardButton("ЧЗ нет", callback_data=f"retadminchzset:{record_id}:{item_index}:ЧЗ нет")],
+            [InlineKeyboardButton("Очистить", callback_data=f"retadminchzset:{record_id}:{item_index}:")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")],
+        ]
+    )
+
+
+def build_admin_add_chz_keyboard(record_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("ЧЗ нет", callback_data=f"retadminaddchzmissing:{record_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")],
+        ]
+    )
+
+
+def build_admin_item_delete_keyboard(record_id, item_index):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Удалить товар", callback_data=f"retadminitemdeleteyes:{record_id}:{item_index}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"retadminitem:{record_id}:{item_index}")],
+        ]
+    )
+
+
 def get_return_type(context: ContextTypes.DEFAULT_TYPE):
     return context.user_data.get("return_type", "cdek")
 
@@ -148,6 +333,10 @@ def is_cdek_return(context: ContextTypes.DEFAULT_TYPE):
 
 def get_return_type_label(context: ContextTypes.DEFAULT_TYPE):
     return "СДЭК" if is_cdek_return(context) else "Шоу-рум"
+
+
+def get_return_type_label_from_value(return_type):
+    return "СДЭК" if return_type == "cdek" else "Шоу-рум"
 
 
 # ============================================================
@@ -378,10 +567,27 @@ async def ask_next_item_or_finish(target, context: ContextTypes.DEFAULT_TYPE, us
     summary_text = format_return_summary(context, user)
 
     try:
-        send_status = await send_return_to_topic(
+        send_status, telegram_data = await send_return_to_topic(
             context=context,
             caption=summary_text,
         )
+        if telegram_data:
+            record_id = create_return_record(
+                {
+                    "return_type": get_return_type(context),
+                    "employee_name": get_employee_full_name_for_user(user),
+                    "employee_user_id": user.id,
+                    "counterparty": context.user_data.get("return_counterparty", ""),
+                    "track_number": context.user_data.get("return_track_number", ""),
+                    "label_status": context.user_data.get("return_label_status", ""),
+                    "items": list(get_return_items(context)),
+                    "photo_ids": telegram_data.get("photo_ids", []),
+                    "chat_id": telegram_data.get("chat_id", ""),
+                    "thread_id": telegram_data.get("thread_id", ""),
+                    "message_ids": telegram_data.get("message_ids", []),
+                }
+            )
+            send_status += f"\nЗапись возврата сохранена: #{record_id}"
     except Exception as error:
         logging.exception("Не удалось отправить возврат в тему чата")
         send_status = f"Не удалось отправить сообщение в тему чата ⚠️\nОшибка: {error}"
@@ -1420,6 +1626,56 @@ def format_return_summary(context: ContextTypes.DEFAULT_TYPE, user):
 
     return "\n".join(lines)
 
+
+def format_return_record_button(record):
+    counterparty = record.get("counterparty") or "без ФИО"
+    if len(counterparty) > 28:
+        counterparty = counterparty[:25] + "..."
+    return f"#{record['id']} · {get_return_type_label_from_value(record.get('return_type'))} · {counterparty}"
+
+
+def format_return_record_summary(record):
+    items = record.get("items") or []
+    lines = [
+        f"Тип возврата: {get_return_type_label_from_value(record.get('return_type'))}",
+        f"Сотрудник: {record.get('employee_name', '')}",
+        f"ФИО контрагента: {record.get('counterparty', '')}",
+    ]
+
+    if record.get("return_type") == "cdek":
+        lines.append(f"Трек-номер: {record.get('track_number', '')}")
+    else:
+        lines.append(f"Этикетка возврата: {record.get('label_status', 'не указано')}")
+
+    lines.extend(["", f"Количество товаров: {len(items)}", "", "Товары:"])
+
+    for index, item in enumerate(items, start=1):
+        category_id = item["category_id"]
+        product_id = item["product_id"]
+        size = item["size"]
+        condition_label = item["condition_label"]
+        condition_comment = item.get("condition_comment", "")
+        chz_status = item.get("chz_status", "")
+        product_name = CATEGORIES[category_id]["products"][product_id]
+
+        if item.get("condition_key") == "normal":
+            item_line = f"{index}. {product_name} — размер {size}, ЧЗ: {chz_status}, {condition_label}"
+        else:
+            item_line = f"{index}. {product_name} — размер {size}, {condition_label}"
+
+        if condition_comment and condition_comment != "-":
+            item_line += f", комментарий: {condition_comment}"
+
+        lines.append(item_line)
+
+    mentions = get_required_mentions(items)
+    if mentions:
+        lines.append("")
+        lines.extend(mentions)
+
+    return "\n".join(lines)
+
+
 def get_return_photo_file_ids(context: ContextTypes.DEFAULT_TYPE):
     photo_file_ids = []
 
@@ -1448,7 +1704,7 @@ def split_into_chunks(items, chunk_size):
 
 async def send_return_to_topic(context: ContextTypes.DEFAULT_TYPE, caption):
     if not GROUP_CHAT_ID:
-        return "Тема чата не настроена: GROUP_CHAT_ID пустой."
+        return "Тема чата не настроена: GROUP_CHAT_ID пустой.", {}
 
     chat_id = int(GROUP_CHAT_ID)
     message_thread_id = int(RETURNS_TOPIC_ID) if RETURNS_TOPIC_ID else None
@@ -1458,12 +1714,17 @@ async def send_return_to_topic(context: ContextTypes.DEFAULT_TYPE, caption):
     final_caption = caption
 
     if not photo_file_ids:
-        await context.bot.send_message(
+        message = await context.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=final_caption,
         )
-        return "Сообщение отправлено в тему чата ✅"
+        return "Сообщение отправлено в тему чата ✅", {
+            "chat_id": chat_id,
+            "thread_id": message_thread_id or "",
+            "message_ids": [message.message_id],
+            "photo_ids": photo_file_ids,
+        }
 
     if len(final_caption) > 1000:
         final_caption = final_caption[:950] + "\n\n...текст обрезан, товаров слишком много."
@@ -1476,14 +1737,20 @@ async def send_return_to_topic(context: ContextTypes.DEFAULT_TYPE, caption):
         common_kwargs["message_thread_id"] = message_thread_id
 
     if len(photo_file_ids) == 1:
-        await context.bot.send_photo(
+        message = await context.bot.send_photo(
             **common_kwargs,
             photo=photo_file_ids[0],
             caption=final_caption,
         )
-        return "Сообщение отправлено в тему чата ✅"
+        return "Сообщение отправлено в тему чата ✅", {
+            "chat_id": chat_id,
+            "thread_id": message_thread_id or "",
+            "message_ids": [message.message_id],
+            "photo_ids": photo_file_ids,
+        }
 
     first_chunk = True
+    message_ids = []
 
     for chunk in split_into_chunks(photo_file_ids, 10):
         media = []
@@ -1494,14 +1761,945 @@ async def send_return_to_topic(context: ContextTypes.DEFAULT_TYPE, caption):
             else:
                 media.append(InputMediaPhoto(media=photo_file_id))
 
-        await context.bot.send_media_group(
+        messages = await context.bot.send_media_group(
             **common_kwargs,
             media=media,
         )
+        message_ids.extend(message.message_id for message in messages)
 
         first_chunk = False
 
-    return "Сообщение отправлено в тему чата ✅"
+    return "Сообщение отправлено в тему чата ✅", {
+        "chat_id": chat_id,
+        "thread_id": message_thread_id or "",
+        "message_ids": message_ids,
+        "photo_ids": photo_file_ids,
+    }
+
+
+async def update_return_topic_message(context: ContextTypes.DEFAULT_TYPE, record):
+    chat_id = record.get("chat_id")
+    message_ids = record.get("message_ids") or []
+    if not chat_id or not message_ids:
+        return "сообщение в теме не найдено"
+
+    text = format_return_record_summary(record)
+    if record.get("photo_ids"):
+        caption = text if len(text) <= 1000 else text[:950] + "\n\n...текст обрезан, товаров слишком много."
+        await context.bot.edit_message_caption(
+            chat_id=int(chat_id),
+            message_id=int(message_ids[0]),
+            caption=caption,
+        )
+    else:
+        await context.bot.edit_message_text(
+            chat_id=int(chat_id),
+            message_id=int(message_ids[0]),
+            text=text,
+        )
+    return "сообщение в теме обновлено"
+
+
+async def delete_return_topic_messages(context: ContextTypes.DEFAULT_TYPE, record):
+    chat_id = record.get("chat_id")
+    if not chat_id:
+        return "сообщение в теме не найдено"
+
+    deleted = 0
+    for message_id in record.get("message_ids") or []:
+        try:
+            await context.bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+            deleted += 1
+        except Exception:
+            logging.exception("Не удалось удалить сообщение возврата из темы")
+
+    return f"удалено сообщений из темы: {deleted}"
+
+
+def get_record_base_photo_ids(record):
+    item_photo_ids = {
+        item.get("extra_photo_file_id")
+        for item in record.get("items") or []
+        if item.get("extra_photo_file_id")
+    }
+    return [
+        photo_id
+        for photo_id in record.get("photo_ids") or []
+        if photo_id and photo_id not in item_photo_ids
+    ]
+
+
+def rebuild_record_photo_ids(record):
+    photo_ids = get_record_base_photo_ids(record)
+    for item in record.get("items") or []:
+        extra_photo_file_id = item.get("extra_photo_file_id")
+        if extra_photo_file_id:
+            photo_ids.append(extra_photo_file_id)
+    return photo_ids
+
+
+def make_default_return_item():
+    category_id = next(iter(CATEGORIES))
+    model_id = next(iter(CATEGORIES[category_id]["models"]))
+    variant_data = next(iter(CATEGORIES[category_id]["models"][model_id]["variants"].values()))
+    return {
+        "category_id": category_id,
+        "model_id": model_id,
+        "product_id": variant_data["id"],
+        "size": "ONE SIZE",
+        "chz_status": "ЧЗ нет",
+        "chz_photo_file_id": "",
+        "condition_key": "normal",
+        "condition_label": RETURN_CONDITIONS["normal"]["label"],
+        "condition_comment": "",
+        "extra_photo_file_id": "",
+    }
+
+
+def find_product_location(product_id):
+    for category_id, category_data in CATEGORIES.items():
+        for model_id, model_data in category_data["models"].items():
+            for variant_data in model_data["variants"].values():
+                if variant_data["id"] == product_id:
+                    return category_id, model_id
+    raise RuntimeError("Товар не найден в каталоге.")
+
+
+async def finalize_admin_pending_item(context: ContextTypes.DEFAULT_TYPE, record_id):
+    record = get_return_record(record_id)
+    if not record:
+        raise RuntimeError("Запись возврата не найдена.")
+
+    pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+    if not pending_item:
+        raise RuntimeError("Новая позиция не заполнена.")
+
+    condition_key = pending_item.get("condition_key")
+    condition = RETURN_CONDITIONS.get(condition_key, {})
+    if condition_key == "normal" and not pending_item.get("chz_status"):
+        raise RuntimeError("Не указана информация по Честному знаку.")
+    if condition.get("needs_photo") and not pending_item.get("extra_photo_file_id"):
+        raise RuntimeError("Для выбранного состояния нужно фото переупаковки.")
+    if condition.get("needs_comment") and not pending_item.get("condition_comment"):
+        raise RuntimeError("Для выбранного состояния нужен комментарий.")
+
+    items = record.get("items") or []
+    items.append(pending_item)
+    record["items"] = items
+    return await save_return_record_and_repost(context, record)
+
+
+async def send_return_record_to_topic(context: ContextTypes.DEFAULT_TYPE, record):
+    if not GROUP_CHAT_ID:
+        raise RuntimeError("GROUP_CHAT_ID не настроен.")
+
+    chat_id = int(GROUP_CHAT_ID)
+    message_thread_id = int(RETURNS_TOPIC_ID) if RETURNS_TOPIC_ID else None
+    photo_file_ids = rebuild_record_photo_ids(record)
+    text = format_return_record_summary(record)
+
+    common_kwargs = {"chat_id": chat_id}
+    if message_thread_id is not None:
+        common_kwargs["message_thread_id"] = message_thread_id
+
+    if not photo_file_ids:
+        message = await context.bot.send_message(**common_kwargs, text=text)
+        return {
+            "chat_id": chat_id,
+            "thread_id": message_thread_id or "",
+            "message_ids": [message.message_id],
+            "photo_ids": photo_file_ids,
+        }
+
+    caption = text if len(text) <= 1000 else text[:950] + "\n\n...текст обрезан, товаров слишком много."
+
+    if len(photo_file_ids) == 1:
+        message = await context.bot.send_photo(**common_kwargs, photo=photo_file_ids[0], caption=caption)
+        return {
+            "chat_id": chat_id,
+            "thread_id": message_thread_id or "",
+            "message_ids": [message.message_id],
+            "photo_ids": photo_file_ids,
+        }
+
+    message_ids = []
+    first_chunk = True
+    for chunk in split_into_chunks(photo_file_ids, 10):
+        media = []
+        for index, photo_file_id in enumerate(chunk):
+            if first_chunk and index == 0:
+                media.append(InputMediaPhoto(media=photo_file_id, caption=caption))
+            else:
+                media.append(InputMediaPhoto(media=photo_file_id))
+        messages = await context.bot.send_media_group(**common_kwargs, media=media)
+        message_ids.extend(message.message_id for message in messages)
+        first_chunk = False
+
+    return {
+        "chat_id": chat_id,
+        "thread_id": message_thread_id or "",
+        "message_ids": message_ids,
+        "photo_ids": photo_file_ids,
+    }
+
+
+async def save_return_record_and_repost(context: ContextTypes.DEFAULT_TYPE, record):
+    await delete_return_topic_messages(context, record)
+    telegram_data = await send_return_record_to_topic(context, record)
+    return update_return_record(
+        record["id"],
+        return_type=record.get("return_type", ""),
+        employee_name=record.get("employee_name", ""),
+        counterparty=record.get("counterparty", ""),
+        track_number=record.get("track_number", ""),
+        label_status=record.get("label_status", ""),
+        items=record.get("items") or [],
+        photo_ids=telegram_data.get("photo_ids", []),
+        chat_id=telegram_data.get("chat_id", ""),
+        thread_id=telegram_data.get("thread_id", ""),
+        message_ids=telegram_data.get("message_ids", []),
+    )
+
+
+# ============================================================
+# УПРАВЛЕНИЕ СОХРАНЕННЫМИ ВОЗВРАТАМИ
+# ============================================================
+
+async def return_admin_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+
+    try:
+        records = get_recent_return_records(limit=10)
+    except Exception as error:
+        logging.exception("Не удалось получить список возвратов для изменения")
+        await query.edit_message_text(
+            f"Не удалось открыть список возвратов ⚠️\nОшибка: {error}",
+            reply_markup=build_return_records_keyboard([], "edit"),
+        )
+        return ConversationHandler.END
+
+    if not records:
+        await query.edit_message_text(
+            "Пока нет сохраненных возвратов.",
+            reply_markup=build_return_records_keyboard([], "edit"),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Выберите возврат для изменения:",
+        reply_markup=build_return_records_keyboard(records, "edit"),
+    )
+    return RET_ADMIN_SELECT
+
+
+async def return_admin_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.clear()
+
+    try:
+        records = get_recent_return_records(limit=10)
+    except Exception as error:
+        logging.exception("Не удалось получить список возвратов для удаления")
+        await query.edit_message_text(
+            f"Не удалось открыть список возвратов ⚠️\nОшибка: {error}",
+            reply_markup=build_return_records_keyboard([], "delete"),
+        )
+        return ConversationHandler.END
+
+    if not records:
+        await query.edit_message_text(
+            "Пока нет сохраненных возвратов.",
+            reply_markup=build_return_records_keyboard([], "delete"),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Выберите возврат для удаления:",
+        reply_markup=build_return_records_keyboard(records, "delete"),
+    )
+    return RET_ADMIN_SELECT
+
+
+async def return_admin_edit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    record_id = query.data.rsplit(":", 1)[-1]
+    record = get_return_record(record_id)
+    if not record or record.get("status") == "deleted":
+        await query.edit_message_text("Запись возврата не найдена.", reply_markup=build_return_records_keyboard([], "edit"))
+        return ConversationHandler.END
+
+    context.user_data["return_admin_record_id"] = record_id
+    await query.edit_message_text(
+        format_return_record_summary(record) + "\n\nЧто изменить?",
+        reply_markup=build_return_admin_record_keyboard(record),
+    )
+    return RET_ADMIN_EDIT_FIELD
+
+
+async def return_admin_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    record_id = query.data.rsplit(":", 1)[-1]
+    record = get_return_record(record_id)
+    if not record or record.get("status") == "deleted":
+        await query.edit_message_text("Запись возврата не найдена.", reply_markup=build_return_records_keyboard([], "delete"))
+        return ConversationHandler.END
+
+    context.user_data["return_admin_record_id"] = record_id
+    await query.edit_message_text(
+        format_return_record_summary(record) + "\n\nУдалить эту запись и сообщения из темы?",
+        reply_markup=build_return_delete_confirm_keyboard(record_id),
+    )
+    return RET_ADMIN_DELETE_CONFIRM
+
+
+async def return_admin_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    field = query.data.replace("retadminfield:", "")
+    field_titles = {
+        "employee_name": "сотрудник",
+        "counterparty": "ФИО контрагента",
+        "track_number": "трек-номер",
+        "label_status": "статус этикетки",
+    }
+    if field not in field_titles:
+        await query.answer("Неизвестное поле", show_alert=True)
+        return RET_ADMIN_EDIT_FIELD
+
+    context.user_data["return_admin_field"] = field
+    context.user_data["return_admin_waiting_value"] = True
+    await query.edit_message_text(
+        f"Введите новое значение для поля «{field_titles[field]}»:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+    )
+    return RET_ADMIN_EDIT_VALUE
+
+
+async def return_admin_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("return_admin_waiting_value"):
+        return
+
+    value = update.message.text.strip()
+    record_id = context.user_data.get("return_admin_record_id")
+    field = context.user_data.get("return_admin_field")
+    item_index = context.user_data.get("return_admin_item_index")
+
+    if not value:
+        await update.message.reply_text("Значение не должно быть пустым. Введите еще раз:")
+        return RET_ADMIN_EDIT_VALUE
+
+    try:
+        record = get_return_record(record_id)
+        if not record:
+            raise RuntimeError("Запись возврата не найдена.")
+
+        was_adding_item = bool(context.user_data.get("return_admin_adding_item"))
+        if context.user_data.get("return_admin_adding_item") and field == "condition_comment":
+            pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+            pending_item["condition_comment"] = value
+            context.user_data["return_admin_pending_item"] = pending_item
+            record = await finalize_admin_pending_item(context, record_id)
+        elif field == "condition_comment":
+            items = record.get("items") or []
+            item_index = int(item_index)
+            items[item_index]["condition_comment"] = value
+            record["items"] = items
+        else:
+            record[field] = value
+
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить запись возврата")
+        await update.message.reply_text(
+            f"Не удалось изменить запись ⚠️\nОшибка: {error}",
+            reply_markup=build_return_records_keyboard(get_recent_return_records(limit=10), "edit"),
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        (
+            f"Товар добавлен в возврат #{record_id} ✅\n"
+            if was_adding_item
+            else f"Запись возврата #{record_id} обновлена ✅\n"
+        )
+        + "Старое сообщение удалено, новая версия отправлена в тему.",
+        reply_markup=build_return_admin_record_keyboard(record),
+    )
+    return ConversationHandler.END
+
+
+async def return_admin_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not (
+        context.user_data.get("return_admin_waiting_photo")
+        or context.user_data.get("return_admin_waiting_base_photo")
+        or context.user_data.get("return_admin_waiting_add_chz_photo")
+        or context.user_data.get("return_admin_waiting_add_extra_photo")
+    ):
+        return
+
+    record_id = context.user_data.get("return_admin_record_id")
+
+    if not update.message.photo:
+        await update.message.reply_text("Пожалуйста, отправьте именно фото.")
+        return
+
+    try:
+        record = get_return_record(record_id)
+        if not record:
+            raise RuntimeError("Запись возврата не найдена.")
+
+        was_adding_item = bool(context.user_data.get("return_admin_adding_item"))
+        if context.user_data.get("return_admin_waiting_add_chz_photo"):
+            pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+            pending_item["chz_status"] = "Фото отправлено"
+            pending_item["chz_photo_file_id"] = update.message.photo[-1].file_id
+            context.user_data["return_admin_pending_item"] = pending_item
+            record = await finalize_admin_pending_item(context, record_id)
+        elif context.user_data.get("return_admin_waiting_add_extra_photo"):
+            pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+            pending_item["extra_photo_file_id"] = update.message.photo[-1].file_id
+            context.user_data["return_admin_pending_item"] = pending_item
+            condition = RETURN_CONDITIONS.get(pending_item.get("condition_key"), {})
+            if condition.get("needs_comment"):
+                context.user_data["return_admin_field"] = "condition_comment"
+                context.user_data["return_admin_waiting_value"] = True
+                context.user_data.pop("return_admin_waiting_add_extra_photo", None)
+                await update.message.reply_text(
+                    condition.get("comment_prompt", "Введите комментарий к товару:"),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+                )
+                return
+            record = await finalize_admin_pending_item(context, record_id)
+        elif context.user_data.get("return_admin_waiting_base_photo"):
+            item_photo_ids = [
+                item.get("extra_photo_file_id")
+                for item in record.get("items") or []
+                if item.get("extra_photo_file_id")
+            ]
+            record["photo_ids"] = [update.message.photo[-1].file_id] + item_photo_ids
+        else:
+            item_index = int(context.user_data.get("return_admin_item_index"))
+            items = record.get("items") or []
+            items[item_index]["extra_photo_file_id"] = update.message.photo[-1].file_id
+            record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить фото товара в возврате")
+        await update.message.reply_text(f"Не удалось изменить фото ⚠️\nОшибка: {error}")
+        return
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        (
+            f"Товар добавлен в возврат #{record_id} ✅\n"
+            if was_adding_item
+            else f"Фото в возврате #{record_id} обновлено ✅\n"
+        )
+        + "Старое сообщение удалено, новая версия отправлена в тему.",
+        reply_markup=build_return_admin_record_keyboard(record),
+    )
+
+
+async def return_admin_base_photo_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadminbasephoto:", "")
+    context.user_data["return_admin_record_id"] = record_id
+    context.user_data["return_admin_waiting_base_photo"] = True
+    context.user_data.pop("return_admin_waiting_photo", None)
+    await query.edit_message_text(
+        "Отправьте новое фото накладной / этикетки возврата:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+    )
+
+
+async def return_admin_items_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadminitems:", "")
+    record = get_return_record(record_id)
+    if not record:
+        await query.edit_message_text("Запись возврата не найдена.", reply_markup=build_return_records_keyboard([], "edit"))
+        return
+    await query.edit_message_text("Выберите товар:", reply_markup=build_return_admin_items_keyboard(record))
+
+
+async def return_admin_item_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index = query.data.split(":", 2)
+    item_index = int(item_index)
+    record = get_return_record(record_id)
+    items = record.get("items") if record else []
+    if not record or item_index >= len(items):
+        await query.edit_message_text("Товар не найден.", reply_markup=build_return_records_keyboard([], "edit"))
+        return
+
+    item = items[item_index]
+    product_name = CATEGORIES[item["category_id"]]["products"][item["product_id"]]
+    text = (
+        f"Возврат #{record_id}. Товар {item_index + 1}\n\n"
+        f"Товар: {product_name}\n"
+        f"Размер: {item.get('size', '')}\n"
+        f"Состояние: {item.get('condition_label', '')}\n"
+        f"ЧЗ: {item.get('chz_status', '') or '-'}\n"
+        f"Комментарий: {item.get('condition_comment', '') or '-'}\n"
+        f"Фото переупаковки: {'есть' if item.get('extra_photo_file_id') else 'нет'}"
+    )
+    await query.edit_message_text(text, reply_markup=build_return_admin_item_keyboard(record_id, item_index))
+
+
+async def return_admin_item_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, field = query.data.split(":", 3)
+    item_index = int(item_index)
+
+    context.user_data["return_admin_record_id"] = record_id
+    context.user_data["return_admin_item_index"] = item_index
+    context.user_data.pop("return_admin_waiting_value", None)
+    context.user_data.pop("return_admin_waiting_photo", None)
+
+    if field == "product":
+        await query.edit_message_text("Выберите группу товара:", reply_markup=build_admin_category_keyboard(record_id, item_index))
+        return
+    if field == "size":
+        await query.edit_message_text("Выберите размер:", reply_markup=build_admin_sizes_keyboard(record_id, item_index))
+        return
+    if field == "condition":
+        await query.edit_message_text("Выберите состояние:", reply_markup=build_admin_conditions_keyboard(record_id, item_index))
+        return
+    if field == "comment":
+        context.user_data["return_admin_field"] = "condition_comment"
+        context.user_data["return_admin_waiting_value"] = True
+        await query.edit_message_text(
+            "Введите новый комментарий к товару:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+        )
+        return
+    if field == "chz":
+        await query.edit_message_text("Выберите статус ЧЗ:", reply_markup=build_admin_chz_keyboard(record_id, item_index))
+        return
+    if field == "photo":
+        context.user_data["return_admin_waiting_photo"] = True
+        await query.edit_message_text(
+            "Отправьте новое фото переупакованного возврата:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+        )
+        return
+
+    await query.answer("Неизвестное поле", show_alert=True)
+
+
+async def return_admin_category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, category_id = query.data.split(":", 3)
+    context.user_data["return_admin_category_id"] = category_id
+    await query.edit_message_text(
+        "Выберите модель:",
+        reply_markup=build_admin_models_keyboard(record_id, int(item_index), category_id),
+    )
+
+
+async def return_admin_model_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, model_id = query.data.split(":", 3)
+    category_id = context.user_data.get("return_admin_category_id")
+    if not category_id or model_id not in CATEGORIES.get(category_id, {}).get("models", {}):
+        for candidate_category_id, category_data in CATEGORIES.items():
+            if model_id in category_data["models"]:
+                category_id = candidate_category_id
+                break
+    if not category_id:
+        await query.edit_message_text("Группа товара потерялась. Выберите товар заново.")
+        return
+    await query.edit_message_text(
+        "Выберите цвет / вариант:",
+        reply_markup=build_admin_products_keyboard(record_id, int(item_index), category_id, model_id),
+    )
+
+
+async def return_admin_product_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, product_id = query.data.split(":", 3)
+    item_index = int(item_index)
+
+    try:
+        category_id, model_id = find_product_location(product_id)
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        if item_index == len(items):
+            pending_item = make_default_return_item()
+            pending_item["category_id"] = category_id
+            pending_item["model_id"] = model_id
+            pending_item["product_id"] = product_id
+            context.user_data["return_admin_record_id"] = record_id
+            context.user_data["return_admin_item_index"] = item_index
+            context.user_data["return_admin_adding_item"] = True
+            context.user_data["return_admin_pending_item"] = pending_item
+            await query.edit_message_text(
+                "Выберите размер нового товара:",
+                reply_markup=build_admin_sizes_keyboard(record_id, item_index),
+            )
+            return
+        if item_index > len(items):
+            raise RuntimeError("Товар не найден в возврате.")
+        items[item_index]["category_id"] = category_id
+        items[item_index]["model_id"] = model_id
+        items[item_index]["product_id"] = product_id
+        record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить товар в возврате")
+        await query.edit_message_text(f"Не удалось изменить товар ⚠️\nОшибка: {error}")
+        return
+
+    await query.edit_message_text(
+        "Товар обновлен ✅\nСтарое сообщение удалено, новая версия отправлена в тему.",
+        reply_markup=build_return_admin_item_keyboard(record_id, item_index),
+    )
+
+
+async def return_admin_size_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, size = query.data.split(":", 3)
+    item_index = int(item_index)
+    if context.user_data.get("return_admin_adding_item") and item_index == int(context.user_data.get("return_admin_item_index", -1)):
+        pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+        pending_item["size"] = size
+        context.user_data["return_admin_pending_item"] = pending_item
+        await query.edit_message_text(
+            "Выберите состояние нового товара:",
+            reply_markup=build_admin_conditions_keyboard(record_id, item_index),
+        )
+        return
+
+    try:
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        items[item_index]["size"] = size
+        record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить размер в возврате")
+        await query.edit_message_text(f"Не удалось изменить размер ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("Размер обновлен ✅", reply_markup=build_return_admin_item_keyboard(record_id, item_index))
+
+
+async def return_admin_condition_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, condition_key = query.data.split(":", 3)
+    item_index = int(item_index)
+    if context.user_data.get("return_admin_adding_item") and item_index == int(context.user_data.get("return_admin_item_index", -1)):
+        condition = RETURN_CONDITIONS[condition_key]
+        pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+        pending_item["condition_key"] = condition_key
+        pending_item["condition_label"] = condition["label"]
+        pending_item["condition_comment"] = ""
+        pending_item["extra_photo_file_id"] = ""
+
+        if condition_key == "normal":
+            pending_item["chz_status"] = ""
+            pending_item["chz_photo_file_id"] = ""
+            context.user_data["return_admin_pending_item"] = pending_item
+            context.user_data["return_admin_waiting_add_chz_photo"] = True
+            await query.edit_message_text(
+                "Отправьте фото маркировки «Честный знак» по новому товару или нажмите «ЧЗ нет»:",
+                reply_markup=build_admin_add_chz_keyboard(record_id),
+            )
+            return
+
+        pending_item["chz_status"] = ""
+        pending_item["chz_photo_file_id"] = ""
+        context.user_data["return_admin_pending_item"] = pending_item
+        if condition.get("needs_photo"):
+            context.user_data["return_admin_waiting_add_extra_photo"] = True
+            await query.edit_message_text(
+                condition.get("photo_prompt", "Отправьте фото переупакованного возврата."),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="retadmin:cancel")]]),
+            )
+            return
+
+        try:
+            record = await finalize_admin_pending_item(context, record_id)
+        except Exception as error:
+            logging.exception("Не удалось добавить товар в возврат")
+            await query.edit_message_text(f"Не удалось добавить товар ⚠️\nОшибка: {error}")
+            return
+        context.user_data.clear()
+        await query.edit_message_text("Товар добавлен ✅", reply_markup=build_return_admin_items_keyboard(record))
+        return
+
+    try:
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        condition = RETURN_CONDITIONS[condition_key]
+        items[item_index]["condition_key"] = condition_key
+        items[item_index]["condition_label"] = condition["label"]
+        if condition_key != "normal":
+            items[item_index]["chz_status"] = ""
+            items[item_index]["chz_photo_file_id"] = ""
+        record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить состояние в возврате")
+        await query.edit_message_text(f"Не удалось изменить состояние ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("Состояние обновлено ✅", reply_markup=build_return_admin_item_keyboard(record_id, item_index))
+
+
+async def return_admin_chz_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index, chz_status = query.data.split(":", 3)
+    item_index = int(item_index)
+    try:
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        items[item_index]["chz_status"] = chz_status
+        record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить ЧЗ в возврате")
+        await query.edit_message_text(f"Не удалось изменить ЧЗ ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("ЧЗ обновлен ✅", reply_markup=build_return_admin_item_keyboard(record_id, item_index))
+
+
+async def return_admin_add_chz_missing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadminaddchzmissing:", "")
+    try:
+        pending_item = dict(context.user_data.get("return_admin_pending_item") or {})
+        pending_item["chz_status"] = "ЧЗ нет"
+        pending_item["chz_photo_file_id"] = ""
+        context.user_data["return_admin_pending_item"] = pending_item
+        record = await finalize_admin_pending_item(context, record_id)
+    except Exception as error:
+        logging.exception("Не удалось добавить товар с отметкой ЧЗ нет")
+        await query.edit_message_text(f"Не удалось добавить товар ⚠️\nОшибка: {error}")
+        return
+
+    context.user_data.clear()
+    await query.edit_message_text("Товар добавлен ✅", reply_markup=build_return_admin_items_keyboard(record))
+
+
+async def return_admin_item_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadminitemadd:", "")
+    try:
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        item_index = len(items)
+    except Exception as error:
+        logging.exception("Не удалось начать добавление товара в возврат")
+        await query.edit_message_text(f"Не удалось начать добавление товара ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text(
+        "Выберите группу нового товара:",
+        reply_markup=build_admin_category_keyboard(record_id, item_index),
+    )
+
+
+async def return_admin_item_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index = query.data.split(":", 2)
+    await query.edit_message_text(
+        "Удалить этот товар из возврата?",
+        reply_markup=build_admin_item_delete_keyboard(record_id, int(item_index)),
+    )
+
+
+async def return_admin_item_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, item_index = query.data.split(":", 2)
+    item_index = int(item_index)
+    try:
+        record = get_return_record(record_id)
+        items = record.get("items") or []
+        if len(items) <= 1:
+            raise RuntimeError("Нельзя удалить единственный товар. Удалите всю запись возврата.")
+        items.pop(item_index)
+        record["items"] = items
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось удалить товар из возврата")
+        await query.edit_message_text(f"Не удалось удалить товар ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("Товар удален ✅", reply_markup=build_return_admin_items_keyboard(record))
+
+
+async def return_admin_type_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadmintype:", "")
+    await query.edit_message_text("Выберите тип возврата:", reply_markup=build_return_admin_type_keyboard(record_id))
+
+
+async def return_admin_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, record_id, return_type = query.data.split(":", 2)
+    try:
+        record = get_return_record(record_id)
+        record["return_type"] = return_type
+        if return_type == "showroom":
+            record["track_number"] = ""
+            record["label_status"] = record.get("label_status") or "не указано"
+        else:
+            record["label_status"] = ""
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось изменить тип возврата")
+        await query.edit_message_text(f"Не удалось изменить тип возврата ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("Тип возврата обновлен ✅", reply_markup=build_return_admin_record_keyboard(record))
+
+
+async def return_admin_resend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    record_id = query.data.replace("retadminresend:", "")
+    try:
+        record = get_return_record(record_id)
+        record = await save_return_record_and_repost(context, record)
+    except Exception as error:
+        logging.exception("Не удалось перевыгрузить возврат")
+        await query.edit_message_text(f"Не удалось перевыгрузить возврат ⚠️\nОшибка: {error}")
+        return
+    await query.edit_message_text("Возврат перевыгружен ✅", reply_markup=build_return_admin_record_keyboard(record))
+
+
+async def return_admin_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    record_id = query.data.rsplit(":", 1)[-1]
+    try:
+        record = mark_return_record_deleted(record_id)
+        topic_status = await delete_return_topic_messages(context, record)
+    except Exception as error:
+        logging.exception("Не удалось удалить запись возврата")
+        await query.edit_message_text(
+            f"Не удалось удалить запись ⚠️\nОшибка: {error}",
+            reply_markup=build_return_records_keyboard(get_recent_return_records(limit=10), "delete"),
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    await query.edit_message_text(
+        f"Запись возврата #{record_id} удалена ✅\n{topic_status}",
+        reply_markup=build_return_records_keyboard(get_recent_return_records(limit=10), "delete"),
+    )
+    return ConversationHandler.END
+
+
+async def return_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Действие отменено.", reply_markup=build_return_records_keyboard(get_recent_return_records(limit=10), "edit"))
+    return ConversationHandler.END
+
+
+async def return_admin_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = str(query.data or "").strip()
+
+    if data == "retadmin:edit":
+        return await return_admin_edit_start(update, context)
+
+    if data == "retadmin:delete":
+        return await return_admin_delete_start(update, context)
+
+    if data.startswith("retadmin:edit:"):
+        query.data = data
+        return await return_admin_edit_selected(update, context)
+
+    if data.startswith("retadmin:delete:"):
+        query.data = data
+        return await return_admin_delete_selected(update, context)
+
+    if data.startswith("retadminfield:"):
+        return await return_admin_field_selected(update, context)
+
+    if data.startswith("retadmindel:yes:"):
+        return await return_admin_delete_confirmed(update, context)
+
+    if data.startswith("retadminitems:"):
+        return await return_admin_items_open(update, context)
+
+    if data.startswith("retadminitemfield:"):
+        return await return_admin_item_field_selected(update, context)
+
+    if data.startswith("retadminitemdeleteyes:"):
+        return await return_admin_item_delete_confirmed(update, context)
+
+    if data.startswith("retadminitemdelete:"):
+        return await return_admin_item_delete_selected(update, context)
+
+    if data.startswith("retadminitemadd:"):
+        return await return_admin_item_add(update, context)
+
+    if data.startswith("retadminitem:"):
+        return await return_admin_item_open(update, context)
+
+    if data.startswith("retadmincat:"):
+        return await return_admin_category_selected(update, context)
+
+    if data.startswith("retadminmodel:"):
+        return await return_admin_model_selected(update, context)
+
+    if data.startswith("retadminprod:"):
+        return await return_admin_product_selected(update, context)
+
+    if data.startswith("retadminsizeset:"):
+        return await return_admin_size_selected(update, context)
+
+    if data.startswith("retadmincondset:"):
+        return await return_admin_condition_selected(update, context)
+
+    if data.startswith("retadminchzset:"):
+        return await return_admin_chz_selected(update, context)
+
+    if data.startswith("retadminaddchzmissing:"):
+        return await return_admin_add_chz_missing(update, context)
+
+    if data.startswith("retadmintypeset:"):
+        return await return_admin_type_selected(update, context)
+
+    if data.startswith("retadmintype:"):
+        return await return_admin_type_open(update, context)
+
+    if data.startswith("retadminresend:"):
+        return await return_admin_resend(update, context)
+
+    if data.startswith("retadminbasephoto:"):
+        return await return_admin_base_photo_selected(update, context)
+
+    await query.answer(f"Неизвестное действие по возврату: {data}", show_alert=True)
+    logging.warning("Неизвестный callback возвратов: %s", data)
 
 
 # ============================================================
@@ -1579,4 +2777,73 @@ def get_returns_conversation_handler():
             ],
         },
         fallbacks=[],
+        allow_reentry=True,
     )
+
+
+def get_returns_admin_conversation_handler():
+    return ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(return_admin_edit_start, pattern=r"^retadmin:edit$"),
+            CallbackQueryHandler(return_admin_delete_start, pattern=r"^retadmin:delete$"),
+        ],
+        states={
+            RET_ADMIN_SELECT: [
+                CallbackQueryHandler(return_admin_edit_selected, pattern=r"^retadmin:edit:\\d+$"),
+                CallbackQueryHandler(return_admin_delete_selected, pattern=r"^retadmin:delete:\\d+$"),
+                CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$"),
+            ],
+            RET_ADMIN_EDIT_FIELD: [
+                CallbackQueryHandler(return_admin_field_selected, pattern=r"^retadminfield:"),
+                CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$"),
+            ],
+            RET_ADMIN_EDIT_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, return_admin_value_received),
+                CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$"),
+            ],
+            RET_ADMIN_DELETE_CONFIRM: [
+                CallbackQueryHandler(return_admin_delete_confirmed, pattern=r"^retadmindel:yes:\\d+$"),
+                CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$"),
+            ],
+        },
+        fallbacks=[CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$")],
+        allow_reentry=True,
+    )
+
+
+def get_returns_admin_handlers():
+    return [
+        CallbackQueryHandler(return_admin_edit_start, pattern=r"^retadmin:edit$"),
+        CallbackQueryHandler(return_admin_delete_start, pattern=r"^retadmin:delete$"),
+        CallbackQueryHandler(return_admin_edit_selected, pattern=r"^retadmin:edit:\d+$"),
+        CallbackQueryHandler(return_admin_delete_selected, pattern=r"^retadmin:delete:\d+$"),
+        CallbackQueryHandler(return_admin_field_selected, pattern=r"^retadminfield:"),
+        CallbackQueryHandler(return_admin_delete_confirmed, pattern=r"^retadmindel:yes:\d+$"),
+        CallbackQueryHandler(return_admin_items_open, pattern=r"^retadminitems:\d+$"),
+        CallbackQueryHandler(return_admin_item_open, pattern=r"^retadminitem:\d+:\d+$"),
+        CallbackQueryHandler(return_admin_item_field_selected, pattern=r"^retadminitemfield:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_category_selected, pattern=r"^retadmincat:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_model_selected, pattern=r"^retadminmodel:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_product_selected, pattern=r"^retadminprod:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_size_selected, pattern=r"^retadminsizeset:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_condition_selected, pattern=r"^retadmincondset:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_chz_selected, pattern=r"^retadminchzset:\d+:\d+:"),
+        CallbackQueryHandler(return_admin_add_chz_missing, pattern=r"^retadminaddchzmissing:\d+$"),
+        CallbackQueryHandler(return_admin_item_add, pattern=r"^retadminitemadd:\d+$"),
+        CallbackQueryHandler(return_admin_item_delete_selected, pattern=r"^retadminitemdelete:\d+:\d+$"),
+        CallbackQueryHandler(return_admin_item_delete_confirmed, pattern=r"^retadminitemdeleteyes:\d+:\d+$"),
+        CallbackQueryHandler(return_admin_type_open, pattern=r"^retadmintype:\d+$"),
+        CallbackQueryHandler(return_admin_type_selected, pattern=r"^retadmintypeset:\d+:"),
+        CallbackQueryHandler(return_admin_resend, pattern=r"^retadminresend:\d+$"),
+        CallbackQueryHandler(return_admin_base_photo_selected, pattern=r"^retadminbasephoto:\d+$"),
+        CallbackQueryHandler(return_admin_cancel, pattern=r"^retadmin:cancel$"),
+        CallbackQueryHandler(return_admin_unknown, pattern=r"^retadmin"),
+    ]
+
+
+def get_returns_admin_message_handler():
+    return MessageHandler(filters.TEXT & ~filters.COMMAND, return_admin_value_received)
+
+
+def get_returns_admin_photo_handler():
+    return MessageHandler(filters.PHOTO, return_admin_photo_received)

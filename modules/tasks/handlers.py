@@ -1037,8 +1037,8 @@ def setup_tasks_jobs(app):
     if not app.job_queue:
         logging.warning("JobQueue не включен. Установите python-telegram-bot[job-queue].")
         return
-    app.job_queue.run_daily(daily_staff_job, time=time(hour=9, minute=0, tzinfo=MSK_TZ), name="daily_staff_message")
-    app.job_queue.run_daily(daily_tasks_job, time=time(hour=9, minute=5, tzinfo=MSK_TZ), name="daily_tasks_export")
+    app.job_queue.run_daily(daily_staff_job, time=time(hour=10, minute=30, tzinfo=MSK_TZ), name="daily_staff_message")
+    app.job_queue.run_daily(daily_tasks_job, time=time(hour=10, minute=35, tzinfo=MSK_TZ), name="daily_tasks_export")
     app.job_queue.run_daily(
         weekly_template_job,
         time=time(hour=23, minute=0, tzinfo=MSK_TZ),

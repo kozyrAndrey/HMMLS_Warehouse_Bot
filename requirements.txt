@@ -17,3 +17,6 @@ reportlab>=4.0,<5.0
 
 # Excel export for schedule module
 openpyxl>=3.1,<4.0
+
+# HTTPS certificate bundle for external agent requests
+certifi>=2024.0
