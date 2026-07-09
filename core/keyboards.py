@@ -86,6 +86,8 @@ def build_returns_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("🚚 СДЭК", callback_data="menu:return:cdek")],
         [InlineKeyboardButton("🏬 Шоу-рум", callback_data="menu:return:showroom")],
+        [InlineKeyboardButton("✏️ Изменить запись", callback_data="retadmin:edit")],
+        [InlineKeyboardButton("🗑 Удалить запись", callback_data="retadmin:delete")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
     return InlineKeyboardMarkup(keyboard)

@@ -15,6 +15,7 @@ from core.access import access_guard
 from modules.receiving.postgres_storage import init_receiving_storage
 from modules.consumables.storage import init_consumables_storage
 from modules.recruitment.storage import init_recruitment_storage
+from modules.returns.storage import init_returns_storage
 from modules.payroll.google_sheets import init_payroll_sheet
 from modules.schedule.google_sheets import init_schedule_sheet
 from modules.tasks.storage import init_tasks_storage
@@ -33,10 +34,16 @@ from handlers.common import (
 )
 from modules.receiving.handlers import get_incoming_conversation_handler
 from modules.receiving.reports import get_report_handlers
-from modules.returns.handlers import get_returns_conversation_handler
+from modules.returns.handlers import (
+    get_returns_admin_handlers,
+    get_returns_admin_message_handler,
+    get_returns_admin_photo_handler,
+    get_returns_conversation_handler,
+)
 from modules.payroll.handlers import get_payroll_handlers
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
+from modules.ai_agent.weather import setup_ai_agent_jobs
 from modules.consumables.handlers import get_consumables_handlers
 from modules.recruitment.handlers import get_recruitment_handlers
 from modules.marking.handlers import get_marking_handlers
@@ -84,6 +91,7 @@ def main():
     init_receiving_storage()
     init_consumables_storage()
     init_recruitment_storage()
+    init_returns_storage()
 
     try:
         init_payroll_sheet()
@@ -167,7 +175,11 @@ def main():
 
     # Основные сценарии.
     app.add_handler(get_incoming_conversation_handler())
+    for handler in get_returns_admin_handlers():
+        app.add_handler(handler)
     app.add_handler(get_returns_conversation_handler())
+    app.add_handler(get_returns_admin_photo_handler(), group=1)
+    app.add_handler(get_returns_admin_message_handler(), group=1)
 
     # Отчеты.
     for handler in get_report_handlers():
@@ -207,6 +219,7 @@ def main():
 
     setup_schedule_jobs(app)
     setup_tasks_jobs(app)
+    setup_ai_agent_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
