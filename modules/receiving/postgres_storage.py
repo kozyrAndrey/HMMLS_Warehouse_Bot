@@ -471,21 +471,22 @@ def save_incoming_good(
     parsed_record_date = datetime.strptime(record_date, "%d.%m.%Y").date()
 
     with session_scope() as session:
-        session.add(
-            IncomingGood(
-                record_date=parsed_record_date,
-                user_id=user_id,
-                username=username,
-                category_id=category_id,
-                category_name=category_name,
-                product_id=product_id,
-                product_name=product_name,
-                size=size,
-                packed=packed,
-                defective=defective,
-                rework=rework,
-            )
+        record = IncomingGood(
+            record_date=parsed_record_date,
+            user_id=user_id,
+            username=username,
+            category_id=category_id,
+            category_name=category_name,
+            product_id=product_id,
+            product_name=product_name,
+            size=size,
+            packed=packed,
+            defective=defective,
+            rework=rework,
         )
+        session.add(record)
+        session.flush()
+        return record.id
 
 
 def report_type_title(report_type):

@@ -61,6 +61,18 @@ class MoySkladClient:
         except json.JSONDecodeError as error:
             raise MoySkladError("МойСклад вернул невалидный JSON.") from error
 
+    def get_href(self, href, params=None):
+        normalized_href = str(href or "").strip()
+        if not normalized_href:
+            raise MoySkladError("Пустая ссылка МойСклад.")
+
+        prefix = f"{self.base_url}/"
+        if normalized_href.startswith(prefix):
+            return self.get(normalized_href[len(prefix):], params=params)
+        if normalized_href.startswith(self.base_url):
+            return self.get(normalized_href[len(self.base_url):].lstrip("/"), params=params)
+        return self.get(normalized_href, params=params)
+
     def list_entities(self, entity_type, params=None):
         return self.get(f"entity/{entity_type}", params=params or {})
 

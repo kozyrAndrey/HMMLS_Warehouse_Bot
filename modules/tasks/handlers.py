@@ -17,6 +17,7 @@ from modules.tasks.config import (
     NO_DEADLINE_TEXT,
     TASK_DEADLINES,
     TASK_SOURCE_MANUAL,
+    TASK_SOURCE_TEMPLATE,
     TASK_STATUS_ACTIVE,
     TASK_STATUS_CANCELLED,
     TASK_STATUS_DONE,
@@ -971,6 +972,18 @@ async def export_general_tasks_for_date(context, day):
 async def export_tasks_for_date(context, day):
     warehouse_status = await export_warehouse_tasks_for_date(context, day)
     general_status = await export_general_tasks_for_date(context, day)
+    tasks = get_tasks_by_date(day)
+    manual_count = sum(1 for task in tasks if str(task.get("Источник", "")).strip() == TASK_SOURCE_MANUAL)
+    template_count = sum(1 for task in tasks if str(task.get("Источник", "")).strip() == TASK_SOURCE_TEMPLATE)
+    logging.info(
+        "Tasks exported for %s: total=%s manual=%s template=%s warehouse_status=%s general_status=%s",
+        date_to_str(day),
+        len(tasks),
+        manual_count,
+        template_count,
+        warehouse_status,
+        general_status,
+    )
     return f"Задачи на {date_to_str(day)} выгружены ✅\n\nСкладские в тему: {warehouse_status}\nНескладские в личку руководителю: {general_status}"
 
 

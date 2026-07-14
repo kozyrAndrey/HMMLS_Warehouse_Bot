@@ -231,7 +231,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_last_records, pattern=r"^menu:last$"))
 
     print("Bot started...")
-    app.run_polling()
+    app.run_polling(bootstrap_retries=10)
 
 
 if __name__ == "__main__":

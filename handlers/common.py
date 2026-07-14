@@ -76,16 +76,9 @@ async def show_marking_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
 
     employee = find_employee_for_telegram_user(update.effective_user)
-    if not is_manager(employee):
-        await query.edit_message_text(
-            "⛔️ Раздел маркировки доступен только руководителям.",
-            reply_markup=build_main_menu_keyboard(),
-        )
-        return ConversationHandler.END
-
     await query.edit_message_text(
         "🏷 Маркировка:",
-        reply_markup=build_marking_menu_keyboard(),
+        reply_markup=build_marking_menu_keyboard(manager=is_manager(employee)),
     )
 
     return ConversationHandler.END

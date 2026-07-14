@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -16,6 +17,7 @@ from modules.tasks.config import (
     TASK_SOURCE_MANUAL,
     TASK_SOURCE_TEMPLATE,
     TASK_STATUS_ACTIVE,
+    TASK_STATUS_CANCELLED,
     TASK_STATUS_DONE,
     TASK_TYPE_WAREHOUSE,
     WAREHOUSE_MANAGER_ROLE,
@@ -479,7 +481,62 @@ def materialize_templates_for_date(day):
             created_by="template",
         )
         created_count += 1
+    sync_working_today_template_task_assignees(task_date)
+    logging.info(
+        "Task templates materialized for %s: created=%s",
+        date_to_str(task_date),
+        created_count,
+    )
     return created_count
+
+
+def sync_working_today_template_task_assignees(day):
+    task_date = normalize_day(day)
+    working_ids, working_names = normalize_employee_list(get_working_employees_for_date(task_date))
+    checked_count = 0
+    updated_count = 0
+
+    with session_scope() as session:
+        tasks = (
+            session.execute(
+                select(Task).where(
+                    Task.task_date == task_date,
+                    Task.source == TASK_SOURCE_TEMPLATE,
+                    Task.status != TASK_STATUS_CANCELLED,
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        for task in tasks:
+            if not task.template_id:
+                continue
+            template = session.get(TaskTemplate, task.template_id)
+            if not template or template.assignee_mode != ASSIGNEE_MODE_WORKING_TODAY:
+                continue
+
+            checked_count += 1
+            if (task.assignee_ids or "") == working_ids and (task.assignee_names or "") == working_names:
+                continue
+
+            task.assignee_ids = working_ids
+            task.assignee_names = working_names
+            task.updated_at = datetime.now()
+            updated_count += 1
+
+    logging.info(
+        "Working-today template assignees synced for %s: checked=%s updated=%s working=%s",
+        date_to_str(task_date),
+        checked_count,
+        updated_count,
+        len([item for item in working_ids.split(",") if item.strip()]),
+    )
+    return {
+        "checked": checked_count,
+        "updated": updated_count,
+        "working_count": len([item for item in working_ids.split(",") if item.strip()]),
+    }
 
 
 def materialize_templates_for_period(start_day, end_day):

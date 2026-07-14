@@ -18,6 +18,7 @@ from core.keyboards import (
 )
 from modules.receiving.products import CATEGORIES, SIZES
 from handlers.common import show_main_menu, show_receiving_menu
+from modules.consumables.storage import apply_receiving_consumable_usage, format_quantity
 
 
 SELECT_DATE, SELECT_CATEGORY, SELECT_MODEL, SELECT_COLOR, SELECT_SIZE, ENTER_PACKED, ENTER_DEFECTIVE, ENTER_REWORK = range(8)
@@ -292,7 +293,7 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     username = user.username or user.full_name
 
-    save_incoming_good(
+    record_id = save_incoming_good(
         user_id=user.id,
         username=username,
         category_id=category_id,
@@ -306,6 +307,15 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     category_name = CATEGORIES[category_id]["name"]
     product_name = CATEGORIES[category_id]["products"][product_id]
+    consumable_movements = apply_receiving_consumable_usage(
+        product_id=product_id,
+        product_name=product_name,
+        packed_quantity=packed,
+        source_id=record_id,
+        created_by_user_id=user.id,
+        created_by_name=username,
+    )
+    consumables_text = format_consumable_usage_text(consumable_movements)
 
     await update.message.reply_text(
         "Товар оприходован ✅\n\n"
@@ -317,6 +327,7 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Брак: {defective}\n"
         f"Доработка: {rework}\n\n"
         "PostgreSQL: запись добавлена ✅\n\n"
+        f"{consumables_text}\n\n"
         "Выберите размер для следующей записи:",
         reply_markup=build_incoming_sizes_keyboard(),
     )
@@ -326,6 +337,17 @@ async def rework_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("defective", None)
     context.user_data.pop("rework", None)
     return SELECT_SIZE
+
+
+def format_consumable_usage_text(movements):
+    if not movements:
+        return "Расходники: нормы для товара не настроены"
+
+    lines = ["Расходники списаны:"]
+    for movement in movements:
+        delta = abs(float(movement.get("quantity_delta") or 0))
+        lines.append(f"- {movement.get('item_name')}: {format_quantity(delta)}")
+    return "\n".join(lines)
 
 
 async def back_to_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
