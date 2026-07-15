@@ -117,6 +117,7 @@ def build_consumables_supplies_menu_keyboard(manager=False):
     if manager:
         keyboard.extend(
             [
+                [InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")],
                 [InlineKeyboardButton("✏️ Изменить поставку", callback_data="cons:edit_supply")],
                 [InlineKeyboardButton("🗑 Удалить поставку", callback_data="cons:delete_supply")],
                 [InlineKeyboardButton("🚫 Удалить поставщика", callback_data="cons:delete_supplier")],
