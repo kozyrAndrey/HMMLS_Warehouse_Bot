@@ -989,11 +989,42 @@ async def accept_supply_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     set_consumables_module(context, "supplies")
-    context.user_data["supply_flow"] = "acceptance"
-    context.user_data["supply_items"] = {}
 
-    await query.edit_message_text(supply_items_text(context), reply_markup=supply_items_keyboard(context))
-    return SUPPLY_ITEM_SELECT
+    supplies = get_pending_supplies()
+    if not supplies:
+        await query.edit_message_text(
+            "Нет поставок, ожидающих приемки.",
+            reply_markup=consumables_supplies_keyboard(update),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        supplies_list_text("Выберите поставку:", supplies),
+        reply_markup=supplies_keyboard(supplies, "conssup"),
+    )
+    return ACCEPT_SUPPLY
+
+
+async def accept_supply_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    supply_id = query.data.replace("conssup:", "")
+    supply = get_supply(supply_id)
+    if not supply or supply["status"] != "pending":
+        supplies = get_pending_supplies()
+        await query.edit_message_text(
+            supplies_list_text("Поставка не найдена или уже принята. Выберите заново:", supplies),
+            reply_markup=supplies_keyboard(supplies, "conssup"),
+        )
+        return ACCEPT_SUPPLY
+
+    context.user_data["supply_id"] = supply["id"]
+    await query.edit_message_text(
+        "Отправьте фото разложенных расходников:",
+        reply_markup=consumables_back_keyboard(),
+    )
+    return ACCEPT_LAYOUT_PHOTO
 
 
 async def supply_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1624,6 +1655,7 @@ def get_consumables_conversation_handler():
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
             ACCEPT_SUPPLY: [
+                CallbackQueryHandler(accept_supply_selected, pattern=r"^conssup:"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
             ACCEPT_LAYOUT_PHOTO: [
