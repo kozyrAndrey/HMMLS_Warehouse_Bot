@@ -127,7 +127,7 @@ def organization_keyboard(organizations=None, allow_new=True):
         rows.append([InlineKeyboardButton(organization, callback_data=f"consorg:{index}")])
 
     if allow_new:
-        rows.append([InlineKeyboardButton("➕ Новая организация", callback_data="consorg:new")])
+        rows.append([InlineKeyboardButton("➕ Новый поставщик", callback_data="consorg:new")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -499,17 +499,9 @@ async def supply_name_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
     context.user_data["supply_name"] = name
     context.user_data["organizations"] = get_active_suppliers()
-    if not context.user_data["organizations"]:
-        await update.message.reply_text(
-            "Нет доступных поставщиков. Добавьте поставщика перед созданием поставки.",
-            reply_markup=consumables_supplies_keyboard(update),
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-
     await update.message.reply_text(
         "Выберите поставщика:",
-        reply_markup=organization_keyboard(context.user_data["organizations"], allow_new=False),
+        reply_markup=organization_keyboard(context.user_data["organizations"], allow_new=True),
     )
     return SUPPLY_ORGANIZATION
 
@@ -520,7 +512,7 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
     data = query.data
 
     if data == "consorg:new":
-        await query.edit_message_text("Введите наименование организации:", reply_markup=consumables_back_keyboard())
+        await query.edit_message_text("Введите наименование нового поставщика:", reply_markup=consumables_back_keyboard())
         return SUPPLY_ORGANIZATION_NEW
 
     try:
@@ -529,7 +521,7 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
     except (ValueError, IndexError):
         await query.edit_message_text(
             "Поставщик не найден. Выберите заново:",
-            reply_markup=organization_keyboard(context.user_data.get("organizations", []), allow_new=False),
+            reply_markup=organization_keyboard(context.user_data.get("organizations", []), allow_new=True),
         )
         return SUPPLY_ORGANIZATION
 
@@ -541,7 +533,7 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
 async def supply_organization_new_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     organization = update.message.text.strip()
     if not organization:
-        await update.message.reply_text("Организация не должна быть пустой. Введите наименование:")
+        await update.message.reply_text("Название поставщика не должно быть пустым. Введите наименование:")
         return SUPPLY_ORGANIZATION_NEW
 
     context.user_data["organization"] = organization

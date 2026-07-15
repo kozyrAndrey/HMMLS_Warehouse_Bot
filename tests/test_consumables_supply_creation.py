@@ -10,13 +10,16 @@ from modules.consumables.handlers import (
     SUPPLY_ITEM_SELECT,
     SUPPLY_NAME,
     SUPPLY_ORGANIZATION,
+    SUPPLY_ORGANIZATION_NEW,
     add_supply_start,
     invoice_caption_text,
+    organization_keyboard,
     send_invoice_to_document_workflow_topic,
     supply_amount_received,
     supply_invoice_document_received,
     supply_items_done,
     supply_name_received,
+    supply_organization_selected,
 )
 
 
@@ -66,7 +69,7 @@ class ConsumablesSupplyCreationTests(unittest.IsolatedAsyncioTestCase):
             reply_markup="cancel",
         )
 
-    async def test_invoice_name_continues_to_predefined_supplier_selection(self):
+    async def test_invoice_name_continues_to_supplier_selection_with_add_button(self):
         message = SimpleNamespace(text="Счет на оплату № 403", reply_text=AsyncMock())
         update = SimpleNamespace(message=message)
         context = SimpleNamespace(user_data={})
@@ -81,10 +84,55 @@ class ConsumablesSupplyCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state, SUPPLY_ORGANIZATION)
         self.assertEqual(context.user_data["supply_name"], "Счет на оплату № 403")
         self.assertEqual(context.user_data["organizations"], suppliers)
-        keyboard.assert_called_once_with(suppliers, allow_new=False)
+        keyboard.assert_called_once_with(suppliers, allow_new=True)
         message.reply_text.assert_awaited_once_with(
             "Выберите поставщика:",
             reply_markup="supplier_keyboard",
+        )
+
+    async def test_supplier_selection_allows_adding_first_supplier(self):
+        message = SimpleNamespace(text="Счет № 1", reply_text=AsyncMock())
+        update = SimpleNamespace(message=message)
+        context = SimpleNamespace(user_data={})
+
+        with (
+            patch("modules.consumables.handlers.get_active_suppliers", return_value=[]),
+            patch("modules.consumables.handlers.organization_keyboard", return_value="supplier_keyboard") as keyboard,
+        ):
+            state = await supply_name_received(update, context)
+
+        self.assertEqual(state, SUPPLY_ORGANIZATION)
+        keyboard.assert_called_once_with([], allow_new=True)
+        message.reply_text.assert_awaited_once_with(
+            "Выберите поставщика:",
+            reply_markup="supplier_keyboard",
+        )
+
+    def test_supplier_keyboard_has_new_supplier_button(self):
+        keyboard = organization_keyboard([], allow_new=True)
+        buttons = [button for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn(
+            ("➕ Новый поставщик", "consorg:new"),
+            [(button.text, button.callback_data) for button in buttons],
+        )
+
+    async def test_new_supplier_button_requests_supplier_name(self):
+        query = SimpleNamespace(
+            data="consorg:new",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(user_data={})
+
+        with patch("modules.consumables.handlers.consumables_back_keyboard", return_value="cancel"):
+            state = await supply_organization_selected(update, context)
+
+        self.assertEqual(state, SUPPLY_ORGANIZATION_NEW)
+        query.edit_message_text.assert_awaited_once_with(
+            "Введите наименование нового поставщика:",
+            reply_markup="cancel",
         )
 
     async def test_amount_requests_invoice_file(self):
