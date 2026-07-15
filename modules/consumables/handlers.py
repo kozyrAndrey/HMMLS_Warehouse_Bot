@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -20,7 +21,6 @@ from core.keyboards import (
 from modules.consumables.storage import (
     apply_inventory_batch_counts,
     create_supply,
-    create_accepted_supply,
     clear_acceptance,
     add_consumable_movement,
     create_inventory_count,
@@ -120,13 +120,14 @@ def consumables_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")]])
 
 
-def organization_keyboard(organizations=None):
+def organization_keyboard(organizations=None, allow_new=True):
     organizations = organizations if organizations is not None else get_recent_organizations()
     rows = []
     for index, organization in enumerate(organizations):
         rows.append([InlineKeyboardButton(organization, callback_data=f"consorg:{index}")])
 
-    rows.append([InlineKeyboardButton("➕ Новая организация", callback_data="consorg:new")])
+    if allow_new:
+        rows.append([InlineKeyboardButton("➕ Новая организация", callback_data="consorg:new")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -477,21 +478,38 @@ async def add_supply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Недостаточно прав.")
         return ConversationHandler.END
 
-    await query.edit_message_text("Введите название расходника:", reply_markup=consumables_back_keyboard())
-    return SUPPLY_NAME
+    items = get_consumable_items(active_only=True)
+    if not items:
+        await query.edit_message_text(
+            "Список расходников пуст. Сначала добавьте расходники в учет.",
+            reply_markup=consumables_supplies_keyboard(update),
+        )
+        return ConversationHandler.END
+
+    context.user_data["supply_items"] = {}
+    await query.edit_message_text(supply_items_text(context), reply_markup=supply_items_keyboard(context))
+    return SUPPLY_ITEM_SELECT
 
 
 async def supply_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
     if not name:
-        await update.message.reply_text("Название не должно быть пустым. Введите название расходника:")
+        await update.message.reply_text("Название не должно быть пустым. Введите наименование счета:")
         return SUPPLY_NAME
 
     context.user_data["supply_name"] = name
-    context.user_data["organizations"] = get_recent_organizations()
+    context.user_data["organizations"] = get_active_suppliers()
+    if not context.user_data["organizations"]:
+        await update.message.reply_text(
+            "Нет доступных поставщиков. Добавьте поставщика перед созданием поставки.",
+            reply_markup=consumables_supplies_keyboard(update),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
     await update.message.reply_text(
-        "Выберите организацию или добавьте новую:",
-        reply_markup=organization_keyboard(context.user_data["organizations"]),
+        "Выберите поставщика:",
+        reply_markup=organization_keyboard(context.user_data["organizations"], allow_new=False),
     )
     return SUPPLY_ORGANIZATION
 
@@ -510,8 +528,8 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
         organization = context.user_data.get("organizations", [])[index]
     except (ValueError, IndexError):
         await query.edit_message_text(
-            "Организация не найдена. Выберите заново:",
-            reply_markup=organization_keyboard(context.user_data.get("organizations", [])),
+            "Поставщик не найден. Выберите заново:",
+            reply_markup=organization_keyboard(context.user_data.get("organizations", []), allow_new=False),
         )
         return SUPPLY_ORGANIZATION
 
@@ -537,30 +555,12 @@ async def supply_amount_received(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Введите сумму числом больше 0:")
         return SUPPLY_AMOUNT
 
-    created_by = current_employee_name(update)
-    if context.user_data.get("supply_flow") == "acceptance":
-        context.user_data["supply_amount"] = amount
-        await update.message.reply_text(
-            "Отправьте файл счета PDF, документом или фото.",
-            reply_markup=consumables_back_keyboard(),
-        )
-        return SUPPLY_INVOICE_DOCUMENT
-
-    supply = create_supply(
-        consumable_name=context.user_data["supply_name"],
-        organization=context.user_data["organization"],
-        amount=amount,
-        created_by_user_id=update.effective_user.id,
-        created_by_name=created_by,
-    )
-
-    employee = current_employee_or_none(update)
+    context.user_data["supply_amount"] = amount
     await update.message.reply_text(
-        "Поставка добавлена ✅\n\n" + format_supply_line(supply),
-        reply_markup=build_consumables_supplies_menu_keyboard(manager=is_manager(employee)),
+        "Отправьте файл счета PDF, документом или фото.",
+        reply_markup=consumables_back_keyboard(),
     )
-    context.user_data.clear()
-    return ConversationHandler.END
+    return SUPPLY_INVOICE_DOCUMENT
 
 
 async def supply_invoice_document_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,24 +577,17 @@ async def supply_invoice_document_received(update: Update, context: ContextTypes
         )
         return SUPPLY_INVOICE_DOCUMENT
 
-    accepted_by = current_employee_name(update)
-    supply = create_accepted_supply(
+    created_by = current_employee_name(update)
+    supply = create_supply(
         consumable_name=context.user_data["supply_name"],
         organization=context.user_data["organization"],
         amount=context.user_data["supply_amount"],
         supply_items=list(context.user_data.get("supply_items", {}).values()),
-        accepted_by_user_id=update.effective_user.id,
-        accepted_by_name=accepted_by,
-        closing_document_file_id=invoice_file_id,
-        closing_document_kind=invoice_kind,
+        created_by_user_id=update.effective_user.id,
+        created_by_name=created_by,
+        invoice_document_file_id=invoice_file_id,
+        invoice_document_kind=invoice_kind,
     )
-
-    try:
-        message_ids, topic_status = await send_acceptance_text_to_topic(context, supply, accepted_by)
-    except Exception as error:
-        logging.exception("Не удалось отправить приемку расходников в тему")
-        message_ids = []
-        topic_status = f"Приемка сохранена, но не отправлена в тему расходников ⚠️\nОшибка: {error}"
 
     try:
         invoice_status = await send_invoice_to_document_workflow_topic(
@@ -607,24 +600,9 @@ async def supply_invoice_document_received(update: Update, context: ContextTypes
         logging.exception("Не удалось отправить счет расходников в документооборот")
         invoice_status = f"Счет не отправлен в документооборот ⚠️\nОшибка: {error}"
 
-    update_acceptance(
-        supply_id=supply["id"],
-        accepted_by_user_id=update.effective_user.id,
-        accepted_by_name=accepted_by,
-        layout_photo_file_id="",
-        closing_document_file_id=invoice_file_id,
-        closing_document_kind=invoice_kind,
-        topic_message_ids=message_ids,
-    )
-
-    stock_lines = [
-        f"{movement['item_name']}: +{format_quantity(movement['quantity_delta'])}"
-        for movement in supply.get("stock_movements", [])
-    ]
-    text = "Приемка расходников завершена ✅\n\n" + format_supply_line(supply)
-    if stock_lines:
-        text += "\n\nОстатки пополнены:\n" + "\n".join(stock_lines)
-    text += f"\n\n{topic_status}\n{invoice_status}"
+    text = "Поставка создана ✅\n\n" + format_supply_line(supply)
+    text += "\n\nОстатки будут пополнены после приемки поставки."
+    text += f"\n\n{invoice_status}"
 
     await update.message.reply_text(text, reply_markup=consumables_supplies_keyboard(update))
     context.user_data.clear()
@@ -1069,7 +1047,7 @@ async def supply_items_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("supply_items"):
         await query.edit_message_text(supply_items_text(context), reply_markup=supply_items_keyboard(context))
         return SUPPLY_ITEM_SELECT
-    await query.edit_message_text("Введите название счета:", reply_markup=consumables_back_keyboard())
+    await query.edit_message_text("Введите наименование счета:", reply_markup=consumables_back_keyboard())
     return SUPPLY_NAME
 
 
@@ -1165,33 +1143,17 @@ async def send_acceptance_to_topic(context: ContextTypes.DEFAULT_TYPE, supply, a
     return message_ids, "Приемка отправлена в тему чата ✅"
 
 
-async def send_acceptance_text_to_topic(context: ContextTypes.DEFAULT_TYPE, supply, accepted_by):
-    if not GROUP_CHAT_ID:
-        return [], "GROUP_CHAT_ID не настроен, сообщение в тему не отправлено."
-
-    message_thread_id = int(CONSUMABLES_TOPIC_ID) if CONSUMABLES_TOPIC_ID else None
-    kwargs = {"chat_id": int(GROUP_CHAT_ID)}
-    if message_thread_id is not None:
-        kwargs["message_thread_id"] = message_thread_id
-
-    message = await context.bot.send_message(
-        **kwargs,
-        text="📥 Приемка расходников\n\n" + format_supply_line(supply) + f"\n\nПринял: {accepted_by}",
-    )
-    return [message.message_id], "Приемка отправлена в тему чата ✅"
-
-
 def invoice_caption_text(supply):
     items_text = "; ".join(
-        f"{item['item_name']} {format_quantity(item['quantity'])} {item.get('unit') or 'шт'}"
+        f"{escape(str(item['item_name']))} {format_quantity(item['quantity'])} {escape(str(item.get('unit') or 'шт'))}"
         for item in supply.get("supply_items", [])
     )
     return "\n".join(
         [
             f"1 - {items_text}.",
-            f"2 - {supply['consumable_name']}",
-            f"3 - {supply['organization']}",
-            f"4 - {format_quantity(supply['amount'])}",
+            f"2 - {escape(str(supply['consumable_name']))}",
+            f"<b>3 - {escape(str(supply['organization']))}</b>",
+            f"<b>4 - {format_quantity(supply['amount'])}</b>",
         ]
     )
 
@@ -1210,12 +1172,14 @@ async def send_invoice_to_document_workflow_topic(context: ContextTypes.DEFAULT_
             **kwargs,
             photo=invoice_file_id,
             caption=caption,
+            parse_mode="HTML",
         )
     else:
         await context.bot.send_document(
             **kwargs,
             document=invoice_file_id,
             caption=caption,
+            parse_mode="HTML",
         )
 
     return "Счет отправлен в документооборот ✅"
@@ -1270,7 +1234,7 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             topic_message_ids=message_ids,
         )
     else:
-        mark_supply_accepted(
+        supply = mark_supply_accepted(
             supply_id=supply["id"],
             accepted_by_user_id=update.effective_user.id,
             accepted_by_name=accepted_by,
@@ -1282,6 +1246,12 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result_title = "Приемка расходника изменена ✅" if mode == "edit" else "Приемка расходника завершена ✅"
     text = result_title + "\n\n" + format_supply_line(supply) + f"\n\n{topic_status}"
+    if mode != "edit" and supply.get("supply_items"):
+        stock_lines = [
+            f"{item['item_name']}: +{format_quantity(item['quantity'])} {item.get('unit') or 'шт'}"
+            for item in supply["supply_items"]
+        ]
+        text += "\n\nОстатки пополнены:\n" + "\n".join(stock_lines)
 
     if update.callback_query:
         await update.callback_query.edit_message_text(

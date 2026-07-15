@@ -32,6 +32,8 @@ class ConsumableSupply(Base):
     closing_document_kind: Mapped[str | None] = mapped_column(String(50))
     topic_message_ids: Mapped[str | None] = mapped_column(String(1000))
     supply_items_json: Mapped[str | None] = mapped_column(Text)
+    invoice_document_file_id: Mapped[str | None] = mapped_column(Text)
+    invoice_document_kind: Mapped[str | None] = mapped_column(String(50))
 
 
 class ConsumableSupplier(Base):
@@ -440,6 +442,8 @@ def ensure_consumables_columns():
         "alter table consumable_supplies add column if not exists closing_document_kind varchar(50)",
         "alter table consumable_supplies add column if not exists topic_message_ids varchar(1000)",
         "alter table consumable_supplies add column if not exists supply_items_json text",
+        "alter table consumable_supplies add column if not exists invoice_document_file_id text",
+        "alter table consumable_supplies add column if not exists invoice_document_kind varchar(50)",
         "create index if not exists ix_consumable_supplies_status on consumable_supplies (status)",
         "create index if not exists ix_consumable_supplies_created_at on consumable_supplies (created_at)",
         "create index if not exists ix_consumable_supplies_organization on consumable_supplies (organization)",
@@ -489,10 +493,22 @@ def supply_to_dict(supply):
         "closing_document_kind": supply.closing_document_kind or "",
         "topic_message_ids": supply.topic_message_ids or "",
         "supply_items": supply_items,
+        "invoice_document_file_id": supply.invoice_document_file_id or "",
+        "invoice_document_kind": supply.invoice_document_kind or "",
     }
 
 
-def create_supply(consumable_name, organization, amount, created_by_user_id, created_by_name, supply_items=None):
+def create_supply(
+    consumable_name,
+    organization,
+    amount,
+    created_by_user_id,
+    created_by_name,
+    supply_items=None,
+    invoice_document_file_id="",
+    invoice_document_kind="none",
+):
+    normalized_items = normalize_supply_items(supply_items or [])
     with session_scope() as session:
         upsert_supplier_in_session(session, organization)
         supply = ConsumableSupply(
@@ -501,7 +517,9 @@ def create_supply(consumable_name, organization, amount, created_by_user_id, cre
             amount=amount,
             created_by_user_id=str(created_by_user_id or ""),
             created_by_name=created_by_name,
-            supply_items_json=json.dumps(normalize_supply_items(supply_items or []), ensure_ascii=False),
+            supply_items_json=json.dumps(normalized_items, ensure_ascii=False),
+            invoice_document_file_id=invoice_document_file_id or "",
+            invoice_document_kind=invoice_document_kind or "none",
         )
         session.add(supply)
         session.flush()

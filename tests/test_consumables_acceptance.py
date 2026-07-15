@@ -9,6 +9,7 @@ from modules.consumables.handlers import (
     ACCEPT_SUPPLY,
     accept_supply_selected,
     accept_supply_start,
+    finish_acceptance,
 )
 
 
@@ -70,6 +71,57 @@ class ConsumablesAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             "Отправьте фото разложенных расходников:",
             reply_markup="cancel",
         )
+
+    async def test_finishing_acceptance_adds_supply_items_to_stock(self):
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            callback_query=None,
+            message=message,
+            effective_user=SimpleNamespace(id=42),
+        )
+        context = SimpleNamespace(
+            user_data={
+                "supply_id": 17,
+                "layout_photo_file_id": "layout-photo",
+                "closing_document_file_id": "",
+                "closing_document_kind": "none",
+            }
+        )
+        pending_supply = {
+            "id": 17,
+            "status": "pending",
+            "consumable_name": "Счет № 403",
+            "organization": "ИП Бакиров",
+            "amount": 470,
+            "supply_items": [{"item_id": 1, "item_name": "Карточка", "quantity": 2, "unit": "шт"}],
+        }
+        accepted_supply = {**pending_supply, "status": "accepted"}
+
+        with (
+            patch("modules.consumables.handlers.get_supply", return_value=pending_supply),
+            patch("modules.consumables.handlers.current_employee_name", return_value="Сотрудник склада"),
+            patch(
+                "modules.consumables.handlers.send_acceptance_to_topic",
+                new=AsyncMock(return_value=([101], "Приемка отправлена в тему чата ✅")),
+            ),
+            patch("modules.consumables.handlers.mark_supply_accepted", return_value=accepted_supply) as mark_accepted,
+            patch("modules.consumables.handlers.consumables_supplies_keyboard", return_value="menu"),
+        ):
+            state = await finish_acceptance(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        mark_accepted.assert_called_once_with(
+            supply_id=17,
+            accepted_by_user_id=42,
+            accepted_by_name="Сотрудник склада",
+            layout_photo_file_id="layout-photo",
+            closing_document_file_id="",
+            closing_document_kind="none",
+            topic_message_ids=[101],
+        )
+        result_text = message.reply_text.await_args.args[0]
+        self.assertIn("Остатки пополнены:", result_text)
+        self.assertIn("Карточка: +2 шт", result_text)
 
 
 if __name__ == "__main__":
