@@ -30,29 +30,48 @@ def find_marking_product_info(raw_code):
 
 
 def lookup_rows_by_gtin(client, entity_type, gtin):
-    attempts = [
-        {"filter": f"barcode={gtin}", "limit": 10, "expand": "country,product,product.country"},
-        {"filter": f"barcode={gtin}", "limit": 10},
-    ]
-    for params in attempts:
-        try:
-            payload = client.list_entities(entity_type, params=params)
-            rows = response_rows(payload)
-            if rows:
-                return rows
-        except MoySkladError:
-            logging.exception("Ошибка поиска товара в МойСклад: entity=%s", entity_type)
+    for barcode in gtin_barcode_variants(gtin):
+        attempts = [
+            {"filter": f"barcode={barcode}", "limit": 10, "expand": "country,product,product.country"},
+            {"filter": f"barcode={barcode}", "limit": 10},
+        ]
+        for params in attempts:
+            try:
+                payload = client.list_entities(entity_type, params=params)
+                rows = response_rows(payload)
+                if rows:
+                    return rows
+            except MoySkladError:
+                logging.exception(
+                    "Ошибка поиска товара в МойСклад: entity=%s, barcode=%s",
+                    entity_type,
+                    barcode,
+                )
     return []
 
 
 def barcode_matches(row, gtin):
+    expected = set(gtin_barcode_variants(gtin))
     for barcode in row.get("barcodes") or []:
         if not isinstance(barcode, dict):
             continue
         for value in barcode.values():
-            if str(value or "").strip() == gtin:
+            if expected.intersection(gtin_barcode_variants(value)):
                 return True
     return False
+
+
+def gtin_barcode_variants(value):
+    barcode = str(value or "").strip()
+    if not barcode:
+        return ()
+
+    variants = [barcode]
+    if len(barcode) == 14 and barcode.startswith("0"):
+        variants.append(barcode[1:])
+    elif len(barcode) == 13:
+        variants.append(f"0{barcode}")
+    return tuple(variants)
 
 
 def product_info_from_row(client, row):
