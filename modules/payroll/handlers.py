@@ -683,12 +683,51 @@ def format_daily_report_text(report_model):
     return "\n".join(parts)
 
 
-async def send_daily_report_to_topic(context: ContextTypes.DEFAULT_TYPE, report_model):
+def report_belongs_to_telegram_user(report_model, telegram_user):
+    employee = report_model.get("employee") or {}
+    employee_user_id = str(employee.get("telegram_user_id", "")).strip()
+    return bool(employee_user_id and employee_user_id == str(telegram_user.id))
+
+
+async def send_daily_report_to_private_target(target, report_model, reply_markup):
+    text = format_daily_report_text(report_model)
+    if hasattr(target, "edit_message_text"):
+        result = await target.edit_message_text(text, reply_markup=reply_markup)
+        message = result if hasattr(result, "message_id") else target.message
+    else:
+        message = await target.reply_text(text, reply_markup=reply_markup)
+
+    employee_user_id = int(report_model["employee"]["telegram_user_id"])
+    chat_id = getattr(message, "chat_id", None) or employee_user_id
+    message_id = getattr(message, "message_id", None)
+    if not message_id:
+        raise RuntimeError("Не удалось определить message_id отчета руководителя склада.")
+
+    return {
+        "chat_id": int(chat_id),
+        "thread_id": "",
+        "message_id": message_id,
+    }
+
+
+async def send_daily_report_to_topic(
+    context: ContextTypes.DEFAULT_TYPE,
+    report_model,
+    private_target=None,
+    private_reply_markup=None,
+):
     employee = report_model.get("employee")
     if is_warehouse_manager(employee):
         telegram_user_id = str(employee.get("telegram_user_id", "")).strip()
         if not telegram_user_id:
             raise RuntimeError("У руководителя склада не указан telegram_user_id.")
+
+        if private_target:
+            return await send_daily_report_to_private_target(
+                private_target,
+                report_model,
+                private_reply_markup,
+            )
 
         message = await context.bot.send_message(
             chat_id=int(telegram_user_id),
@@ -1372,8 +1411,23 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         "telegram_message_id": "",
     }
 
+    manager = is_manager(find_employee_for_telegram_user(telegram_user))
+    delivered_to_private_target = (
+        is_warehouse_manager(employee)
+        and report_belongs_to_telegram_user(report_model, telegram_user)
+    )
+
     try:
-        telegram_data = await send_daily_report_to_topic(context, report_model)
+        telegram_data = await send_daily_report_to_topic(
+            context,
+            report_model,
+            private_target=target if delivered_to_private_target else None,
+            private_reply_markup=(
+                payroll_main_keyboard(manager=manager)
+                if delivered_to_private_target
+                else None
+            ),
+        )
         append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data)
         if is_warehouse_manager(employee):
             status = "Отчет сохранен и отправлен руководителю склада в личные сообщения ✅"
@@ -1383,7 +1437,10 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         logging.exception("Ошибка создания ежедневного отчета")
         status = f"Отчет не удалось сохранить/отправить ⚠️\nОшибка: {error}"
 
-    manager = is_manager(find_employee_for_telegram_user(telegram_user))
+    if delivered_to_private_target and not status.startswith("Отчет не удалось"):
+        context.user_data.clear()
+        return ConversationHandler.END
+
     text = f"{format_daily_report_text(report_model)}\n\n{status}"
     if hasattr(target, "edit_message_text"):
         await target.edit_message_text(text, reply_markup=payroll_main_keyboard(manager=manager))
@@ -1738,8 +1795,23 @@ async def finish_edit_report(query, context: ContextTypes.DEFAULT_TYPE, telegram
     report_data["KPI сумма"] = model["kpi_sum"]
     report_data["Обновлено"] = now_str()
 
+    manager = is_manager(find_employee_for_telegram_user(telegram_user))
+    delivered_to_private_target = (
+        is_warehouse_manager(model.get("employee"))
+        and report_belongs_to_telegram_user(model, telegram_user)
+    )
+
     try:
-        telegram_data = await send_daily_report_to_topic(context, model)
+        telegram_data = await send_daily_report_to_topic(
+            context,
+            model,
+            private_target=query if delivered_to_private_target else None,
+            private_reply_markup=(
+                payroll_main_keyboard(manager=manager)
+                if delivered_to_private_target
+                else None
+            ),
+        )
         report_data["telegram_chat_id"] = telegram_data.get("chat_id", "")
         report_data["telegram_thread_id"] = telegram_data.get("thread_id", "")
         report_data["telegram_message_id"] = telegram_data.get("message_id", "")
@@ -1752,7 +1824,10 @@ async def finish_edit_report(query, context: ContextTypes.DEFAULT_TYPE, telegram
         logging.exception("Ошибка обновления отчета")
         status = f"Отчет не удалось обновить полностью ⚠️\nОшибка: {error}"
 
-    manager = is_manager(find_employee_for_telegram_user(telegram_user))
+    if delivered_to_private_target and not status.startswith("Отчет не удалось"):
+        context.user_data.clear()
+        return ConversationHandler.END
+
     await query.edit_message_text(
         f"{format_daily_report_text(model)}\n\n{status}",
         reply_markup=payroll_main_keyboard(manager=manager),
