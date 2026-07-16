@@ -375,10 +375,13 @@ def sync_employees_sheet(worksheet):
 
 
 def sync_kpi_sheet(worksheet):
-    """Синхронизирует справочник KPI с payroll_config.py."""
+    """Добавляет отсутствующие стартовые KPI из payroll_config.py.
+
+    Существующие строки намеренно не обновляются: справочник KPI управляется
+    руководителями через бот, и их изменения должны переживать перезапуск.
+    """
     values = worksheet.get_all_values()
     existing_by_id, _ = rows_to_dict_by_key(values, "kpi_id")
-    end_col = column_letter(len(KPI_HEADERS))
 
     rows_to_append = []
 
@@ -390,15 +393,12 @@ def sync_kpi_sheet(worksheet):
             str(item["is_active"]).upper(),
         ]
 
-        found = existing_by_id.get(item["kpi_id"])
-        if found:
-            row_index = found["row_index"]
-            worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
-        else:
+        if item["kpi_id"] not in existing_by_id:
             rows_to_append.append(row)
 
     if rows_to_append:
         worksheet.append_rows(rows_to_append)
+
 
 def init_payroll_sheet():
     employees_ws = get_worksheet(EMPLOYEES_SHEET, rows=200, cols=12)
@@ -419,9 +419,8 @@ def init_payroll_sheet():
     ensure_headers(periods_ws, PERIOD_HEADERS)
     ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
 
-    # Справочники синхронизируем при каждом запуске, а не только при первом создании.
-    # Это гарантирует, что новые user_id, ставки, KPI и исправления попадут
-    # в справочники, которыми пользуется бот.
+    # Сотрудники по-прежнему синхронизируются с конфигом. KPI из конфига служат
+    # только стартовым наполнением: существующие позиции управляются через бот.
     sync_employees_sheet(employees_ws)
     sync_kpi_sheet(kpi_ws)
 
@@ -588,6 +587,78 @@ def get_kpi_items(active_only=True):
             continue
         items.append(item)
     return items
+
+
+def get_kpi_by_id(kpi_id):
+    kpi_id = str(kpi_id or "").strip()
+    return next(
+        (item for item in get_kpi_items(active_only=False) if item["kpi_id"] == kpi_id),
+        None,
+    )
+
+
+def _find_kpi_by_name(name, exclude_kpi_id=None):
+    normalized_name = str(name or "").strip().casefold()
+    if not normalized_name:
+        return None
+
+    for item in get_kpi_items(active_only=False):
+        if exclude_kpi_id and item["kpi_id"] == str(exclude_kpi_id):
+            continue
+        if item["name"].casefold() == normalized_name:
+            return item
+    return None
+
+
+def append_kpi(name, rate):
+    name = str(name or "").strip()
+    rate = safe_float(rate)
+    if not name:
+        raise ValueError("Название KPI не должно быть пустым.")
+    if rate <= 0:
+        raise ValueError("Ставка KPI должна быть больше нуля.")
+    if _find_kpi_by_name(name):
+        raise ValueError("KPI с таким названием уже существует.")
+
+    kpi_id = generate_id("kpi")
+    get_worksheet(KPI_SHEET).append_row([kpi_id, name, rate, "TRUE"])
+    return get_kpi_by_id(kpi_id)
+
+
+def update_kpi_fields(kpi_id, **fields):
+    ws = get_worksheet(KPI_SHEET)
+    values = ws.get_all_values()
+    items_by_id, _ = rows_to_dict_by_key(values, "kpi_id")
+    found = items_by_id.get(str(kpi_id))
+    if not found:
+        return None
+
+    data = found["row_data"]
+    if "name" in fields:
+        name = str(fields["name"] or "").strip()
+        if not name:
+            raise ValueError("Название KPI не должно быть пустым.")
+        if _find_kpi_by_name(name, exclude_kpi_id=kpi_id):
+            raise ValueError("KPI с таким названием уже существует.")
+        data["Название"] = name
+
+    if "rate" in fields:
+        rate = safe_float(fields["rate"])
+        if rate <= 0:
+            raise ValueError("Ставка KPI должна быть больше нуля.")
+        data["Ставка"] = rate
+
+    if "is_active" in fields:
+        data["Активно"] = str(bool(fields["is_active"])).upper()
+
+    row = [data.get(header, "") for header in KPI_HEADERS]
+    end_col = column_letter(len(KPI_HEADERS))
+    ws.update(f"A{found['row_index']}:{end_col}{found['row_index']}", [row])
+    return get_kpi_by_id(kpi_id)
+
+
+def set_kpi_active(kpi_id, is_active):
+    return update_kpi_fields(kpi_id, is_active=is_active)
 
 
 def find_report_row(employee_id, report_date):

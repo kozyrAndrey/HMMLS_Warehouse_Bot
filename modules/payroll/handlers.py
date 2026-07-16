@@ -136,6 +136,7 @@ def payroll_main_keyboard(manager=False):
                 [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
                 [InlineKeyboardButton("📊 Рассчитать ЗП за период", callback_data="pay:calculate_period")],
                 [InlineKeyboardButton("⚙️ Расчетные периоды", callback_data="pay:periods")],
+                [InlineKeyboardButton("⚙️ Позиции KPI", callback_data="pay:kpi_management")],
                 [InlineKeyboardButton("🧹 Очистить данные старше 1 года", callback_data="pay:cleanup")],
             ]
         )
@@ -3122,8 +3123,11 @@ def get_payroll_conversation_handler():
 
 
 def get_payroll_handlers():
+    from modules.payroll.kpi_handlers import get_kpi_management_handler
+
     return [
         CommandHandler("whoami", whoami),
         CallbackQueryHandler(payroll_menu, pattern=r"^section:payroll$"),
         get_payroll_conversation_handler(),
+        get_kpi_management_handler(),
     ]
