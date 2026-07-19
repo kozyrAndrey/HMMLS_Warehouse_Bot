@@ -37,7 +37,8 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False):
 def build_marking_menu_keyboard(manager=False):
     keyboard = []
     if manager:
-        keyboard.append([InlineKeyboardButton("📤 Выгрузка кодов для Trend Island", callback_data="marking:trend_export")])
+        keyboard.append([InlineKeyboardButton("📤 Файлы Trend Island (УПД + 1С)", callback_data="marking:trend_export")])
+        keyboard.append([InlineKeyboardButton("📚 Справочник Честного ЗНАКа", callback_data="marking:catalog")])
     keyboard.extend(
         [
             [InlineKeyboardButton("🏷 Дубликат ЧЗ", callback_data="marking:duplicate_chz")],

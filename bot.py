@@ -47,6 +47,7 @@ from modules.ai_agent.weather import setup_ai_agent_jobs
 from modules.consumables.handlers import get_consumables_handlers
 from modules.recruitment.handlers import get_recruitment_handlers
 from modules.marking.handlers import get_marking_handlers
+from modules.marking.storage import init_marking_storage
 from modules.reference.handlers import get_reference_handlers
 from modules.employees.handlers import get_employee_handlers
 from modules.products.handlers import get_product_handlers
@@ -92,6 +93,7 @@ def main():
     init_consumables_storage()
     init_recruitment_storage()
     init_returns_storage()
+    init_marking_storage()
 
     try:
         init_payroll_sheet()

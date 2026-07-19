@@ -1,14 +1,27 @@
+import csv
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-
-from config import MOYSKLAD_API_BASE_URL, MOYSKLAD_CA_FILE, MOYSKLAD_SSL_VERIFY, MOYSKLAD_TOKEN
+from config import (
+    MOYSKLAD_API_BASE_URL,
+    MOYSKLAD_CA_FILE,
+    MOYSKLAD_SALE_PRICE_TYPE,
+    MOYSKLAD_SSL_VERIFY,
+    MOYSKLAD_TOKEN,
+)
+from modules.marking.storage import normalize_gtin
 from modules.moysklad.client import MoySkladClient, MoySkladError
 
 
-HEADER_FILL = PatternFill("solid", fgColor="D9EAD3")
+NET_PRICE_QUANTUM = Decimal("0.00000001")
+VAT_MULTIPLIER = Decimal("1.07")
+ARTICLE_CHARACTERISTIC_NAMES = {"артикул", "article"}
+
+
+class TrendExportValidationError(RuntimeError):
+    def __init__(self, errors):
+        self.errors = list(errors)
+        super().__init__("В исходных данных найдены ошибки.")
 
 
 def parse_bool(value, default=True):
@@ -36,17 +49,6 @@ def response_rows(payload):
     return payload.get("rows", []) if isinstance(payload, dict) else []
 
 
-def unique(values):
-    result = []
-    seen = set()
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-    return result
-
-
 def extract_cis_codes(value):
     codes = []
 
@@ -63,7 +65,7 @@ def extract_cis_codes(value):
                 walk(item)
 
     walk(value)
-    return unique(codes)
+    return codes
 
 
 def find_retireorder(client, document_name):
@@ -122,79 +124,264 @@ def get_all_position_tracking_codes(client, entity_type, entity_id, position_id)
         rows = response_rows(payload)
         codes.extend(extract_cis_codes(rows))
 
+        if not rows:
+            break
         meta = payload.get("meta") or {}
         size = int(meta.get("size") or 0)
-        offset += limit
-        if offset >= size or not rows:
+        offset += len(rows)
+        if (size and offset >= size) or len(rows) < limit:
             break
 
-    return unique(codes)
+    return codes
 
 
-def get_retireorder_export_rows(client, document_name):
-    document = find_retireorder(client, document_name)
-    document_id = document["id"]
-    positions_payload = client.get_positions(
-        "retireorder",
-        document_id,
-        params={"expand": "assortment", "limit": 1000},
+def expand_parent_product(client, assortment, cache):
+    product = assortment.get("product") or {}
+    if not isinstance(product, dict):
+        return {}
+    if product.get("article") or product.get("salePrices") or product.get("barcodes"):
+        return product
+
+    href = str((product.get("meta") or {}).get("href") or "").strip()
+    if not href:
+        return product
+    if href not in cache:
+        cache[href] = client.get_href(href)
+    return cache[href]
+
+
+def extract_article(assortment, parent_product):
+    characteristic_article = extract_characteristic_value(
+        assortment.get("characteristics"),
+        ARTICLE_CHARACTERISTIC_NAMES,
+    )
+    return str(
+        characteristic_article
+        or assortment.get("article")
+        or parent_product.get("article")
+        or ""
+    ).strip()
+
+
+def extract_characteristic_value(characteristics, wanted_names):
+    for characteristic in characteristics or []:
+        if not isinstance(characteristic, dict):
+            continue
+        name = str(characteristic.get("name") or "").strip().casefold()
+        if name not in wanted_names:
+            continue
+        value = characteristic.get("value")
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("value")
+        if str(value or "").strip():
+            return value
+    return ""
+
+
+def extract_gtin(assortment, parent_product):
+    return extract_gtin_from_barcodes(assortment.get("barcodes")) or extract_gtin_from_barcodes(
+        parent_product.get("barcodes")
     )
 
+
+def extract_gtin_from_barcodes(barcodes):
+    items = [item for item in barcodes or [] if isinstance(item, dict)]
+    for barcode_type in ("gtin", "ean13", "ean8", "upc"):
+        for item in items:
+            value = str(item.get(barcode_type) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def extract_sale_price(assortment, parent_product, price_type_name):
+    price = sale_price_by_type(assortment.get("salePrices"), price_type_name)
+    if price is not None:
+        return price
+    return sale_price_by_type(parent_product.get("salePrices"), price_type_name)
+
+
+def sale_price_by_type(sale_prices, price_type_name):
+    expected = str(price_type_name or "").strip().casefold()
+    for sale_price in sale_prices or []:
+        if not isinstance(sale_price, dict):
+            continue
+        actual = str((sale_price.get("priceType") or {}).get("name") or "").strip().casefold()
+        if actual != expected:
+            continue
+        value = sale_price.get("value")
+        try:
+            return Decimal(str(value)) / Decimal("100")
+        except (InvalidOperation, TypeError, ValueError):
+            return value
+    return None
+
+
+def get_all_positions(client, entity_type, entity_id):
+    positions = []
+    limit = 1000
+    offset = 0
+    while True:
+        payload = client.get_positions(
+            entity_type,
+            entity_id,
+            params={"expand": "assortment", "limit": limit, "offset": offset},
+        )
+        rows = response_rows(payload)
+        if not rows:
+            break
+        positions.extend(rows)
+        meta = payload.get("meta") or {}
+        size = int(meta.get("size") or 0)
+        offset += len(rows)
+        if (size and offset >= size) or len(rows) < limit:
+            break
+    return positions
+
+
+def get_retireorder_export_rows(client, document_name, sale_price_type=MOYSKLAD_SALE_PRICE_TYPE):
+    document = find_retireorder(client, document_name)
+    document_id = document["id"]
+
     result = []
-    for position in response_rows(positions_payload):
+    product_cache = {}
+    for position in get_all_positions(client, "retireorder", document_id):
         position_id = str(position.get("id") or "").strip()
         if not position_id:
             continue
 
+        assortment = position.get("assortment") or {}
+        parent_product = expand_parent_product(client, assortment, product_cache)
         codes = get_all_position_tracking_codes(client, "retireorder", document_id, position_id)
         result.append(
             {
                 "name": get_assortment_name(position),
-                "quantity": position.get("quantity"),
+                "article": extract_article(assortment, parent_product),
+                "gtin": extract_gtin(assortment, parent_product),
+                "sale_price": extract_sale_price(assortment, parent_product, sale_price_type),
                 "codes": codes,
+                "assortment": assortment,
+                "product": parent_product,
             }
         )
 
     return document, result
 
 
-def create_trend_island_codes_xlsx(rows, output_path):
-    output_path = Path(output_path)
+def calculate_net_price(value):
+    try:
+        gross_price = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise ValueError("Цена имеет некорректный формат.") from error
+    if not gross_price.is_finite() or gross_price < 0:
+        raise ValueError("Цена имеет некорректный формат.")
+    return (gross_price / VAT_MULTIPLIER).quantize(NET_PRICE_QUANTUM, rounding=ROUND_HALF_UP)
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Коды маркировки"
 
-    headers = ["Название", "Количество", "Коды маркировки"]
-    for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = Font(bold=True)
-        cell.fill = HEADER_FILL
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+def build_trend_island_upd_rows(rows, catalog_names):
+    normalized_catalog = {}
+    for gtin, name in (catalog_names or {}).items():
+        try:
+            normalized_catalog[normalize_gtin(gtin)] = str(name or "").strip()
+        except ValueError:
+            continue
 
-    row_index = 2
-    for item in rows:
-        codes = item["codes"] or [""]
-        for code_index, code in enumerate(codes):
-            if code_index == 0:
-                ws.cell(row=row_index, column=1, value=item["name"])
-                ws.cell(row=row_index, column=2, value=item["quantity"])
+    errors = []
+    prepared_positions = []
+    seen_codes = {}
 
-            ws.cell(row=row_index, column=3, value=code)
-            for col in range(1, 4):
-                ws.cell(row=row_index, column=col).alignment = Alignment(
-                    vertical="top",
-                    wrap_text=col in (1, 3),
+    for position_index, item in enumerate(rows, start=1):
+        source_name = str(item.get("name") or f"Позиция {position_index}").strip()
+        article = str(item.get("article") or "").strip()
+        raw_gtin = str(item.get("gtin") or "").strip()
+        codes = list(item.get("codes") or [])
+
+        if not article:
+            errors.append(f"{source_name}: отсутствует артикул в МойСклад.")
+
+        normalized_gtin = ""
+        if not raw_gtin:
+            errors.append(f"{source_name}: отсутствует GTIN.")
+        else:
+            try:
+                normalized_gtin = normalize_gtin(raw_gtin)
+            except ValueError as error:
+                errors.append(f"{source_name}: некорректный GTIN {raw_gtin}: {error}")
+
+        honest_sign_name = normalized_catalog.get(normalized_gtin, "")
+        if normalized_gtin and not honest_sign_name:
+            errors.append(f"{source_name}: GTIN {raw_gtin} отсутствует в справочнике Честного ЗНАКа.")
+
+        sale_price = item.get("sale_price")
+        net_price = None
+        if sale_price is None or str(sale_price).strip() == "":
+            errors.append(f"{source_name}: отсутствует цена продажи в МойСклад.")
+        else:
+            try:
+                net_price = calculate_net_price(sale_price)
+            except ValueError:
+                errors.append(f"{source_name}: цена продажи «{sale_price}» имеет некорректный формат.")
+
+        if not codes:
+            errors.append(f"{source_name}: отсутствуют коды маркировки.")
+
+        for code in codes:
+            code_text = str(code)
+            previous_name = seen_codes.get(code_text)
+            if previous_name is not None:
+                errors.append(
+                    f"КИЗ {code_text} встречается несколько раз: {previous_name}; {source_name}."
                 )
-            ws.row_dimensions[row_index].height = 24
-            row_index += 1
+            else:
+                seen_codes[code_text] = source_name
 
-    widths = [42, 14, 52]
-    for col, width in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(col)].width = width
+        prepared_positions.append(
+            {
+                "article": article,
+                "honest_sign_name": honest_sign_name,
+                "net_price": net_price,
+                "codes": codes,
+            }
+        )
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+    if errors:
+        raise TrendExportValidationError(errors)
 
-    wb.save(output_path)
+    csv_rows = []
+    row_number = 1
+    for item in prepared_positions:
+        position_name = f"{item['article']} {item['honest_sign_name']}"
+        price_text = format(item["net_price"], ".8f")
+        for code in item["codes"]:
+            csv_rows.append(
+                [
+                    str(row_number),
+                    position_name,
+                    price_text,
+                    "1",
+                    "796",
+                    "7%",
+                    "КИЗ",
+                    str(code),
+                ]
+            )
+            row_number += 1
+    return csv_rows
+
+
+def write_csv_rows(rows, output_path):
+    output_path = Path(output_path)
+    with output_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+        writer.writerows(rows)
     return output_path
+
+
+def create_trend_island_upd_csv(rows, catalog_names, output_path):
+    return write_csv_rows(build_trend_island_upd_rows(rows, catalog_names), output_path)
+
+
+def create_honest_sign_catalog_csv(products, output_path):
+    rows = [["gtin", "honest_sign_name"]]
+    rows.extend([[product["gtin"], product["honest_sign_name"]] for product in products])
+    return write_csv_rows(rows, output_path)
