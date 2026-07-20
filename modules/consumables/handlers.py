@@ -12,11 +12,18 @@ from telegram.ext import (
     filters,
 )
 
-from config import CONSUMABLES_TOPIC_ID, DOCUMENT_WORKFLOW_CHAT_ID, GROUP_CHAT_ID, WAREHOUSE_INVOICES_TOPIC_ID
+from config import (
+    ACTS_CLOSING_DOCUMENTS_TOPIC_ID,
+    CONSUMABLES_TOPIC_ID,
+    DOCUMENT_WORKFLOW_CHAT_ID,
+    GROUP_CHAT_ID,
+    WAREHOUSE_INVOICES_TOPIC_ID,
+)
 from core.keyboards import (
     build_consumables_counting_menu_keyboard,
     build_consumables_menu_keyboard,
     build_consumables_supplies_menu_keyboard,
+    build_consumables_suppliers_menu_keyboard,
 )
 from modules.consumables.storage import (
     apply_inventory_batch_counts,
@@ -25,6 +32,7 @@ from modules.consumables.storage import (
     add_consumable_movement,
     create_inventory_count,
     create_inventory_count_batch,
+    create_supplier,
     deactivate_supplier,
     delete_supply,
     get_accepted_supplies,
@@ -40,13 +48,18 @@ from modules.consumables.storage import (
     get_recent_organizations,
     get_supply,
     get_supplies,
+    get_supplier,
+    get_supplier_records,
     format_quantity,
     mark_supply_accepted,
     set_product_consumable_rule,
     split_message_ids,
     update_acceptance,
     update_supply,
+    update_supplier,
     upsert_consumable_item,
+    SUPPLIER_DOCUMENTS_EDO,
+    SUPPLIER_DOCUMENTS_PAPER,
 )
 from modules.consumables.pdf_reports import create_inventory_count_pdf
 from modules.payroll.google_sheets import find_employee_for_telegram_user, is_manager, money, safe_float
@@ -84,7 +97,13 @@ from modules.receiving.products import CATEGORIES, SIZES
     INVENTORY_ITEM_SELECT,
     INVENTORY_QUANTITY,
     INVENTORY_COMPARE_SELECT,
-) = range(500, 530)
+    SUPPLY_ORGANIZATION_NEW_DELIVERY,
+    SUPPLIER_ADD_NAME,
+    SUPPLIER_ADD_DELIVERY,
+    SUPPLIER_EDIT_SELECT,
+    SUPPLIER_EDIT_NAME,
+    SUPPLIER_EDIT_DELIVERY,
+) = range(500, 536)
 
 
 def current_employee_or_none(update):
@@ -109,6 +128,10 @@ def consumables_supplies_keyboard(update):
 
 def consumables_counting_keyboard(update):
     return build_consumables_counting_menu_keyboard(manager=is_manager(current_employee_or_none(update)))
+
+
+def consumables_suppliers_keyboard():
+    return build_consumables_suppliers_menu_keyboard()
 
 
 def set_consumables_module(context, module):
@@ -193,6 +216,43 @@ def suppliers_keyboard(suppliers):
 
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+def supplier_records_keyboard(suppliers, prefix):
+    rows = [
+        [InlineKeyboardButton(button_text(supplier["name"]), callback_data=f"{prefix}:{supplier['id']}")]
+        for supplier in suppliers
+    ]
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def supplier_documents_delivery_keyboard(prefix):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📡 По ЭДО", callback_data=f"{prefix}:edo")],
+            [InlineKeyboardButton("📄 В бумажном виде", callback_data=f"{prefix}:paper")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
+def supplier_documents_delivery_text(value):
+    return "по ЭДО" if value == SUPPLIER_DOCUMENTS_EDO else "в бумажном виде"
+
+
+def suppliers_list_text(title, suppliers):
+    lines = [title]
+    for supplier in suppliers:
+        lines.extend(
+            [
+                "",
+                supplier["name"],
+                "Закрывающие документы: "
+                + supplier_documents_delivery_text(supplier["closing_documents_delivery"]),
+            ]
+        )
+    return "\n".join(lines)
 
 
 def consumable_items_keyboard(items, prefix):
@@ -347,8 +407,7 @@ def format_supply_line(supply):
     return "\n".join(lines)
 
 
-def format_acceptance_text(supply, accepted_by, has_document):
-    document_text = "есть" if has_document else "документа нет"
+def format_acceptance_text(supply, accepted_by, document_status):
     return "\n".join(
         [
             "📥 Приемка расходника",
@@ -356,7 +415,7 @@ def format_acceptance_text(supply, accepted_by, has_document):
             format_supply_line(supply),
             "",
             f"Принял: {accepted_by}",
-            f"Закрывающий документ: {document_text}",
+            f"Закрывающий документ: {document_status}",
         ]
     )
 
@@ -437,6 +496,17 @@ async def consumables_supplies_menu(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 
+async def consumables_suppliers_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    set_consumables_module(context, "suppliers")
+    await query.edit_message_text("🤝 Поставщики", reply_markup=consumables_suppliers_keyboard())
+    return ConversationHandler.END
+
+
 async def consumables_counting_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -451,6 +521,9 @@ async def consumables_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if module == "supplies":
         text = "📦 Поставки расходников"
         keyboard = consumables_supplies_keyboard(update)
+    elif module == "suppliers":
+        text = "🤝 Поставщики"
+        keyboard = consumables_suppliers_keyboard()
     elif module == "counting":
         text = "🔢 Пересчет расходников"
         keyboard = consumables_counting_keyboard(update)
@@ -537,7 +610,20 @@ async def supply_organization_new_received(update: Update, context: ContextTypes
         return SUPPLY_ORGANIZATION_NEW
 
     context.user_data["organization"] = organization
-    await update.message.reply_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard())
+    await update.message.reply_text(
+        "Как поставщик доставляет закрывающие документы?",
+        reply_markup=supplier_documents_delivery_keyboard("consorgdelivery"),
+    )
+    return SUPPLY_ORGANIZATION_NEW_DELIVERY
+
+
+async def supply_organization_new_delivery_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    delivery = query.data.replace("consorgdelivery:", "")
+    supplier = create_supplier(context.user_data.get("organization"), delivery)
+    context.user_data["organization"] = supplier["name"]
+    await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard())
     return SUPPLY_AMOUNT
 
 
@@ -1049,6 +1135,15 @@ async def layout_photo_received(update: Update, context: ContextTypes.DEFAULT_TY
         return ACCEPT_LAYOUT_PHOTO
 
     context.user_data["layout_photo_file_id"] = update.message.photo[-1].file_id
+    supply = get_supply(context.user_data.get("supply_id"))
+    supplier = get_supplier(supply.get("organization")) if supply else None
+    delivery = (supplier or {}).get("closing_documents_delivery", SUPPLIER_DOCUMENTS_PAPER)
+    context.user_data["supplier_documents_delivery"] = delivery
+    if delivery == SUPPLIER_DOCUMENTS_EDO:
+        context.user_data["closing_document_file_id"] = ""
+        context.user_data["closing_document_kind"] = "none"
+        return await finish_acceptance(update, context)
+
     await update.message.reply_text(
         "Отправьте скан-копию закрывающего документа или нажмите «Документа нет».",
         reply_markup=document_keyboard(),
@@ -1107,32 +1202,68 @@ async def send_acceptance_to_topic(context: ContextTypes.DEFAULT_TYPE, supply, a
         common_kwargs["message_thread_id"] = message_thread_id
 
     closing_file_id = context.user_data.get("closing_document_file_id", "")
-    closing_kind = context.user_data.get("closing_document_kind", "none")
-    message_ids = []
+    delivery = context.user_data.get("supplier_documents_delivery", SUPPLIER_DOCUMENTS_PAPER)
+    if delivery == SUPPLIER_DOCUMENTS_EDO:
+        document_status = "по ЭДО"
+    else:
+        document_status = "есть" if closing_file_id else "документа нет"
 
     first_message = await context.bot.send_photo(
         **common_kwargs,
         photo=context.user_data["layout_photo_file_id"],
-        caption=format_acceptance_text(supply, accepted_by, bool(closing_file_id)),
+        caption=format_acceptance_text(supply, accepted_by, document_status),
     )
-    message_ids.append(first_message.message_id)
+    return [first_message.message_id], "Отчет о приемке отправлен в тему расходников ✅"
 
-    if closing_file_id and closing_kind == "photo":
-        message = await context.bot.send_photo(
-            **common_kwargs,
-            photo=closing_file_id,
-            caption="Скан-копия закрывающего документа",
-        )
-        message_ids.append(message.message_id)
-    elif closing_file_id and closing_kind == "document":
-        message = await context.bot.send_document(
-            **common_kwargs,
-            document=closing_file_id,
-            caption="Скан-копия закрывающего документа",
-        )
-        message_ids.append(message.message_id)
 
-    return message_ids, "Приемка отправлена в тему чата ✅"
+def format_document_workflow_amount(value):
+    formatted = f"{float(value or 0):,.2f}"
+    return formatted.replace(",", " ").replace(".", ",")
+
+
+def closing_document_caption_text(supply, edo=False):
+    lines = []
+    if edo:
+        lines.append("Закрывающий документ отправлен по ЭДО")
+    lines.extend(
+        [
+            f"2 - {supply['consumable_name']}",
+            f"3 - {supply['organization']}",
+            f"4 - {format_document_workflow_amount(supply['amount'])}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def send_closing_document_to_workflow(context: ContextTypes.DEFAULT_TYPE, supply):
+    if not DOCUMENT_WORKFLOW_CHAT_ID:
+        return [], "Закрывающий документ не отправлен: DOCUMENT_WORKFLOW_CHAT_ID не настроен."
+    if not ACTS_CLOSING_DOCUMENTS_TOPIC_ID:
+        return [], "Закрывающий документ не отправлен: ACTS_CLOSING_DOCUMENTS_TOPIC_ID не настроен."
+
+    kwargs = {
+        "chat_id": int(DOCUMENT_WORKFLOW_CHAT_ID),
+        "message_thread_id": int(ACTS_CLOSING_DOCUMENTS_TOPIC_ID),
+    }
+    delivery = context.user_data.get("supplier_documents_delivery", SUPPLIER_DOCUMENTS_PAPER)
+    if delivery == SUPPLIER_DOCUMENTS_EDO:
+        message = await context.bot.send_message(
+            **kwargs,
+            text=closing_document_caption_text(supply, edo=True),
+        )
+        return [message.message_id], "Сообщение об ЭДО отправлено в документооборот ✅"
+
+    file_id = context.user_data.get("closing_document_file_id", "")
+    kind = context.user_data.get("closing_document_kind", "none")
+    if not file_id:
+        return [], "Закрывающий документ не прикреплен."
+
+    caption = closing_document_caption_text(supply)
+    if kind == "photo":
+        message = await context.bot.send_photo(**kwargs, photo=file_id, caption=caption)
+    else:
+        message = await context.bot.send_document(**kwargs, document=file_id, caption=caption)
+    return [message.message_id], "Закрывающий документ отправлен в документооборот ✅"
 
 
 def invoice_caption_text(supply):
@@ -1178,14 +1309,22 @@ async def send_invoice_to_document_workflow_topic(context: ContextTypes.DEFAULT_
 
 
 async def delete_topic_messages(context: ContextTypes.DEFAULT_TYPE, supply):
-    if not GROUP_CHAT_ID:
-        return
+    if GROUP_CHAT_ID:
+        for message_id in split_message_ids(supply.get("topic_message_ids")):
+            try:
+                await context.bot.delete_message(chat_id=int(GROUP_CHAT_ID), message_id=message_id)
+            except Exception:
+                logging.exception("Не удалось удалить сообщение приемки расходника из темы")
 
-    for message_id in split_message_ids(supply.get("topic_message_ids")):
-        try:
-            await context.bot.delete_message(chat_id=int(GROUP_CHAT_ID), message_id=message_id)
-        except Exception:
-            logging.exception("Не удалось удалить сообщение приемки расходника из темы")
+    if DOCUMENT_WORKFLOW_CHAT_ID:
+        for message_id in split_message_ids(supply.get("document_workflow_message_ids")):
+            try:
+                await context.bot.delete_message(
+                    chat_id=int(DOCUMENT_WORKFLOW_CHAT_ID),
+                    message_id=message_id,
+                )
+            except Exception:
+                logging.exception("Не удалось удалить закрывающий документ из документооборота")
 
 
 async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1204,6 +1343,12 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     accepted_by = current_employee_name(update)
+    if "supplier_documents_delivery" not in context.user_data:
+        supplier = get_supplier(supply.get("organization"))
+        context.user_data["supplier_documents_delivery"] = (supplier or {}).get(
+            "closing_documents_delivery",
+            SUPPLIER_DOCUMENTS_PAPER,
+        )
 
     if mode == "edit":
         await delete_topic_messages(context, supply)
@@ -1215,6 +1360,13 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_ids = []
         topic_status = f"Приемка сохранена, но не отправлена в тему ⚠️\nОшибка: {error}"
 
+    try:
+        workflow_message_ids, document_status = await send_closing_document_to_workflow(context, supply)
+    except Exception as error:
+        logging.exception("Не удалось отправить закрывающий документ в документооборот")
+        workflow_message_ids = []
+        document_status = f"Закрывающий документ не отправлен ⚠️\nОшибка: {error}"
+
     if mode == "edit":
         update_acceptance(
             supply_id=supply["id"],
@@ -1224,6 +1376,7 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             closing_document_file_id=context.user_data.get("closing_document_file_id", ""),
             closing_document_kind=context.user_data.get("closing_document_kind", "none"),
             topic_message_ids=message_ids,
+            document_workflow_message_ids=workflow_message_ids,
         )
     else:
         supply = mark_supply_accepted(
@@ -1234,10 +1387,11 @@ async def finish_acceptance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             closing_document_file_id=context.user_data.get("closing_document_file_id", ""),
             closing_document_kind=context.user_data.get("closing_document_kind", "none"),
             topic_message_ids=message_ids,
+            document_workflow_message_ids=workflow_message_ids,
         )
 
     result_title = "Приемка расходника изменена ✅" if mode == "edit" else "Приемка расходника завершена ✅"
-    text = result_title + "\n\n" + format_supply_line(supply) + f"\n\n{topic_status}"
+    text = result_title + "\n\n" + format_supply_line(supply) + f"\n\n{topic_status}\n{document_status}"
     if mode != "edit" and supply.get("supply_items"):
         stock_lines = [
             f"{item['item_name']}: +{format_quantity(item['quantity'])} {item.get('unit') or 'шт'}"
@@ -1379,21 +1533,34 @@ async def supply_edit_value_received(update: Update, context: ContextTypes.DEFAU
         context.user_data["layout_photo_file_id"] = supply["layout_photo_file_id"]
         context.user_data["closing_document_file_id"] = supply.get("closing_document_file_id", "")
         context.user_data["closing_document_kind"] = supply.get("closing_document_kind", "none")
+        supplier = get_supplier(supply.get("organization"))
+        context.user_data["supplier_documents_delivery"] = (supplier or {}).get(
+            "closing_documents_delivery",
+            SUPPLIER_DOCUMENTS_PAPER,
+        )
         try:
             message_ids, topic_status = await send_acceptance_to_topic(context, supply, supply.get("accepted_by_name") or "-")
-            update_acceptance(
-                supply_id=supply["id"],
-                accepted_by_user_id=supply.get("accepted_by_user_id", ""),
-                accepted_by_name=supply.get("accepted_by_name", ""),
-                layout_photo_file_id=supply["layout_photo_file_id"],
-                closing_document_file_id=supply.get("closing_document_file_id", ""),
-                closing_document_kind=supply.get("closing_document_kind", "none"),
-                topic_message_ids=message_ids,
-            )
-            topic_status = f"\n\n{topic_status}"
         except Exception as error:
             logging.exception("Не удалось обновить сообщение приемки после изменения поставки")
-            topic_status = f"\n\nПоставка изменена, но сообщение приемки в теме не обновлено ⚠️\nОшибка: {error}"
+            message_ids = []
+            topic_status = f"Отчет о приемке не обновлен ⚠️\nОшибка: {error}"
+        try:
+            workflow_message_ids, document_status = await send_closing_document_to_workflow(context, supply)
+        except Exception as error:
+            logging.exception("Не удалось обновить закрывающий документ после изменения поставки")
+            workflow_message_ids = []
+            document_status = f"Закрывающий документ не обновлен ⚠️\nОшибка: {error}"
+        update_acceptance(
+            supply_id=supply["id"],
+            accepted_by_user_id=supply.get("accepted_by_user_id", ""),
+            accepted_by_name=supply.get("accepted_by_name", ""),
+            layout_photo_file_id=supply["layout_photo_file_id"],
+            closing_document_file_id=supply.get("closing_document_file_id", ""),
+            closing_document_kind=supply.get("closing_document_kind", "none"),
+            topic_message_ids=message_ids,
+            document_workflow_message_ids=workflow_message_ids,
+        )
+        topic_status = f"\n\n{topic_status}\n{document_status}"
 
     await update.message.reply_text(
         "Поставка изменена ✅\n\n" + format_supply_line(supply) + topic_status,
@@ -1511,10 +1678,126 @@ async def acceptance_delete_confirmed(update: Update, context: ContextTypes.DEFA
     return ConversationHandler.END
 
 
+async def add_supplier_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    set_consumables_module(context, "suppliers")
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    await query.edit_message_text("Введите название поставщика:", reply_markup=consumables_back_keyboard())
+    return SUPPLIER_ADD_NAME
+
+
+async def supplier_add_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text("Название не должно быть пустым. Введите название:")
+        return SUPPLIER_ADD_NAME
+    context.user_data["supplier_name"] = name
+    await update.message.reply_text(
+        "Как поставщик доставляет закрывающие документы?",
+        reply_markup=supplier_documents_delivery_keyboard("conssupplieradddelivery"),
+    )
+    return SUPPLIER_ADD_DELIVERY
+
+
+async def supplier_add_delivery_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    delivery = query.data.replace("conssupplieradddelivery:", "")
+    supplier = create_supplier(context.user_data.get("supplier_name"), delivery)
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Поставщик добавлен ✅\n\n"
+        f"{supplier['name']}\n"
+        "Закрывающие документы: "
+        f"{supplier_documents_delivery_text(supplier['closing_documents_delivery'])}",
+        reply_markup=consumables_suppliers_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def edit_supplier_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    set_consumables_module(context, "suppliers")
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    suppliers = get_supplier_records(active_only=True)
+    if not suppliers:
+        await query.edit_message_text("Активных поставщиков пока нет.", reply_markup=consumables_suppliers_keyboard())
+        return ConversationHandler.END
+    context.user_data["supplier_records"] = suppliers
+    await query.edit_message_text(
+        suppliers_list_text("Выберите поставщика для изменения:", suppliers),
+        reply_markup=supplier_records_keyboard(suppliers, "conssupplieredit"),
+    )
+    return SUPPLIER_EDIT_SELECT
+
+
+async def supplier_edit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    supplier_id = int(query.data.replace("conssupplieredit:", ""))
+    supplier = next(
+        (item for item in context.user_data.get("supplier_records", []) if int(item["id"]) == supplier_id),
+        None,
+    )
+    if not supplier:
+        await query.edit_message_text("Поставщик не найден.", reply_markup=consumables_suppliers_keyboard())
+        return ConversationHandler.END
+    context.user_data["supplier_id"] = supplier_id
+    await query.edit_message_text(
+        f"Текущее название: {supplier['name']}\n\nВведите новое название:",
+        reply_markup=consumables_back_keyboard(),
+    )
+    return SUPPLIER_EDIT_NAME
+
+
+async def supplier_edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text("Название не должно быть пустым. Введите новое название:")
+        return SUPPLIER_EDIT_NAME
+    context.user_data["supplier_new_name"] = name
+    await update.message.reply_text(
+        "Как поставщик доставляет закрывающие документы?",
+        reply_markup=supplier_documents_delivery_keyboard("conssuppliereditdelivery"),
+    )
+    return SUPPLIER_EDIT_DELIVERY
+
+
+async def supplier_edit_delivery_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    delivery = query.data.replace("conssuppliereditdelivery:", "")
+    try:
+        supplier = update_supplier(
+            context.user_data.get("supplier_id"),
+            name=context.user_data.get("supplier_new_name"),
+            closing_documents_delivery=delivery,
+        )
+    except RuntimeError as error:
+        await query.edit_message_text(str(error), reply_markup=consumables_suppliers_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Поставщик изменен ✅\n\n"
+        f"{supplier['name']}\n"
+        "Закрывающие документы: "
+        f"{supplier_documents_delivery_text(supplier['closing_documents_delivery'])}",
+        reply_markup=consumables_suppliers_keyboard(),
+    )
+    return ConversationHandler.END
+
+
 async def delete_supplier_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    set_consumables_module(context, "supplies")
+    set_consumables_module(context, "suppliers")
 
     employee = current_employee_or_none(update)
     if not is_manager(employee):
@@ -1523,7 +1806,7 @@ async def delete_supplier_start(update: Update, context: ContextTypes.DEFAULT_TY
 
     suppliers = get_active_suppliers()
     if not suppliers:
-        await query.edit_message_text("Активных поставщиков пока нет.", reply_markup=build_consumables_supplies_menu_keyboard(manager=True))
+        await query.edit_message_text("Активных поставщиков пока нет.", reply_markup=consumables_suppliers_keyboard())
         return ConversationHandler.END
 
     context.user_data["suppliers"] = suppliers
@@ -1542,7 +1825,7 @@ async def supplier_delete_selected(update: Update, context: ContextTypes.DEFAULT
         index = int(query.data.replace("conssupplier:", ""))
         supplier = context.user_data.get("suppliers", [])[index]
     except (ValueError, IndexError):
-        await query.edit_message_text("Поставщик не найден.", reply_markup=build_consumables_supplies_menu_keyboard(manager=True))
+        await query.edit_message_text("Поставщик не найден.", reply_markup=consumables_suppliers_keyboard())
         return ConversationHandler.END
 
     context.user_data["supplier_name"] = supplier
@@ -1560,7 +1843,7 @@ async def supplier_delete_confirmed(update: Update, context: ContextTypes.DEFAUL
     supplier = deactivate_supplier(context.user_data.get("supplier_name"))
     await query.edit_message_text(
         f"Поставщик удален из выбора ✅\n\n{supplier}",
-        reply_markup=build_consumables_supplies_menu_keyboard(manager=True),
+        reply_markup=consumables_suppliers_keyboard(),
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -1583,6 +1866,8 @@ def get_consumables_conversation_handler():
             CallbackQueryHandler(delete_supply_start, pattern=r"^cons:delete_supply$"),
             CallbackQueryHandler(edit_acceptance_start, pattern=r"^cons:edit_acceptance$"),
             CallbackQueryHandler(delete_acceptance_start, pattern=r"^cons:delete_acceptance$"),
+            CallbackQueryHandler(add_supplier_start, pattern=r"^cons:add_supplier$"),
+            CallbackQueryHandler(edit_supplier_start, pattern=r"^cons:edit_supplier$"),
             CallbackQueryHandler(delete_supplier_start, pattern=r"^cons:delete_supplier$"),
         ],
         states={
@@ -1596,6 +1881,10 @@ def get_consumables_conversation_handler():
             ],
             SUPPLY_ORGANIZATION_NEW: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, supply_organization_new_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLY_ORGANIZATION_NEW_DELIVERY: [
+                CallbackQueryHandler(supply_organization_new_delivery_selected, pattern=r"^consorgdelivery:(edo|paper)$"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
             SUPPLY_AMOUNT: [
@@ -1663,6 +1952,26 @@ def get_consumables_conversation_handler():
                 CallbackQueryHandler(supplier_delete_confirmed, pattern=r"^conssupplierdelete:yes$"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
+            SUPPLIER_ADD_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, supplier_add_name_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_ADD_DELIVERY: [
+                CallbackQueryHandler(supplier_add_delivery_selected, pattern=r"^conssupplieradddelivery:(edo|paper)$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_EDIT_SELECT: [
+                CallbackQueryHandler(supplier_edit_selected, pattern=r"^conssupplieredit:\d+$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_EDIT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, supplier_edit_name_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            SUPPLIER_EDIT_DELIVERY: [
+                CallbackQueryHandler(supplier_edit_delivery_selected, pattern=r"^conssuppliereditdelivery:(edo|paper)$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
             ITEM_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, item_name_received),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
@@ -1723,6 +2032,7 @@ def get_consumables_handlers():
     return [
         CallbackQueryHandler(consumables_menu, pattern=r"^section:consumables$"),
         CallbackQueryHandler(consumables_supplies_menu, pattern=r"^cons:module_supplies$"),
+        CallbackQueryHandler(consumables_suppliers_menu, pattern=r"^cons:suppliers$"),
         CallbackQueryHandler(consumables_counting_menu, pattern=r"^cons:module_counting$"),
         get_consumables_conversation_handler(),
     ]

@@ -100,15 +100,11 @@ def build_returns_menu_keyboard():
 
 
 def build_consumables_menu_keyboard(manager=False):
-    keyboard = []
-    if manager:
-        keyboard.append([InlineKeyboardButton("📦 Поставки расходников", callback_data="cons:module_supplies")])
-    keyboard.extend(
-        [
-            [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:module_counting")],
-            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
-        ]
-    )
+    keyboard = [
+        [InlineKeyboardButton("📦 Поставки расходников", callback_data="cons:module_supplies")],
+        [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:module_counting")],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -121,7 +117,7 @@ def build_consumables_supplies_menu_keyboard(manager=False):
                 [InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")],
                 [InlineKeyboardButton("✏️ Изменить поставку", callback_data="cons:edit_supply")],
                 [InlineKeyboardButton("🗑 Удалить поставку", callback_data="cons:delete_supply")],
-                [InlineKeyboardButton("🚫 Удалить поставщика", callback_data="cons:delete_supplier")],
+                [InlineKeyboardButton("🤝 Поставщики", callback_data="cons:suppliers")],
             ]
         )
 
@@ -133,6 +129,16 @@ def build_consumables_supplies_menu_keyboard(manager=False):
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")],
         ]
     )
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_consumables_suppliers_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить поставщика", callback_data="cons:add_supplier")],
+        [InlineKeyboardButton("✏️ Изменить поставщика", callback_data="cons:edit_supplier")],
+        [InlineKeyboardButton("🚫 Удалить поставщика", callback_data="cons:delete_supplier")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="cons:module_supplies")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 

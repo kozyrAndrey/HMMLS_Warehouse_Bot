@@ -31,6 +31,7 @@ class ConsumableSupply(Base):
     closing_document_file_id: Mapped[str | None] = mapped_column(Text)
     closing_document_kind: Mapped[str | None] = mapped_column(String(50))
     topic_message_ids: Mapped[str | None] = mapped_column(String(1000))
+    document_workflow_message_ids: Mapped[str | None] = mapped_column(String(1000))
     supply_items_json: Mapped[str | None] = mapped_column(Text)
     invoice_document_file_id: Mapped[str | None] = mapped_column(Text)
     invoice_document_kind: Mapped[str | None] = mapped_column(String(50))
@@ -46,6 +47,7 @@ class ConsumableSupplier(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    closing_documents_delivery: Mapped[str] = mapped_column(String(20), nullable=False, default="paper")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
@@ -119,6 +121,9 @@ class ConsumableInventoryCount(Base):
 
 
 LABEL_58_40 = "Этикетки для принтера 58х40"
+SUPPLIER_DOCUMENTS_EDO = "edo"
+SUPPLIER_DOCUMENTS_PAPER = "paper"
+SUPPLIER_DOCUMENT_DELIVERY_VALUES = {SUPPLIER_DOCUMENTS_EDO, SUPPLIER_DOCUMENTS_PAPER}
 
 
 DEFAULT_CONSUMABLE_ITEMS = [
@@ -220,6 +225,7 @@ def init_consumables_storage():
         ],
     )
     ensure_consumables_columns()
+    seed_suppliers_from_existing_supplies()
     seed_default_consumable_items()
     seed_default_product_consumable_rules()
 
@@ -441,6 +447,7 @@ def ensure_consumables_columns():
         "alter table consumable_supplies add column if not exists closing_document_file_id text",
         "alter table consumable_supplies add column if not exists closing_document_kind varchar(50)",
         "alter table consumable_supplies add column if not exists topic_message_ids varchar(1000)",
+        "alter table consumable_supplies add column if not exists document_workflow_message_ids varchar(1000)",
         "alter table consumable_supplies add column if not exists supply_items_json text",
         "alter table consumable_supplies add column if not exists invoice_document_file_id text",
         "alter table consumable_supplies add column if not exists invoice_document_kind varchar(50)",
@@ -448,6 +455,7 @@ def ensure_consumables_columns():
         "create index if not exists ix_consumable_supplies_created_at on consumable_supplies (created_at)",
         "create index if not exists ix_consumable_supplies_organization on consumable_supplies (organization)",
         "alter table consumable_suppliers add column if not exists is_active boolean not null default true",
+        "alter table consumable_suppliers add column if not exists closing_documents_delivery varchar(20) not null default 'paper'",
         "create unique index if not exists uq_consumable_suppliers_name on consumable_suppliers (name)",
         "create index if not exists ix_consumable_suppliers_is_active on consumable_suppliers (is_active)",
         "create unique index if not exists uq_consumable_items_name on consumable_items (name)",
@@ -492,6 +500,7 @@ def supply_to_dict(supply):
         "closing_document_file_id": supply.closing_document_file_id or "",
         "closing_document_kind": supply.closing_document_kind or "",
         "topic_message_ids": supply.topic_message_ids or "",
+        "document_workflow_message_ids": supply.document_workflow_message_ids or "",
         "supply_items": supply_items,
         "invoice_document_file_id": supply.invoice_document_file_id or "",
         "invoice_document_kind": supply.invoice_document_kind or "",
@@ -536,6 +545,7 @@ def create_accepted_supply(
     closing_document_file_id="",
     closing_document_kind="none",
     topic_message_ids=None,
+    document_workflow_message_ids=None,
 ):
     normalized_items = normalize_supply_items(supply_items)
     if not normalized_items:
@@ -556,6 +566,9 @@ def create_accepted_supply(
             closing_document_file_id=closing_document_file_id or "",
             closing_document_kind=closing_document_kind or "none",
             topic_message_ids=",".join(str(message_id) for message_id in (topic_message_ids or [])),
+            document_workflow_message_ids=",".join(
+                str(message_id) for message_id in (document_workflow_message_ids or [])
+            ),
             supply_items_json=json.dumps(normalized_items, ensure_ascii=False),
         )
         session.add(supply)
@@ -636,9 +649,131 @@ def upsert_supplier_in_session(session, name):
         supplier.is_active = True
         return supplier
 
-    supplier = ConsumableSupplier(name=normalized_name, is_active=True)
+    supplier = ConsumableSupplier(
+        name=normalized_name,
+        closing_documents_delivery=SUPPLIER_DOCUMENTS_PAPER,
+        is_active=True,
+    )
     session.add(supplier)
     return supplier
+
+
+def normalize_supplier_documents_delivery(value):
+    normalized = str(value or "").strip().lower()
+    if normalized not in SUPPLIER_DOCUMENT_DELIVERY_VALUES:
+        raise RuntimeError("Выберите способ доставки закрывающих документов.")
+    return normalized
+
+
+def supplier_to_dict(supplier):
+    return {
+        "id": supplier.id,
+        "created_at": supplier.created_at,
+        "name": supplier.name,
+        "closing_documents_delivery": supplier.closing_documents_delivery or SUPPLIER_DOCUMENTS_PAPER,
+        "is_active": bool(supplier.is_active),
+    }
+
+
+def seed_suppliers_from_existing_supplies():
+    with session_scope() as session:
+        names = (
+            session.execute(select(distinct(ConsumableSupply.organization)))
+            .scalars()
+            .all()
+        )
+        for name in names:
+            upsert_supplier_in_session(session, name)
+
+
+def create_supplier(name, closing_documents_delivery):
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        raise RuntimeError("Название поставщика не должно быть пустым.")
+    delivery = normalize_supplier_documents_delivery(closing_documents_delivery)
+
+    with session_scope() as session:
+        supplier = (
+            session.execute(select(ConsumableSupplier).where(ConsumableSupplier.name == normalized_name))
+            .scalars()
+            .first()
+        )
+        if supplier:
+            supplier.closing_documents_delivery = delivery
+            supplier.is_active = True
+        else:
+            supplier = ConsumableSupplier(
+                name=normalized_name,
+                closing_documents_delivery=delivery,
+                is_active=True,
+            )
+            session.add(supplier)
+        session.flush()
+        return supplier_to_dict(supplier)
+
+
+def get_supplier(name):
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        return None
+    with session_scope() as session:
+        supplier = (
+            session.execute(select(ConsumableSupplier).where(ConsumableSupplier.name == normalized_name))
+            .scalars()
+            .first()
+        )
+        return supplier_to_dict(supplier) if supplier else None
+
+
+def get_supplier_records(active_only=True, limit=50):
+    with session_scope() as session:
+        statement = select(ConsumableSupplier).order_by(ConsumableSupplier.name).limit(limit)
+        if active_only:
+            statement = statement.where(ConsumableSupplier.is_active.is_(True))
+        suppliers = session.execute(statement).scalars().all()
+        return [supplier_to_dict(supplier) for supplier in suppliers]
+
+
+def update_supplier(supplier_id, name=None, closing_documents_delivery=None):
+    with session_scope() as session:
+        supplier = session.get(ConsumableSupplier, int(supplier_id))
+        if not supplier:
+            raise RuntimeError("Поставщик не найден.")
+
+        old_name = supplier.name
+        if name is not None:
+            normalized_name = str(name or "").strip()
+            if not normalized_name:
+                raise RuntimeError("Название поставщика не должно быть пустым.")
+            duplicate = (
+                session.execute(
+                    select(ConsumableSupplier).where(
+                        ConsumableSupplier.name == normalized_name,
+                        ConsumableSupplier.id != supplier.id,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if duplicate:
+                raise RuntimeError("Поставщик с таким названием уже есть.")
+            supplier.name = normalized_name
+            if normalized_name != old_name:
+                supplies = (
+                    session.execute(select(ConsumableSupply).where(ConsumableSupply.organization == old_name))
+                    .scalars()
+                    .all()
+                )
+                for supply in supplies:
+                    supply.organization = normalized_name
+
+        if closing_documents_delivery is not None:
+            supplier.closing_documents_delivery = normalize_supplier_documents_delivery(
+                closing_documents_delivery
+            )
+        supplier.is_active = True
+        session.flush()
+        return supplier_to_dict(supplier)
 
 
 def get_recent_organizations(limit=12):
@@ -708,6 +843,7 @@ def mark_supply_accepted(
     closing_document_file_id="",
     closing_document_kind="none",
     topic_message_ids=None,
+    document_workflow_message_ids=None,
 ):
     with session_scope() as session:
         supply = session.get(ConsumableSupply, int(supply_id))
@@ -724,6 +860,9 @@ def mark_supply_accepted(
         supply.closing_document_file_id = closing_document_file_id or ""
         supply.closing_document_kind = closing_document_kind or "none"
         supply.topic_message_ids = ",".join(str(message_id) for message_id in (topic_message_ids or []))
+        supply.document_workflow_message_ids = ",".join(
+            str(message_id) for message_id in (document_workflow_message_ids or [])
+        )
         supply_items = normalize_supply_items(json.loads(supply.supply_items_json or "[]"))
         if supply_items:
             apply_supply_items_to_stock_in_session(
@@ -777,6 +916,7 @@ def update_acceptance(
     closing_document_file_id="",
     closing_document_kind="none",
     topic_message_ids=None,
+    document_workflow_message_ids=None,
 ):
     with session_scope() as session:
         supply = session.get(ConsumableSupply, int(supply_id))
@@ -792,6 +932,9 @@ def update_acceptance(
         supply.closing_document_file_id = closing_document_file_id or ""
         supply.closing_document_kind = closing_document_kind or "none"
         supply.topic_message_ids = ",".join(str(message_id) for message_id in (topic_message_ids or []))
+        supply.document_workflow_message_ids = ",".join(
+            str(message_id) for message_id in (document_workflow_message_ids or [])
+        )
 
         session.flush()
         return supply_to_dict(supply)
@@ -815,6 +958,7 @@ def clear_acceptance(supply_id):
         supply.closing_document_file_id = None
         supply.closing_document_kind = None
         supply.topic_message_ids = None
+        supply.document_workflow_message_ids = None
         session.flush()
         return result
 
