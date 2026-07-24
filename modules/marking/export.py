@@ -1,4 +1,5 @@
 import csv
+import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
@@ -268,6 +269,132 @@ def get_retireorder_export_rows(client, document_name, sale_price_type=MOYSKLAD_
     return document, result
 
 
+def normalize_assortment_lookup(value):
+    normalized = str(value or "").strip().casefold().replace("ё", "е")
+    normalized = re.sub(r"[^0-9a-zа-я]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def unmarked_model_name(product):
+    name = str(product.get("honest_sign_name") or "").strip()
+    quoted_parts = re.findall(r'"([^"]+)"', name)
+    return quoted_parts[-1].strip() if quoted_parts else name
+
+
+def assortment_matches_unmarked_product(assortment, product):
+    model_name = normalize_assortment_lookup(unmarked_model_name(product))
+    assortment_name = normalize_assortment_lookup(assortment.get("name"))
+    return bool(
+        model_name
+        and assortment_name
+        and (
+            assortment_name == model_name
+            or assortment_name == f"{model_name} bag"
+            or model_name in assortment_name
+        )
+    )
+
+
+def unmarked_assortment_score(assortment):
+    entity_type = str((assortment.get("meta") or {}).get("type") or "").casefold()
+    has_ean13 = any(
+        str((barcode or {}).get("ean13") or "").strip()
+        for barcode in assortment.get("barcodes") or []
+        if isinstance(barcode, dict)
+    )
+    return (
+        1 if entity_type == "variant" else 0,
+        1 if has_ean13 else 0,
+        1 if str(assortment.get("article") or "").strip() else 0,
+    )
+
+
+def get_all_assortment_rows(client):
+    rows = []
+    limit = 1000
+    offset = 0
+    while True:
+        payload = client.list_entities(
+            "assortment",
+            params={
+                "limit": limit,
+                "offset": offset,
+                "expand": "product",
+            },
+        )
+        page = response_rows(payload)
+        if not page:
+            break
+        rows.extend(page)
+        size = int((payload.get("meta") or {}).get("size") or 0)
+        offset += len(page)
+        if (size and offset >= size) or len(page) < limit:
+            break
+    return rows
+
+
+def get_unmarked_moysklad_rows(
+    client,
+    unmarked_products,
+    sale_price_type=MOYSKLAD_SALE_PRICE_TYPE,
+    existing_rows=None,
+):
+    result = []
+    product_cache = {}
+    products_to_find = [
+        product
+        for product in unmarked_products or []
+        if not any(
+            assortment_matches_unmarked_product(
+                {
+                    "name": (
+                        (row.get("assortment") or {}).get("name")
+                        or row.get("name")
+                    )
+                },
+                product,
+            )
+            for row in existing_rows or []
+        )
+    ]
+    if not products_to_find:
+        return result
+
+    try:
+        assortment_rows = get_all_assortment_rows(client)
+    except MoySkladError:
+        return result
+
+    for product in products_to_find:
+        model_name = unmarked_model_name(product)
+        candidates = [
+            assortment
+            for assortment in assortment_rows
+            if assortment_matches_unmarked_product(assortment, product)
+        ]
+        if not candidates:
+            continue
+
+        assortment = max(candidates, key=unmarked_assortment_score)
+        parent_product = expand_parent_product(client, assortment, product_cache)
+        result.append(
+            {
+                "name": str(assortment.get("name") or model_name).strip(),
+                "article": extract_article(assortment, parent_product),
+                "gtin": extract_gtin(assortment, parent_product),
+                "sale_price": extract_sale_price(
+                    assortment,
+                    parent_product,
+                    sale_price_type,
+                ),
+                "codes": [],
+                "assortment": assortment,
+                "product": parent_product,
+            }
+        )
+    return result
+
+
 def calculate_net_price(value):
     try:
         gross_price = Decimal(str(value))
@@ -295,6 +422,16 @@ def build_trend_island_upd_rows(rows, catalog_names):
         article = str(item.get("article") or "").strip()
         raw_gtin = str(item.get("gtin") or "").strip()
         codes = list(item.get("codes") or [])
+
+        # Немаркируемые позиции из того же документа добавляются только в Excel
+        # после явного выбора пользователя.
+        if not codes:
+            try:
+                possible_gtin = normalize_gtin(raw_gtin)
+            except ValueError:
+                possible_gtin = ""
+            if not possible_gtin or possible_gtin not in normalized_catalog:
+                continue
 
         if not article:
             errors.append(f"{source_name}: отсутствует артикул в МойСклад.")
@@ -382,6 +519,15 @@ def create_trend_island_upd_csv(rows, catalog_names, output_path):
 
 
 def create_honest_sign_catalog_csv(products, output_path):
-    rows = [["gtin", "honest_sign_name"]]
-    rows.extend([[product["gtin"], product["honest_sign_name"]] for product in products])
+    rows = [["gtin", "honest_sign_name", "size"]]
+    rows.extend(
+        [
+            [
+                product.get("gtin") or "",
+                product["honest_sign_name"],
+                product.get("size") or "",
+            ]
+            for product in products
+        ]
+    )
     return write_csv_rows(rows, output_path)

@@ -99,6 +99,58 @@ class MarkingOneCExportTests(unittest.TestCase):
 
         self.assertEqual(item.color, "КОРИЧНЕВАЯ")
 
+    def test_adds_selected_unmarked_product_only_to_excel(self):
+        bag_row = make_row(
+            name="HOMME BIRKIN MESSENGER BAG",
+            article="BAG-1",
+            gtin="2000000000001",
+            codes=[],
+        )
+        bag_row["assortment"] = {
+            **bag_row["assortment"],
+            "name": "HOMME BIRKIN MESSENGER BAG",
+            "barcodes": [{"ean13": "2000000000001"}],
+        }
+
+        items = build_one_c_export_items(
+            [make_row(), bag_row],
+            {GTIN: CATALOG_NAME},
+            unmarked_products=[
+                {
+                    "id": 1,
+                    "gtin": None,
+                    "honest_sign_name": (
+                        'СУМКА МЕССЕНДЖЕР "HOMME BIRKIN MESSENGER" ЧЕРНАЯ'
+                    ),
+                    "size": "250x190x100",
+                    "quantity": 3,
+                }
+            ],
+        )
+
+        self.assertEqual(len(items), 2)
+        item = items[1]
+        self.assertEqual(item.article, "BAG-1")
+        self.assertEqual(
+            item.honest_sign_name,
+            'СУМКА МЕССЕНДЖЕР "HOMME BIRKIN MESSENGER" ЧЕРНАЯ',
+        )
+        self.assertEqual(item.size, "250x190x100")
+        self.assertEqual(item.color, "ЧЕРНАЯ")
+        self.assertEqual(item.marking_code_count, 3)
+        self.assertEqual(item.ean13, "2000000000001")
+        self.assertEqual(item.category, "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unmarked.xlsx"
+            render_one_c_xlsx(items, path)
+            worksheet = load_workbook(path)["Список товаров"]
+
+        self.assertEqual(worksheet["C5"].value, item.honest_sign_name)
+        self.assertEqual(worksheet["I5"].value, "250x190x100")
+        self.assertEqual(worksheet["L5"].value, 3)
+        self.assertIsNone(worksheet["N5"].value)
+
     def test_normalizes_all_gender_values(self):
         cases = {
             "муж.": "Мужской",

@@ -286,7 +286,172 @@ def build_error_prefix(article, name, gtin, size):
     return ", ".join(parts) or "Неизвестная позиция"
 
 
-def build_one_c_export_items(rows, catalog_names, price_type=None):
+def unmarked_product_model_name(product_name):
+    quoted_parts = re.findall(r'"([^"]+)"', str(product_name or ""))
+    source = quoted_parts[-1] if quoted_parts else product_name
+    return normalize_lookup_text(source)
+
+
+def row_lookup_names(row):
+    assortment = row.get("assortment") or {}
+    product = row.get("product") or {}
+    return {
+        normalize_lookup_text(value)
+        for value in (
+            row.get("name"),
+            assortment.get("name"),
+            product.get("name"),
+        )
+        if str(value or "").strip()
+    }
+
+
+def find_unmarked_moysklad_row(rows, unmarked_product):
+    model_name = unmarked_product_model_name(unmarked_product.get("honest_sign_name"))
+    matches = []
+    for row in rows:
+        if row.get("codes"):
+            continue
+        lookup_names = row_lookup_names(row)
+        if any(
+            model_name == lookup_name
+            or model_name in lookup_name
+            or lookup_name in model_name
+            for lookup_name in lookup_names
+        ):
+            matches.append(row)
+
+    if not matches:
+        raise ValueError("соответствующая позиция не найдена в документе МойСклад")
+    if len(matches) == 1:
+        return matches[0]
+
+    exact_matches = [
+        row
+        for row in matches
+        if any(
+            lookup_name in {model_name, f"{model_name} bag"}
+            for lookup_name in row_lookup_names(row)
+        )
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    raise ValueError("в документе МойСклад найдено несколько подходящих позиций")
+
+
+def build_unmarked_one_c_export_items(rows, unmarked_products, price_type=None):
+    items = []
+    errors = []
+    for product in unmarked_products or []:
+        name = str(product.get("honest_sign_name") or "").strip()
+        size = str(product.get("size") or "").strip()
+        prefix = build_error_prefix("", name, "", size)
+        position_errors = []
+
+        try:
+            quantity = int(product.get("quantity"))
+            if quantity <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            quantity = 0
+            position_errors.append("количество должно быть положительным целым числом")
+
+        try:
+            row = find_unmarked_moysklad_row(rows, product)
+        except ValueError as error:
+            row = {}
+            position_errors.append(str(error))
+
+        assortment = row.get("assortment") or {}
+        parent_product = row.get("product") or {}
+        article = str(row.get("article") or "").strip()
+
+        try:
+            color = extract_color_from_honest_sign_name(name, size)
+        except ValueError as error:
+            color = ""
+            position_errors.append(str(error))
+
+        raw_gender = field_value(assortment, parent_product, "gender")
+        try:
+            gender = normalize_gender(raw_gender)
+        except ValueError as error:
+            gender = ""
+            position_errors.append(str(error))
+
+        country = extract_country(assortment, parent_product)
+        manufacturer = field_value(assortment, parent_product, "manufacturer")
+        composition = field_value(
+            assortment,
+            parent_product,
+            "composition",
+        ) or field_value(assortment, parent_product, "material")
+
+        try:
+            ean13 = extract_ean13(assortment, parent_product)
+        except ValueError as error:
+            ean13 = ""
+            position_errors.append(str(error))
+
+        try:
+            retail_price = extract_retail_price(
+                assortment,
+                parent_product,
+                selected_type=price_type,
+            )
+        except ValueError as error:
+            retail_price = None
+            position_errors.append(str(error))
+
+        for field_name, value in (
+            ("артикул", article),
+            ("наименование", name),
+            ("страна происхождения", country),
+            ("производитель", manufacturer),
+            ("состав", composition),
+            ("размер", size),
+            ("цвет", color),
+        ):
+            if not value:
+                position_errors.append(f"отсутствует {field_name}")
+
+        if position_errors:
+            errors.extend(f"{prefix}: {message}." for message in position_errors)
+            continue
+
+        items.append(
+            OneCExportItem(
+                article=article,
+                honest_sign_name=name,
+                gender=gender,
+                country_of_origin=country,
+                brand=BRAND_NAME,
+                manufacturer=manufacturer,
+                composition=composition,
+                size=size,
+                color=color,
+                retail_price=retail_price.quantize(
+                    Decimal("0.01"),
+                    rounding=ROUND_HALF_UP,
+                ),
+                marking_code_count=quantity,
+                ean13=ean13,
+                category="",
+                gtin="",
+            )
+        )
+
+    if errors:
+        raise OneCExportValidationError(errors)
+    return items
+
+
+def build_one_c_export_items(
+    rows,
+    catalog_names,
+    price_type=None,
+    unmarked_products=None,
+):
     catalog = {}
     for gtin, name in (catalog_names or {}).items():
         try:
@@ -421,7 +586,7 @@ def build_one_c_export_items(rows, catalog_names, price_type=None):
             }
         grouped[key]["codes"].update(codes)
 
-    if not grouped and not errors:
+    if not grouped and not errors and not unmarked_products:
         errors.append("В документе нет товарных позиций с кодами маркировки для Excel 1С.")
     if errors:
         raise OneCExportValidationError(errors)
@@ -446,6 +611,13 @@ def build_one_c_export_items(rows, catalog_names, price_type=None):
                 gtin=data["gtin"],
             )
         )
+    items.extend(
+        build_unmarked_one_c_export_items(
+            rows,
+            unmarked_products,
+            price_type=price_type,
+        )
+    )
     return items
 
 
@@ -536,7 +708,18 @@ def render_one_c_xlsx(items, output_path, template_path=MARKING_ONE_C_TEMPLATE_P
     return output_path
 
 
-def create_one_c_xlsx(rows, catalog_names, output_path, price_type=None):
-    items = build_one_c_export_items(rows, catalog_names, price_type=price_type)
+def create_one_c_xlsx(
+    rows,
+    catalog_names,
+    output_path,
+    price_type=None,
+    unmarked_products=None,
+):
+    items = build_one_c_export_items(
+        rows,
+        catalog_names,
+        price_type=price_type,
+        unmarked_products=unmarked_products,
+    )
     render_one_c_xlsx(items, output_path)
     return output_path, items

@@ -250,6 +250,22 @@ def edit_field_keyboard(task):
     return InlineKeyboardMarkup(rows)
 
 
+async def return_to_task_edit(send_message, context, confirmation):
+    task_id = context.user_data.get("edit_task_id")
+    _, task = get_task_by_id(task_id)
+    if not task:
+        context.user_data.clear()
+        await send_message("Задача не найдена.", reply_markup=tasks_menu_keyboard())
+        return ConversationHandler.END
+
+    context.user_data.pop("selected_employee_ids", None)
+    await send_message(
+        f"{confirmation}\n\nЧто изменить дальше?",
+        reply_markup=edit_field_keyboard(task),
+    )
+    return TASK_EDIT_FIELD
+
+
 def regular_edit_field_keyboard(template):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Описание", callback_data="regeditfield:description")],
@@ -390,9 +406,11 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
         if "edit_task_id" in context.user_data:
             set_task_assignees(context.user_data["edit_task_id"], [])
             await refresh_existing_exports_for_date(context, day)
-            context.user_data.clear()
-            await query.edit_message_text("Исполнители очищены ✅", reply_markup=tasks_menu_keyboard())
-            return ConversationHandler.END
+            return await return_to_task_edit(
+                query.edit_message_text,
+                context,
+                "Исполнители очищены ✅",
+            )
         await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
         return TASK_ADD_DEADLINE
 
@@ -402,9 +420,11 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
         if "edit_task_id" in context.user_data:
             set_task_assignees(context.user_data["edit_task_id"], selected)
             await refresh_existing_exports_for_date(context, day)
-            context.user_data.clear()
-            await query.edit_message_text("Исполнители обновлены ✅", reply_markup=tasks_menu_keyboard())
-            return ConversationHandler.END
+            return await return_to_task_edit(
+                query.edit_message_text,
+                context,
+                "Исполнители обновлены ✅",
+            )
         await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
         return TASK_ADD_DEADLINE
 
@@ -425,9 +445,11 @@ async def task_deadline_selected(update: Update, context: ContextTypes.DEFAULT_T
         update_task_fields(context.user_data["edit_task_id"], **{"Дедлайн": deadline})
         _, task = get_task_by_id(context.user_data["edit_task_id"])
         await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
-        context.user_data.clear()
-        await query.edit_message_text("Дедлайн обновлен ✅", reply_markup=tasks_menu_keyboard())
-        return ConversationHandler.END
+        return await return_to_task_edit(
+            query.edit_message_text,
+            context,
+            "Дедлайн обновлен ✅",
+        )
 
     if "edit_template_id" in context.user_data:
         update_task_template_fields(context.user_data["edit_template_id"], **{"Дедлайн": deadline})
@@ -573,9 +595,11 @@ async def task_edit_description_received(update: Update, context: ContextTypes.D
     update_task_fields(task_id, **{"Описание": description})
     _, task = get_task_by_id(task_id)
     await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
-    context.user_data.clear()
-    await update.message.reply_text("Описание обновлено ✅", reply_markup=tasks_menu_keyboard())
-    return ConversationHandler.END
+    return await return_to_task_edit(
+        update.message.reply_text,
+        context,
+        "Описание обновлено ✅",
+    )
 
 
 async def task_status_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -589,9 +613,11 @@ async def task_status_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     update_task_fields(context.user_data["edit_task_id"], **{"Статус": status})
     _, task = get_task_by_id(context.user_data["edit_task_id"])
     await refresh_existing_exports_for_date(context, parse_date(task["Дата"]))
-    context.user_data.clear()
-    await query.edit_message_text("Статус обновлен ✅", reply_markup=tasks_menu_keyboard())
-    return ConversationHandler.END
+    return await return_to_task_edit(
+        query.edit_message_text,
+        context,
+        "Статус обновлен ✅",
+    )
 
 
 async def irregular_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):

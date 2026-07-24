@@ -12,6 +12,7 @@ from modules.marking.export import (
     extract_article,
     extract_gtin,
     extract_sale_price,
+    get_unmarked_moysklad_rows,
 )
 from modules.marking.storage import normalize_gtin
 
@@ -89,7 +90,7 @@ class MarkingUpdExportTests(unittest.TestCase):
                 "article": "",
                 "gtin": "",
                 "sale_price": None,
-                "codes": [],
+                "codes": ["CODE-1"],
             }
         ]
 
@@ -100,7 +101,40 @@ class MarkingUpdExportTests(unittest.TestCase):
         self.assertIn("отсутствует артикул", message)
         self.assertIn("отсутствует GTIN", message)
         self.assertIn("отсутствует цена продажи", message)
-        self.assertIn("отсутствуют коды маркировки", message)
+
+    def test_skips_unmarked_position_in_upd_csv(self):
+        rows = [
+            {
+                "name": "HOMME BIRKIN MESSENGER BAG",
+                "article": "BAG-1",
+                "gtin": "2000000000001",
+                "sale_price": "14990",
+                "codes": [],
+            }
+        ]
+
+        self.assertEqual(build_trend_island_upd_rows(rows, {}), [])
+
+    def test_marked_catalog_position_without_codes_is_error(self):
+        rows = [
+            {
+                "name": "Маркируемый товар",
+                "article": "ART-1",
+                "gtin": "4670332744239",
+                "sale_price": "49",
+                "codes": [],
+            }
+        ]
+
+        with self.assertRaises(TrendExportValidationError) as caught:
+            build_trend_island_upd_rows(
+                rows,
+                {"4670332744239": "Маркируемый товар"},
+            )
+
+        self.assertTrue(
+            any("отсутствуют коды маркировки" in error for error in caught.exception.errors)
+        )
 
     def test_reports_missing_catalog_mapping(self):
         rows = [
@@ -171,6 +205,44 @@ class MarkingUpdExportTests(unittest.TestCase):
     def test_normalize_gtin_uses_gtin14_for_matching(self):
         self.assertEqual(normalize_gtin("4670332744239"), "04670332744239")
         self.assertEqual(normalize_gtin("04670332744239"), "04670332744239")
+
+    def test_finds_unmarked_product_in_moysklad_assortment_by_model_name(self):
+        assortment = {
+            "name": "HOMME BIRKIN MESSENGER BAG",
+            "article": "BAG-1",
+            "barcodes": [{"ean13": "2000000000001"}],
+            "salePrices": [
+                {"priceType": {"name": "Цена продажи"}, "value": 1499000}
+            ],
+        }
+
+        class Client:
+            def list_entities(self, entity_type, params=None):
+                self.entity_type = entity_type
+                self.params = params
+                return {"rows": [assortment]}
+
+        client = Client()
+        rows = get_unmarked_moysklad_rows(
+            client,
+            [
+                {
+                    "honest_sign_name": (
+                        'СУМКА МЕССЕНДЖЕР "HOMME BIRKIN MESSENGER" ЧЕРНАЯ'
+                    )
+                }
+            ],
+            sale_price_type="Цена продажи",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "HOMME BIRKIN MESSENGER BAG")
+        self.assertEqual(rows[0]["article"], "BAG-1")
+        self.assertEqual(rows[0]["sale_price"], Decimal("14990"))
+        self.assertEqual(rows[0]["codes"], [])
+        self.assertEqual(client.entity_type, "assortment")
+        self.assertEqual(client.params["limit"], 1000)
+        self.assertEqual(client.params["offset"], 0)
 
 
 if __name__ == "__main__":

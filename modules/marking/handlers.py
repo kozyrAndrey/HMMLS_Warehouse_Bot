@@ -14,6 +14,7 @@ from modules.marking.export import (
     create_honest_sign_catalog_csv,
     create_trend_island_upd_csv,
     get_retireorder_export_rows,
+    get_unmarked_moysklad_rows,
 )
 from modules.marking.moysklad_lookup import find_marking_product_info
 from modules.marking.one_c_export import OneCExportValidationError, create_one_c_xlsx
@@ -21,7 +22,9 @@ from modules.marking.storage import (
     delete_honest_sign_product,
     get_honest_sign_names,
     get_honest_sign_product,
+    get_unmarked_product,
     list_honest_sign_products,
+    list_unmarked_products,
     normalize_gtin,
     upsert_honest_sign_product,
 )
@@ -38,7 +41,10 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
     MARKING_CATALOG_NAME,
     MARKING_CATALOG_DELETE_GTIN,
     MARKING_CATALOG_DELETE_CONFIRM,
-) = range(1400, 1408)
+    MARKING_UNMARKED_CONFIRM,
+    MARKING_UNMARKED_PRODUCT,
+    MARKING_UNMARKED_QUANTITY,
+) = range(1400, 1411)
 
 
 TREND_PRICE_TYPE_WITH_DISCOUNTS = "Старая цена"
@@ -49,6 +55,12 @@ def marking_cancel_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Отмена", callback_data="marking:cancel")],
     ])
+
+
+def trend_back_keyboard(target):
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ Назад", callback_data=f"marking:trend:back:{target}")]]
+    )
 
 
 def trend_discounts_keyboard():
@@ -64,9 +76,60 @@ def trend_discounts_keyboard():
                     callback_data="marking:trend_export:discounts:no",
                 ),
             ],
-            [InlineKeyboardButton("❌ Отмена", callback_data="marking:cancel")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="marking:trend:back:menu")],
         ]
     )
+
+
+def trend_unmarked_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Да",
+                    callback_data="marking:trend:unmarked:yes",
+                ),
+                InlineKeyboardButton(
+                    "Нет",
+                    callback_data="marking:trend:unmarked:no",
+                ),
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="marking:trend:back:document")],
+        ]
+    )
+
+
+def trend_unmarked_products_keyboard(products, selected_quantities):
+    selected_quantities = selected_quantities or {}
+    rows = []
+    for product in products:
+        product_id = str(product["id"])
+        quantity = selected_quantities.get(product_id)
+        mark = f"✅ {quantity} шт. — " if quantity else ""
+        label = f"{mark}{product['honest_sign_name']} · {product['size']}"
+        if len(label) > 60:
+            label = label[:57] + "..."
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"marking:trend:unmarked:product:{product_id}",
+                )
+            ]
+        )
+    if selected_quantities:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "✅ Завершить выбор",
+                    callback_data="marking:trend:unmarked:done",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton("⬅️ Назад", callback_data="marking:trend:back:unmarked")]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
 def catalog_menu_keyboard():
@@ -139,7 +202,7 @@ async def trend_export_discounts_received(update: Update, context: ContextTypes.
     await query.edit_message_text(
         "Введите название документа «Вывод из оборота», откуда сформировать CSV для УПД и Excel для 1С:\n\n"
         f"Для выгрузки будет использована цена «{price_type}».",
-        reply_markup=marking_cancel_keyboard(),
+        reply_markup=trend_back_keyboard("discounts"),
     )
     return MARKING_DOCUMENT_NAME
 
@@ -156,18 +219,192 @@ async def trend_export_document_received(update: Update, context: ContextTypes.D
     if not document_name:
         await update.message.reply_text(
             "Введите непустое название документа.",
-            reply_markup=marking_cancel_keyboard(),
+            reply_markup=trend_back_keyboard("discounts"),
         )
         return MARKING_DOCUMENT_NAME
 
-    price_type = context.user_data.pop(
+    context.user_data["marking_trend_document_name"] = document_name
+    context.user_data["marking_trend_unmarked_quantities"] = {}
+    await update.message.reply_text(
+        "Есть ли немаркируемая продукция в этой поставке?",
+        reply_markup=trend_unmarked_confirm_keyboard(),
+    )
+    return MARKING_UNMARKED_CONFIRM
+
+
+async def trend_unmarked_confirm_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data.endswith(":no"):
+        context.user_data["marking_trend_unmarked_quantities"] = {}
+        return await generate_trend_export(update, context)
+
+    products = list_unmarked_products()
+    if not products:
+        await query.edit_message_text(
+            "Справочник немаркируемой продукции пуст.",
+            reply_markup=trend_unmarked_confirm_keyboard(),
+        )
+        return MARKING_UNMARKED_CONFIRM
+    await query.edit_message_text(
+        "Выберите немаркируемый товар:",
+        reply_markup=trend_unmarked_products_keyboard(
+            products,
+            context.user_data.get("marking_trend_unmarked_quantities"),
+        ),
+    )
+    return MARKING_UNMARKED_PRODUCT
+
+
+async def trend_unmarked_product_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    product_id = query.data.rsplit(":", 1)[-1]
+    product = get_unmarked_product(product_id)
+    if not product:
+        await query.edit_message_text(
+            "Товар не найден в справочнике. Выберите другой товар.",
+            reply_markup=trend_unmarked_products_keyboard(
+                list_unmarked_products(),
+                context.user_data.get("marking_trend_unmarked_quantities"),
+            ),
+        )
+        return MARKING_UNMARKED_PRODUCT
+
+    context.user_data["marking_trend_pending_unmarked_id"] = product_id
+    await query.edit_message_text(
+        f"{product['honest_sign_name']}\n"
+        f"Размер: {product['size']}\n\n"
+        "Введите количество целым числом:",
+        reply_markup=trend_back_keyboard("products"),
+    )
+    return MARKING_UNMARKED_QUANTITY
+
+
+async def trend_unmarked_quantity_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        quantity = int((update.message.text or "").strip())
+        if quantity <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "Количество должно быть положительным целым числом.",
+            reply_markup=trend_back_keyboard("products"),
+        )
+        return MARKING_UNMARKED_QUANTITY
+
+    product_id = context.user_data.pop("marking_trend_pending_unmarked_id", None)
+    product = get_unmarked_product(product_id) if product_id else None
+    if not product:
+        await update.message.reply_text(
+            "Товар больше не найден в справочнике.",
+            reply_markup=trend_unmarked_products_keyboard(
+                list_unmarked_products(),
+                context.user_data.get("marking_trend_unmarked_quantities"),
+            ),
+        )
+        return MARKING_UNMARKED_PRODUCT
+
+    selected = context.user_data.setdefault("marking_trend_unmarked_quantities", {})
+    selected[str(product["id"])] = quantity
+    await update.message.reply_text(
+        f"Добавлено: {product['honest_sign_name']} — {quantity} шт.\n\n"
+        "Можно выбрать ещё один товар или завершить выбор.",
+        reply_markup=trend_unmarked_products_keyboard(
+            list_unmarked_products(),
+            selected,
+        ),
+    )
+    return MARKING_UNMARKED_PRODUCT
+
+
+async def trend_unmarked_selection_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not context.user_data.get("marking_trend_unmarked_quantities"):
+        await query.answer("Сначала выберите хотя бы один товар.", show_alert=True)
+        return MARKING_UNMARKED_PRODUCT
+    return await generate_trend_export(update, context)
+
+
+async def trend_export_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.rsplit(":", 1)[-1]
+
+    if target == "menu":
+        clear_trend_export_context(context)
+        await query.edit_message_text(
+            "🏷 Маркировка:",
+            reply_markup=marking_menu_keyboard(update),
+        )
+        return ConversationHandler.END
+    if target == "discounts":
+        await query.edit_message_text(
+            "Есть ли сейчас скидки?",
+            reply_markup=trend_discounts_keyboard(),
+        )
+        return MARKING_DISCOUNTS
+    if target == "document":
+        price_type = context.user_data.get(
+            "marking_trend_price_type",
+            TREND_PRICE_TYPE_WITHOUT_DISCOUNTS,
+        )
+        await query.edit_message_text(
+            "Введите название документа «Вывод из оборота», откуда сформировать "
+            "CSV для УПД и Excel для 1С:\n\n"
+            f"Для выгрузки будет использована цена «{price_type}».",
+            reply_markup=trend_back_keyboard("discounts"),
+        )
+        return MARKING_DOCUMENT_NAME
+    if target == "unmarked":
+        await query.edit_message_text(
+            "Есть ли немаркируемая продукция в этой поставке?",
+            reply_markup=trend_unmarked_confirm_keyboard(),
+        )
+        return MARKING_UNMARKED_CONFIRM
+
+    context.user_data.pop("marking_trend_pending_unmarked_id", None)
+    await query.edit_message_text(
+        "Выберите немаркируемый товар:",
+        reply_markup=trend_unmarked_products_keyboard(
+            list_unmarked_products(),
+            context.user_data.get("marking_trend_unmarked_quantities"),
+        ),
+    )
+    return MARKING_UNMARKED_PRODUCT
+
+
+def selected_unmarked_products(context):
+    products = []
+    for product_id, quantity in context.user_data.get(
+        "marking_trend_unmarked_quantities",
+        {},
+    ).items():
+        product = get_unmarked_product(product_id)
+        if not product:
+            continue
+        product["quantity"] = quantity
+        products.append(product)
+    return products
+
+
+async def generate_trend_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document_name = context.user_data.get("marking_trend_document_name", "")
+    price_type = context.user_data.get(
         "marking_trend_price_type",
         TREND_PRICE_TYPE_WITHOUT_DISCOUNTS,
     )
+    unmarked_products = selected_unmarked_products(context)
 
-    status_message = await update.message.reply_text(
-        f"Проверяю данные и готовлю CSV для УПД и Excel для 1С по цене «{price_type}»..."
+    status_text = (
+        f"Проверяю данные и готовлю CSV для УПД и Excel для 1С "
+        f"по цене «{price_type}»..."
     )
+    if update.callback_query:
+        status_message = await update.callback_query.edit_message_text(status_text)
+    else:
+        status_message = await update.message.reply_text(status_text)
 
     try:
         client = build_moysklad_client()
@@ -183,6 +420,12 @@ async def trend_export_document_received(update: Update, context: ContextTypes.D
             )
             return ConversationHandler.END
         catalog_names = get_honest_sign_names(item.get("gtin") for item in rows)
+        excel_rows = rows + get_unmarked_moysklad_rows(
+            client,
+            unmarked_products,
+            sale_price_type=price_type,
+            existing_rows=rows,
+        )
     except MoySkladError as error:
         await status_message.edit_text(
             f"Не удалось сформировать выгрузку:\n{error}",
@@ -220,10 +463,11 @@ async def trend_export_document_received(update: Update, context: ContextTypes.D
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
             one_c_path = tmp.name
         _, one_c_items = create_one_c_xlsx(
-            rows,
+            excel_rows,
             catalog_names,
             one_c_path,
             price_type=price_type,
+            unmarked_products=unmarked_products,
         )
     except OneCExportValidationError as error:
         remove_temporary_file(one_c_path, "некорректной Excel-выгрузки 1С")
@@ -339,10 +583,13 @@ async def catalog_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     products = list_honest_sign_products()
+    marked_count = sum(1 for product in products if product.get("gtin"))
+    unmarked_count = len(products) - marked_count
     await query.edit_message_text(
-        "Справочник номенклатуры Честного ЗНАКа\n\n"
-        f"Записей: {len(products)}\n"
-        "Сопоставление с МойСклад выполняется по GTIN.",
+        "Справочник номенклатуры\n\n"
+        f"Маркируемых товаров: {marked_count}\n"
+        f"Немаркируемых товаров: {unmarked_count}\n"
+        "Маркируемые товары сопоставляются с МойСклад по GTIN.",
         reply_markup=catalog_menu_keyboard(),
     )
     return MARKING_CATALOG_MENU
@@ -560,7 +807,13 @@ def clear_catalog_context(context):
 
 
 def clear_trend_export_context(context):
-    context.user_data.pop("marking_trend_price_type", None)
+    for key in (
+        "marking_trend_price_type",
+        "marking_trend_document_name",
+        "marking_trend_unmarked_quantities",
+        "marking_trend_pending_unmarked_id",
+    ):
+        context.user_data.pop(key, None)
 
 
 def remove_temporary_file(path, description):
@@ -587,11 +840,53 @@ def get_marking_handlers():
                     trend_export_discounts_received,
                     pattern=r"^marking:trend_export:discounts:(yes|no)$",
                 ),
+                CallbackQueryHandler(
+                    trend_export_back,
+                    pattern=r"^marking:trend:back:",
+                ),
                 CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),
             ],
             MARKING_DOCUMENT_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, trend_export_document_received),
+                CallbackQueryHandler(
+                    trend_export_back,
+                    pattern=r"^marking:trend:back:",
+                ),
                 CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),
+            ],
+            MARKING_UNMARKED_CONFIRM: [
+                CallbackQueryHandler(
+                    trend_unmarked_confirm_received,
+                    pattern=r"^marking:trend:unmarked:(yes|no)$",
+                ),
+                CallbackQueryHandler(
+                    trend_export_back,
+                    pattern=r"^marking:trend:back:",
+                ),
+            ],
+            MARKING_UNMARKED_PRODUCT: [
+                CallbackQueryHandler(
+                    trend_unmarked_product_selected,
+                    pattern=r"^marking:trend:unmarked:product:\d+$",
+                ),
+                CallbackQueryHandler(
+                    trend_unmarked_selection_done,
+                    pattern=r"^marking:trend:unmarked:done$",
+                ),
+                CallbackQueryHandler(
+                    trend_export_back,
+                    pattern=r"^marking:trend:back:",
+                ),
+            ],
+            MARKING_UNMARKED_QUANTITY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    trend_unmarked_quantity_received,
+                ),
+                CallbackQueryHandler(
+                    trend_export_back,
+                    pattern=r"^marking:trend:back:",
+                ),
             ],
             MARKING_DUPLICATE_CHZ_CODE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, duplicate_chz_code_received),

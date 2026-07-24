@@ -1,4 +1,4 @@
-gtin,honest_sign_name
+gtin,honest_sign_name,size
 04670332742266,HALF-ZIP HOODIE BLACK(L)
 04670332742273,HALF-ZIP HOODIE BLACK(M)
 04670332742280,HALF-ZIP HOODIE BLACK(S)
@@ -846,3 +846,7 @@ gtin,honest_sign_name
 04670332742785,"ШТАНЫ ""SWEETHEART PANTS"" СЕРЫЕ S"
 04670332742815,"ШТАНЫ ""SWEETHEART PANTS"" СЕРЫЕ XL"
 04660732985943,"ФУТБОЛКА ""HONEY LOGO T-SHIRT BLACK"" ЧЕРНАЯ XL"
+,"СУМКА МЕССЕНДЖЕР ""HOMME BIRKIN MESSENGER"" ЧЕРНАЯ",250x190x100
+,"СУМКА ""MILLION DOLLAR BIRKIN"" ЧЕРНАЯ",550x470x260
+,"СУМКА МЕССЕНДЖЕР ""HM MESSENGER"" ЧЕРНАЯ",240x150x80
+,"СУМКА ЧЕРЕЗ ПЛЕЧО ""HOMME BIRKIN SHOULDER"" ЧЕРНАЯ",270x190x90
