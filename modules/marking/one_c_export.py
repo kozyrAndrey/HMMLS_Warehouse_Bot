@@ -153,6 +153,57 @@ def extract_country(assortment, product):
     return normalize_country(country)
 
 
+def remove_trailing_size(honest_sign_name, size):
+    name = str(honest_sign_name or "").strip()
+    size = str(size or "").strip()
+    if not name or not size:
+        return name
+
+    escaped_size = re.escape(size)
+    patterns = (
+        rf"\(\s*{escaped_size}(?:\s+\([^()]*\))?\s*\)\s*$",
+        rf"\s+{escaped_size}\s*$",
+    )
+    for pattern in patterns:
+        without_size, replacements = re.subn(
+            pattern,
+            "",
+            name,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if replacements:
+            return without_size.rstrip()
+    return name
+
+
+def extract_color_from_honest_sign_name(honest_sign_name, size):
+    name_without_size = remove_trailing_size(honest_sign_name, size)
+    if not name_without_size:
+        raise ValueError("не удалось определить цвет из наименования Честного ЗНАКа")
+
+    # В актуальном справочнике название имеет вид: ТИП "МОДЕЛЬ" ЦВЕТ РАЗМЕР.
+    # Берем первое слово после закрывающей кавычки, чтобы дополнительные признаки
+    # вроде «ЖЕНСКИЕ» не попадали в столбец цвета.
+    last_quote = name_without_size.rfind('"')
+    if last_quote >= 0:
+        suffix = name_without_size[last_quote + 1 :].strip()
+        if suffix:
+            color = suffix.split()[0]
+        else:
+            first_quote = name_without_size.rfind('"', 0, last_quote)
+            quoted_name = name_without_size[first_quote + 1 : last_quote]
+            color = quoted_name.split()[-1] if quoted_name.split() else ""
+    else:
+        parts = name_without_size.split()
+        color = parts[-1] if parts else ""
+
+    color = color.strip(" \t\r\n\"'.,;:()[]{}")
+    if not color:
+        raise ValueError("не удалось определить цвет из наименования Честного ЗНАКа")
+    return color
+
+
 def extract_ean13(assortment, product):
     values = []
     for source in (assortment.get("barcodes"), product.get("barcodes")):
@@ -193,8 +244,20 @@ def price_from_sale_prices(sale_prices, wanted_name=None, contains_retail=False)
     return None
 
 
-def extract_retail_price(assortment, product, configured_type=MARKING_ONE_C_RETAIL_PRICE_TYPE):
+def extract_retail_price(
+    assortment,
+    product,
+    configured_type=MARKING_ONE_C_RETAIL_PRICE_TYPE,
+    selected_type=None,
+):
     sources = (assortment.get("salePrices"), product.get("salePrices"))
+    if selected_type:
+        for source in sources:
+            value = price_from_sale_prices(source, wanted_name=selected_type)
+            if value is not None:
+                return value
+        raise ValueError(f"отсутствует тип цены «{selected_type}»")
+
     for source in sources:
         value = price_from_sale_prices(source, wanted_name="Розничная цена")
         if value is not None:
@@ -223,7 +286,7 @@ def build_error_prefix(article, name, gtin, size):
     return ", ".join(parts) or "Неизвестная позиция"
 
 
-def build_one_c_export_items(rows, catalog_names):
+def build_one_c_export_items(rows, catalog_names, price_type=None):
     catalog = {}
     for gtin, name in (catalog_names or {}).items():
         try:
@@ -256,7 +319,7 @@ def build_one_c_export_items(rows, catalog_names):
             pass
         honest_sign_name = catalog.get(normalized_gtin, "")
         size = field_value(assortment, product, "size")
-        color = field_value(assortment, product, "color")
+        color = ""
         prefix = build_error_prefix(article, honest_sign_name or str(row.get("name") or ""), raw_gtin, size)
         position_errors = []
 
@@ -270,6 +333,11 @@ def build_one_c_export_items(rows, catalog_names):
             position_errors.append(f"GTIN «{raw_gtin}» имеет некорректный формат")
         if normalized_gtin and not honest_sign_name:
             position_errors.append("GTIN отсутствует в локальном справочнике Честного ЗНАКа")
+        if honest_sign_name:
+            try:
+                color = extract_color_from_honest_sign_name(honest_sign_name, size)
+            except ValueError as error:
+                position_errors.append(str(error))
 
         raw_gender = field_value(assortment, product, "gender")
         try:
@@ -292,7 +360,11 @@ def build_one_c_export_items(rows, catalog_names):
             ean13 = ""
 
         try:
-            retail_price = extract_retail_price(assortment, product)
+            retail_price = extract_retail_price(
+                assortment,
+                product,
+                selected_type=price_type,
+            )
         except ValueError as error:
             position_errors.append(str(error))
             retail_price = None
@@ -302,7 +374,6 @@ def build_one_c_export_items(rows, catalog_names):
             ("производитель", manufacturer),
             ("состав", composition),
             ("размер", size),
-            ("цвет", color),
         ):
             if not value:
                 position_errors.append(f"отсутствует {field_name}")
@@ -465,7 +536,7 @@ def render_one_c_xlsx(items, output_path, template_path=MARKING_ONE_C_TEMPLATE_P
     return output_path
 
 
-def create_one_c_xlsx(rows, catalog_names, output_path):
-    items = build_one_c_export_items(rows, catalog_names)
+def create_one_c_xlsx(rows, catalog_names, output_path, price_type=None):
+    items = build_one_c_export_items(rows, catalog_names, price_type=price_type)
     render_one_c_xlsx(items, output_path)
     return output_path, items

@@ -11,6 +11,7 @@ from modules.marking.one_c_export import (
     ONE_C_HEADERS,
     OneCExportValidationError,
     build_one_c_export_items,
+    extract_color_from_honest_sign_name,
     normalize_category,
     normalize_gender,
     render_one_c_xlsx,
@@ -70,6 +71,33 @@ class MarkingOneCExportTests(unittest.TestCase):
         self.assertEqual(item.marking_code_count, 2)
         self.assertEqual(item.ean13, "0123456789012")
         self.assertEqual(item.category, "Товары легкой промышленности")
+        self.assertEqual(item.color, "ЧЕРНАЯ")
+
+    def test_extracts_color_from_honest_sign_name(self):
+        cases = {
+            'ФУТБОЛКА "BASE LOGO T-SHIRT BROWN" КОРИЧНЕВАЯ M': ("M", "КОРИЧНЕВАЯ"),
+            'ХУДИ "MODEL GREY" СВЕТЛО-СЕРЫЙ XL': ("XL", "СВЕТЛО-СЕРЫЙ"),
+            "HALF-ZIP HOODIE BLACK(L)": ("L", "BLACK"),
+        }
+
+        for name, (size, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(extract_color_from_honest_sign_name(name, size), expected)
+
+    def test_does_not_require_color_from_moysklad(self):
+        row = make_row()
+        row["assortment"]["characteristics"] = [
+            characteristic
+            for characteristic in row["assortment"]["characteristics"]
+            if characteristic["name"] != "Цвет"
+        ]
+
+        item = build_one_c_export_items(
+            [row],
+            {GTIN: 'ФУТБОЛКА "BASE LOGO T-SHIRT BROWN" КОРИЧНЕВАЯ L'},
+        )[0]
+
+        self.assertEqual(item.color, "КОРИЧНЕВАЯ")
 
     def test_normalizes_all_gender_values(self):
         cases = {
@@ -130,7 +158,7 @@ class MarkingOneCExportTests(unittest.TestCase):
         item = build_one_c_export_items([row], {GTIN: CATALOG_NAME})[0]
 
         self.assertEqual(item.size, "L")
-        self.assertEqual(item.color, "черный")
+        self.assertEqual(item.color, "ЧЕРНАЯ")
         self.assertEqual(item.composition, "Полиэстер 80%, хлопок 20%")
 
     def test_counts_only_unique_marking_codes_for_same_modification(self):
@@ -155,6 +183,48 @@ class MarkingOneCExportTests(unittest.TestCase):
         item = build_one_c_export_items([row], {GTIN: CATALOG_NAME})[0]
 
         self.assertEqual(str(item.retail_price), "8990.50")
+
+    def test_uses_selected_old_price_when_discounts_are_active(self):
+        row = make_row()
+        row["assortment"]["salePrices"] = [
+            {"priceType": {"name": "Цена продажи"}, "value": 849000},
+            {"priceType": {"name": "Старая цена"}, "value": 999000},
+        ]
+
+        item = build_one_c_export_items(
+            [row],
+            {GTIN: CATALOG_NAME},
+            price_type="Старая цена",
+        )[0]
+
+        self.assertEqual(str(item.retail_price), "9990.00")
+
+    def test_uses_selected_sale_price_when_discounts_are_inactive(self):
+        row = make_row()
+        row["assortment"]["salePrices"] = [
+            {"priceType": {"name": "Цена продажи"}, "value": 849000},
+            {"priceType": {"name": "Старая цена"}, "value": 999000},
+        ]
+
+        item = build_one_c_export_items(
+            [row],
+            {GTIN: CATALOG_NAME},
+            price_type="Цена продажи",
+        )[0]
+
+        self.assertEqual(str(item.retail_price), "8490.00")
+
+    def test_missing_selected_price_type_is_error(self):
+        with self.assertRaises(OneCExportValidationError) as caught:
+            build_one_c_export_items(
+                [make_row()],
+                {GTIN: CATALOG_NAME},
+                price_type="Старая цена",
+            )
+
+        self.assertTrue(
+            any("отсутствует тип цены «Старая цена»" in error for error in caught.exception.errors)
+        )
 
     def test_multiple_ean13_values_are_error(self):
         row = make_row()
@@ -259,6 +329,7 @@ class MarkingOneCExportTests(unittest.TestCase):
         self.assertEqual(worksheet["B4"].value, "DS-L")
         self.assertEqual(worksheet["C4"].value, CATALOG_NAME)
         self.assertEqual(worksheet["F4"].value, "Hommeplusless")
+        self.assertEqual(worksheet["J4"].value, "ЧЕРНАЯ")
         self.assertEqual(worksheet["M4"].value, "0123456789012")
         self.assertEqual(worksheet["M4"].number_format, "@")
         self.assertEqual(worksheet["K4"].data_type, "n")

@@ -30,6 +30,7 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
 
 
 (
+    MARKING_DISCOUNTS,
     MARKING_DOCUMENT_NAME,
     MARKING_DUPLICATE_CHZ_CODE,
     MARKING_CATALOG_MENU,
@@ -37,13 +38,35 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
     MARKING_CATALOG_NAME,
     MARKING_CATALOG_DELETE_GTIN,
     MARKING_CATALOG_DELETE_CONFIRM,
-) = range(1400, 1407)
+) = range(1400, 1408)
+
+
+TREND_PRICE_TYPE_WITH_DISCOUNTS = "Старая цена"
+TREND_PRICE_TYPE_WITHOUT_DISCOUNTS = "Цена продажи"
 
 
 def marking_cancel_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Отмена", callback_data="marking:cancel")],
     ])
+
+
+def trend_discounts_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Да",
+                    callback_data="marking:trend_export:discounts:yes",
+                ),
+                InlineKeyboardButton(
+                    "Нет",
+                    callback_data="marking:trend_export:discounts:no",
+                ),
+            ],
+            [InlineKeyboardButton("❌ Отмена", callback_data="marking:cancel")],
+        ]
+    )
 
 
 def catalog_menu_keyboard():
@@ -86,8 +109,36 @@ async def trend_export_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
+    clear_trend_export_context(context)
     await query.edit_message_text(
-        "Введите название документа «Вывод из оборота», откуда сформировать CSV для УПД и Excel для 1С:",
+        "Есть ли сейчас скидки?",
+        reply_markup=trend_discounts_keyboard(),
+    )
+    return MARKING_DISCOUNTS
+
+
+async def trend_export_discounts_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not ensure_manager(update):
+        clear_trend_export_context(context)
+        await query.edit_message_text(
+            "⛔️ Выгрузка доступна только руководителям.",
+            reply_markup=marking_menu_keyboard(update),
+        )
+        return ConversationHandler.END
+
+    has_discounts = query.data.endswith(":yes")
+    price_type = (
+        TREND_PRICE_TYPE_WITH_DISCOUNTS
+        if has_discounts
+        else TREND_PRICE_TYPE_WITHOUT_DISCOUNTS
+    )
+    context.user_data["marking_trend_price_type"] = price_type
+    await query.edit_message_text(
+        "Введите название документа «Вывод из оборота», откуда сформировать CSV для УПД и Excel для 1С:\n\n"
+        f"Для выгрузки будет использована цена «{price_type}».",
         reply_markup=marking_cancel_keyboard(),
     )
     return MARKING_DOCUMENT_NAME
@@ -109,11 +160,22 @@ async def trend_export_document_received(update: Update, context: ContextTypes.D
         )
         return MARKING_DOCUMENT_NAME
 
-    status_message = await update.message.reply_text("Проверяю данные и готовлю CSV для УПД и Excel для 1С...")
+    price_type = context.user_data.pop(
+        "marking_trend_price_type",
+        TREND_PRICE_TYPE_WITHOUT_DISCOUNTS,
+    )
+
+    status_message = await update.message.reply_text(
+        f"Проверяю данные и готовлю CSV для УПД и Excel для 1С по цене «{price_type}»..."
+    )
 
     try:
         client = build_moysklad_client()
-        document, rows = get_retireorder_export_rows(client, document_name)
+        document, rows = get_retireorder_export_rows(
+            client,
+            document_name,
+            sale_price_type=price_type,
+        )
         if not rows:
             await status_message.edit_text(
                 "В документе не найдено позиций для выгрузки.",
@@ -157,7 +219,12 @@ async def trend_export_document_received(update: Update, context: ContextTypes.D
     try:
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
             one_c_path = tmp.name
-        _, one_c_items = create_one_c_xlsx(rows, catalog_names, one_c_path)
+        _, one_c_items = create_one_c_xlsx(
+            rows,
+            catalog_names,
+            one_c_path,
+            price_type=price_type,
+        )
     except OneCExportValidationError as error:
         remove_temporary_file(one_c_path, "некорректной Excel-выгрузки 1С")
         one_c_path = None
@@ -476,6 +543,7 @@ async def duplicate_chz_code_received(update: Update, context: ContextTypes.DEFA
 
 async def marking_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_catalog_context(context)
+    clear_trend_export_context(context)
     query = update.callback_query
     if query:
         await query.answer()
@@ -489,6 +557,10 @@ async def marking_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def clear_catalog_context(context):
     context.user_data.pop("marking_catalog_gtin", None)
     context.user_data.pop("marking_catalog_delete_gtin", None)
+
+
+def clear_trend_export_context(context):
+    context.user_data.pop("marking_trend_price_type", None)
 
 
 def remove_temporary_file(path, description):
@@ -510,6 +582,13 @@ def get_marking_handlers():
             CallbackQueryHandler(catalog_start, pattern=r"^marking:catalog$"),
         ],
         states={
+            MARKING_DISCOUNTS: [
+                CallbackQueryHandler(
+                    trend_export_discounts_received,
+                    pattern=r"^marking:trend_export:discounts:(yes|no)$",
+                ),
+                CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),
+            ],
             MARKING_DOCUMENT_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, trend_export_document_received),
                 CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),

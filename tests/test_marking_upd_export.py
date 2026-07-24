@@ -154,6 +154,7 @@ class MarkingUpdExportTests(unittest.TestCase):
         self.assertEqual(extract_article(assortment, parent), "ART-1")
         self.assertEqual(extract_gtin(assortment, parent), "4670332744239")
         self.assertEqual(extract_sale_price(assortment, parent, "Цена продажи"), Decimal("11890"))
+        self.assertEqual(extract_sale_price(assortment, parent, "Старая цена"), Decimal("12990"))
 
     def test_prefers_size_specific_article_from_variant_characteristics(self):
         assortment = {
