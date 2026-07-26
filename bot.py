@@ -17,6 +17,7 @@ from modules.consumables.storage import init_consumables_storage
 from modules.recruitment.storage import init_recruitment_storage
 from modules.returns.storage import init_returns_storage
 from modules.payroll.google_sheets import init_payroll_sheet
+from modules.payroll.vacations import init_vacation_storage
 from modules.schedule.google_sheets import init_schedule_sheet
 from modules.tasks.storage import init_tasks_storage
 from handlers.common import (
@@ -97,6 +98,7 @@ def main():
 
     try:
         init_payroll_sheet()
+        init_vacation_storage()
     except Exception:
         logging.exception("Не удалось инициализировать модуль ЗП")
 

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from modules.marking.handlers import (
     MARKING_DISCOUNTS,
     MARKING_DOCUMENT_NAME,
+    MARKING_STOCK_CODES_DOCUMENT_NAME,
     MARKING_UNMARKED_CONFIRM,
     MARKING_UNMARKED_PRODUCT,
     MARKING_UNMARKED_QUANTITY,
@@ -14,11 +15,21 @@ from modules.marking.handlers import (
     trend_export_discounts_received,
     trend_export_document_received,
     trend_export_start,
+    stock_codes_export_start,
     trend_unmarked_quantity_received,
 )
 
 
 class MarkingHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stock_codes_export_is_available_without_manager_role(self):
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query)
+
+        state = await stock_codes_export_start(update, SimpleNamespace(user_data={}))
+
+        self.assertEqual(state, MARKING_STOCK_CODES_DOCUMENT_NAME)
+        self.assertIn("Вывод из оборота", query.edit_message_text.await_args.args[0])
+
     async def test_export_starts_by_asking_about_discounts(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query)

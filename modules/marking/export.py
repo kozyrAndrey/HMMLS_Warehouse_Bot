@@ -3,6 +3,8 @@ import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
+from openpyxl import Workbook
+
 from config import (
     MOYSKLAD_API_BASE_URL,
     MOYSKLAD_CA_FILE,
@@ -526,6 +528,25 @@ def write_csv_rows(rows, output_path):
 
 def create_trend_island_upd_csv(rows, catalog_names, output_path):
     return write_csv_rows(build_trend_island_upd_rows(rows, catalog_names), output_path)
+
+
+def create_stock_marking_codes_xlsx(rows, output_path):
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Коды маркировки"
+
+    row_number = 1
+    for item in rows:
+        for code in item.get("codes") or []:
+            code_text = str(code or "")
+            if not code_text:
+                continue
+            worksheet.cell(row=row_number, column=1, value=code_text)
+            row_number += 1
+
+    output_path = Path(output_path)
+    workbook.save(output_path)
+    return output_path
 
 
 def create_honest_sign_catalog_csv(products, output_path):

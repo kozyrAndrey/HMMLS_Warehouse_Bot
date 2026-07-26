@@ -36,6 +36,14 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False):
 
 def build_marking_menu_keyboard(manager=False):
     keyboard = []
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "📦 Выгрузка кодов для стока",
+                callback_data="marking:stock_codes_export",
+            )
+        ]
+    )
     if manager:
         keyboard.append([InlineKeyboardButton("📤 Файлы Trend Island (УПД + 1С)", callback_data="marking:trend_export")])
         keyboard.append([InlineKeyboardButton("📚 Справочник Честного ЗНАКа", callback_data="marking:catalog")])
@@ -101,35 +109,35 @@ def build_returns_menu_keyboard():
 
 def build_consumables_menu_keyboard(manager=False):
     keyboard = [
-        [InlineKeyboardButton("📦 Поставки расходников", callback_data="cons:module_supplies")],
+        [InlineKeyboardButton("📥 Приемка расходника", callback_data="cons:receipt_menu")],
         [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:module_counting")],
-        [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
+    if manager:
+        keyboard.append([InlineKeyboardButton("➕ Добавить расходник в учет", callback_data="cons:add_item")])
+    keyboard.append([InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_consumables_receipt_menu_keyboard(manager=False):
+    keyboard = [[InlineKeyboardButton("➕ Принять расходник", callback_data="cons:receipt")]]
+    if manager:
+        keyboard.extend(
+            [
+                [InlineKeyboardButton("✏️ Изменить приемку", callback_data="cons:receipt_edit")],
+                [InlineKeyboardButton("🗑 Удалить приемку", callback_data="cons:receipt_delete")],
+            ]
+        )
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")])
     return InlineKeyboardMarkup(keyboard)
 
 
 def build_consumables_supplies_menu_keyboard(manager=False):
-    keyboard = []
-
-    if manager:
-        keyboard.extend(
-            [
-                [InlineKeyboardButton("➕ Добавить поставку", callback_data="cons:add_supply")],
-                [InlineKeyboardButton("✏️ Изменить поставку", callback_data="cons:edit_supply")],
-                [InlineKeyboardButton("🗑 Удалить поставку", callback_data="cons:delete_supply")],
-                [InlineKeyboardButton("🤝 Поставщики", callback_data="cons:suppliers")],
-            ]
-        )
-
-    keyboard.extend(
+    return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📥 Приемка расходника", callback_data="cons:accept_supply")],
-            [InlineKeyboardButton("✏️ Изменить приемку", callback_data="cons:edit_acceptance")],
-            [InlineKeyboardButton("🗑 Удалить приемку", callback_data="cons:delete_acceptance")],
+            [InlineKeyboardButton("📥 Принять расходники", callback_data="cons:receipt")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")],
         ]
     )
-    return InlineKeyboardMarkup(keyboard)
 
 
 def build_consumables_suppliers_menu_keyboard():
@@ -145,17 +153,16 @@ def build_consumables_suppliers_menu_keyboard():
 def build_consumables_counting_menu_keyboard(manager=False):
     if manager:
         keyboard = [
-            [InlineKeyboardButton("➕ Добавить расходник в учет", callback_data="cons:add_item")],
             [InlineKeyboardButton("⚙️ Норма на товар", callback_data="cons:set_rule")],
-            [InlineKeyboardButton("📊 Остатки", callback_data="cons:stock")],
+            [InlineKeyboardButton("📄 Остатки (PDF)", callback_data="cons:stock")],
             [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:inventory_count")],
-            [InlineKeyboardButton("📋 Последние пересчеты", callback_data="cons:inventory_recent")],
-            [InlineKeyboardButton("⚖️ Сравнение", callback_data="cons:inventory_compare")],
+            [InlineKeyboardButton("📄 PDF пересчета", callback_data="cons:inventory_pdf")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")],
         ]
     else:
         keyboard = [
             [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:inventory_count")],
+            [InlineKeyboardButton("📄 PDF пересчета", callback_data="cons:inventory_pdf")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")],
         ]
     return InlineKeyboardMarkup(keyboard)

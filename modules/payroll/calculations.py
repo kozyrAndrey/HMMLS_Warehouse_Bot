@@ -14,6 +14,7 @@ from modules.payroll.google_sheets import (
     normalize_payment_mode,
     PAYMENT_MODE_SHIFT,
 )
+from modules.payroll.vacations import get_vacations_in_period, vacation_amount_for_period
 
 
 def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
@@ -23,6 +24,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
     expenses = get_expenses_in_period(start_date, end_date)
     penalties = get_penalties_in_period(start_date, end_date)
     bonuses = get_bonuses_in_period(start_date, end_date)
+    vacations = get_vacations_in_period(start_date, end_date)
 
     totals = {}
 
@@ -44,6 +46,9 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             "expenses": 0.0,
             "penalties": 0.0,
             "bonuses": 0.0,
+            "vacation_days": 0,
+            "vacation_pay": 0.0,
+            "vacations": [],
             "penalty_bonus": 0.0,
             "salary_without_expenses": 0.0,
             "salary_with_expenses": 0.0,
@@ -74,6 +79,17 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
         if employee_id in totals:
             totals[employee_id]["bonuses"] += bonus["amount"]
 
+    for vacation in vacations:
+        employee_id = vacation["employee_id"]
+        if employee_id not in totals:
+            continue
+        days, amount = vacation_amount_for_period(vacation, start_date, end_date)
+        if not days:
+            continue
+        totals[employee_id]["vacation_days"] += days
+        totals[employee_id]["vacation_pay"] += amount
+        totals[employee_id]["vacations"].append({**vacation, "period_days": days, "period_amount": amount})
+
     penalty_bonus_base = sum(
         penalty["amount"]
         for penalty in penalties
@@ -90,6 +106,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             + item["fixed_half"]
             + item["penalty_bonus"]
             + item["bonuses"]
+            + item["vacation_pay"]
             - item["penalties"]
         )
         item["salary_with_expenses"] = item["salary_without_expenses"] + item["expenses"]
@@ -134,6 +151,19 @@ def short_date(value):
     return str(value)
 
 
+def format_vacation_details(vacations):
+    lines = []
+    for vacation in vacations:
+        lines.append(
+            "Отпуск: "
+            f"{vacation['start_date']} — {vacation['end_date']} · "
+            f"{vacation['period_days']} дн. · "
+            f"ставка {money(vacation['hourly_rate'])} · "
+            f"{money(vacation['period_amount'])}"
+        )
+    return lines
+
+
 def format_employee_salary_block(item):
     employee = item["employee"]
     lines = [
@@ -156,6 +186,10 @@ def format_employee_salary_block(item):
 
     if item["bonuses"]:
         lines.append(f"Премиальные: {money(item['bonuses'])}")
+
+    if item["vacation_pay"]:
+        lines.append(f"Отпускные ({item['vacation_days']} дн.): {money(item['vacation_pay'])}")
+        lines.extend(format_vacation_details(item["vacations"]))
 
     if item["penalty_bonus"]:
         lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
@@ -199,6 +233,10 @@ def build_personal_salary_text(employee, period=None, show_bonus_details=False):
     if show_bonus_details and item["bonuses"]:
         lines.append(f"Премиальные: {money(item['bonuses'])}")
 
+    if item["vacation_pay"]:
+        lines.append(f"Отпускные ({item['vacation_days']} дн.): {money(item['vacation_pay'])}")
+        lines.extend(format_vacation_details(item["vacations"]))
+
     lines.extend(
         [
             f"ЗП без расходов: {money(item['salary_without_expenses'])}",
@@ -241,6 +279,10 @@ def format_payroll_statement_line(item):
     bonuses = item.get("bonuses", 0)
     if bonuses:
         parts.append(f"{money_pretty(bonuses)} (премиальные)")
+
+    vacation_pay = item.get("vacation_pay", 0)
+    if vacation_pay:
+        parts.append(f"{money_pretty(vacation_pay)} (отпускные)")
 
     if expenses:
         parts.append(f"{money_pretty(expenses)} (расходы)")

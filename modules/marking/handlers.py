@@ -12,6 +12,7 @@ from modules.marking.export import (
     TrendExportValidationError,
     build_moysklad_client,
     create_honest_sign_catalog_csv,
+    create_stock_marking_codes_xlsx,
     create_trend_island_upd_csv,
     get_retireorder_export_rows,
     get_unmarked_moysklad_rows,
@@ -44,7 +45,8 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
     MARKING_UNMARKED_CONFIRM,
     MARKING_UNMARKED_PRODUCT,
     MARKING_UNMARKED_QUANTITY,
-) = range(1400, 1411)
+    MARKING_STOCK_CODES_DOCUMENT_NAME,
+) = range(1400, 1412)
 
 
 TREND_PRICE_TYPE_WITH_DISCOUNTS = "Старая цена"
@@ -178,6 +180,73 @@ async def trend_export_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=trend_discounts_keyboard(),
     )
     return MARKING_DISCOUNTS
+
+
+async def stock_codes_export_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Введите точное название документа «Вывод из оборота» для выгрузки кодов маркировки:",
+        reply_markup=marking_cancel_keyboard(),
+    )
+    return MARKING_STOCK_CODES_DOCUMENT_NAME
+
+
+async def stock_codes_export_document_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document_name = (update.message.text or "").strip()
+    if not document_name:
+        await update.message.reply_text(
+            "Введите непустое название документа.",
+            reply_markup=marking_cancel_keyboard(),
+        )
+        return MARKING_STOCK_CODES_DOCUMENT_NAME
+
+    status_message = await update.message.reply_text("Получаю коды маркировки из МойСклад...")
+    output_path = None
+    try:
+        client = build_moysklad_client()
+        document, rows = get_retireorder_export_rows(client, document_name)
+        codes_count = sum(len(item.get("codes") or []) for item in rows)
+        if not codes_count:
+            await status_message.edit_text(
+                "В документе не найдены коды маркировки.",
+                reply_markup=marking_menu_keyboard(update),
+            )
+            return ConversationHandler.END
+
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            output_path = tmp.name
+        create_stock_marking_codes_xlsx(rows, output_path)
+
+        with open(output_path, "rb") as file:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=file,
+                filename=f"stock_marking_codes_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                caption=(
+                    "Коды маркировки для стока\n"
+                    f"Документ: {document.get('name')}\n"
+                    f"Кодов: {codes_count}"
+                ),
+            )
+        await status_message.edit_text(
+            "Excel с кодами маркировки сформирован ✅",
+            reply_markup=marking_menu_keyboard(update),
+        )
+    except MoySkladError as error:
+        await status_message.edit_text(
+            f"Не удалось сформировать выгрузку:\n{error}",
+            reply_markup=marking_menu_keyboard(update),
+        )
+    except Exception as error:
+        logging.exception("Ошибка формирования выгрузки кодов для стока")
+        await status_message.edit_text(
+            f"Не удалось сформировать выгрузку:\n{error}",
+            reply_markup=marking_menu_keyboard(update),
+        )
+    finally:
+        remove_temporary_file(output_path, "Excel-выгрузки кодов для стока")
+    return ConversationHandler.END
 
 
 async def trend_export_discounts_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -831,6 +900,7 @@ def get_marking_handlers():
     conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(trend_export_start, pattern=r"^marking:trend_export$"),
+            CallbackQueryHandler(stock_codes_export_start, pattern=r"^marking:stock_codes_export$"),
             CallbackQueryHandler(duplicate_chz_start, pattern=r"^marking:duplicate_chz$"),
             CallbackQueryHandler(catalog_start, pattern=r"^marking:catalog$"),
         ],
@@ -851,6 +921,13 @@ def get_marking_handlers():
                 CallbackQueryHandler(
                     trend_export_back,
                     pattern=r"^marking:trend:back:",
+                ),
+                CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),
+            ],
+            MARKING_STOCK_CODES_DOCUMENT_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    stock_codes_export_document_received,
                 ),
                 CallbackQueryHandler(marking_cancel, pattern=r"^marking:cancel$"),
             ],

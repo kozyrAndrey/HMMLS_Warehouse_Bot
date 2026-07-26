@@ -447,11 +447,6 @@ def template_task_exists(day, template_id):
 
 
 def resolve_template_assignees(template, day):
-    mode = str(template.get("Тип исполнителей", "")).strip() or ASSIGNEE_MODE_NONE
-    if mode == ASSIGNEE_MODE_WORKING_TODAY:
-        return get_working_employees_for_date(day)
-    if mode == ASSIGNEE_MODE_SPECIFIC:
-        return get_employees_by_ids(template.get("Исполнители ID", ""))
     return []
 
 
@@ -481,7 +476,6 @@ def materialize_templates_for_date(day):
             created_by="template",
         )
         created_count += 1
-    sync_working_today_template_task_assignees(task_date)
     logging.info(
         "Task templates materialized for %s: created=%s",
         date_to_str(task_date),
@@ -490,10 +484,9 @@ def materialize_templates_for_date(day):
     return created_count
 
 
-def sync_working_today_template_task_assignees(day):
+def assign_working_employees_to_unassigned_template_tasks(day):
     task_date = normalize_day(day)
     working_ids, working_names = normalize_employee_list(get_working_employees_for_date(task_date))
-    checked_count = 0
     updated_count = 0
 
     with session_scope() as session:
@@ -510,14 +503,7 @@ def sync_working_today_template_task_assignees(day):
         )
 
         for task in tasks:
-            if not task.template_id:
-                continue
-            template = session.get(TaskTemplate, task.template_id)
-            if not template or template.assignee_mode != ASSIGNEE_MODE_WORKING_TODAY:
-                continue
-
-            checked_count += 1
-            if (task.assignee_ids or "") == working_ids and (task.assignee_names or "") == working_names:
+            if not task.template_id or (task.assignee_ids or "").strip():
                 continue
 
             task.assignee_ids = working_ids
@@ -526,14 +512,13 @@ def sync_working_today_template_task_assignees(day):
             updated_count += 1
 
     logging.info(
-        "Working-today template assignees synced for %s: checked=%s updated=%s working=%s",
+        "Working employees assigned to unassigned template tasks for %s: updated=%s working=%s",
         date_to_str(task_date),
-        checked_count,
         updated_count,
         len([item for item in working_ids.split(",") if item.strip()]),
     )
     return {
-        "checked": checked_count,
+        "checked": len(tasks),
         "updated": updated_count,
         "working_count": len([item for item in working_ids.split(",") if item.strip()]),
     }

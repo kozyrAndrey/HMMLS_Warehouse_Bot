@@ -6,6 +6,7 @@ from telegram.ext import ConversationHandler
 
 from core.keyboards import (
     build_consumables_menu_keyboard,
+    build_consumables_receipt_menu_keyboard,
     build_consumables_supplies_menu_keyboard,
     build_consumables_suppliers_menu_keyboard,
 )
@@ -19,40 +20,39 @@ from modules.consumables.handlers import (
     layout_photo_received,
     send_acceptance_to_topic,
     send_closing_document_to_workflow,
+    send_receipt_to_consumables_topic,
+    receipt_manage_start,
 )
 
 
 class ConsumablesAcceptanceTests(unittest.IsolatedAsyncioTestCase):
-    def test_supplies_section_is_available_to_regular_employees(self):
-        keyboard = build_consumables_menu_keyboard(manager=False)
+    def test_main_menu_exposes_receipt_and_counting_only(self):
+        employee_keyboard = build_consumables_menu_keyboard(manager=False)
+        manager_keyboard = build_consumables_menu_keyboard(manager=True)
+        callbacks = [button.callback_data for row in employee_keyboard.inline_keyboard for button in row]
+        manager_callbacks = [button.callback_data for row in manager_keyboard.inline_keyboard for button in row]
+
+        self.assertIn("cons:receipt_menu", callbacks)
+        self.assertIn("cons:module_counting", callbacks)
+        self.assertNotIn("cons:module_supplies", callbacks)
+        self.assertNotIn("cons:add_item", callbacks)
+        self.assertIn("cons:add_item", manager_callbacks)
+
+    def test_receipt_submenu_is_available_to_all_employees(self):
+        keyboard = build_consumables_receipt_menu_keyboard(manager=False)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
-        self.assertIn("cons:module_supplies", callbacks)
+        self.assertIn("cons:receipt", callbacks)
+        self.assertNotIn("cons:receipt_edit", callbacks)
+        self.assertNotIn("cons:receipt_delete", callbacks)
 
-    def test_regular_employees_see_only_acceptance_actions_in_supplies_section(self):
-        keyboard = build_consumables_supplies_menu_keyboard(manager=False)
+    def test_manager_receipt_submenu_contains_receipt_management(self):
+        keyboard = build_consumables_receipt_menu_keyboard(manager=True)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
-        self.assertIn("cons:accept_supply", callbacks)
-        self.assertIn("cons:edit_acceptance", callbacks)
-        self.assertIn("cons:delete_acceptance", callbacks)
-        self.assertNotIn("cons:add_supply", callbacks)
-        self.assertNotIn("cons:edit_supply", callbacks)
-        self.assertNotIn("cons:delete_supply", callbacks)
-        self.assertNotIn("cons:suppliers", callbacks)
-        self.assertNotIn("cons:delete_supplier", callbacks)
-
-    def test_managers_see_supply_and_acceptance_actions(self):
-        keyboard = build_consumables_supplies_menu_keyboard(manager=True)
-        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
-
-        self.assertIn("cons:accept_supply", callbacks)
-        self.assertIn("cons:edit_acceptance", callbacks)
-        self.assertIn("cons:delete_acceptance", callbacks)
-        self.assertIn("cons:add_supply", callbacks)
-        self.assertIn("cons:edit_supply", callbacks)
-        self.assertIn("cons:delete_supply", callbacks)
-        self.assertIn("cons:suppliers", callbacks)
+        self.assertIn("cons:receipt", callbacks)
+        self.assertIn("cons:receipt_edit", callbacks)
+        self.assertIn("cons:receipt_delete", callbacks)
 
     def test_supplier_management_menu_contains_all_actions(self):
         keyboard = build_consumables_suppliers_menu_keyboard()
@@ -300,6 +300,53 @@ class ConsumablesAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message_ids, [91])
         self.assertEqual(bot.send_photo.await_count, 1)
         bot.send_document.assert_not_awaited()
+
+    async def test_new_receipt_sends_layout_photos_and_closing_files_to_topic(self):
+        bot = SimpleNamespace(
+            send_photo=AsyncMock(
+                side_effect=[SimpleNamespace(message_id=101), SimpleNamespace(message_id=102)]
+            ),
+            send_document=AsyncMock(return_value=SimpleNamespace(message_id=103)),
+        )
+        context = SimpleNamespace(bot=bot)
+        receipt = {
+            "item_name": "Коробки",
+            "quantity": 12,
+            "unit": "шт",
+            "accepted_by_name": "Сотрудник",
+            "closing_document_kind": "scan",
+            "layout_photo_file_ids": [{"file_id": "layout-photo", "kind": "photo"}],
+            "closing_document_file_ids": [
+                {"file_id": "closing-photo", "kind": "photo"},
+                {"file_id": "closing-pdf", "kind": "document"},
+            ],
+        }
+
+        with (
+            patch("modules.consumables.handlers.GROUP_CHAT_ID", "-100321"),
+            patch("modules.consumables.handlers.CONSUMABLES_TOPIC_ID", "103"),
+        ):
+            message_ids, status = await send_receipt_to_consumables_topic(context, receipt)
+
+        self.assertEqual(message_ids, [101, 102, 103])
+        self.assertIn("отправлен", status)
+        self.assertEqual(bot.send_photo.await_count, 2)
+        bot.send_document.assert_awaited_once_with(
+            chat_id=-100321,
+            message_thread_id=103,
+            document="closing-pdf",
+            caption="Закрывающий документ (продолжение)",
+        )
+
+    async def test_only_manager_can_manage_existing_receipts(self):
+        query = SimpleNamespace(data="cons:receipt_edit", answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query)
+
+        with patch("modules.consumables.handlers.current_employee_or_none", return_value={"role": "employee"}):
+            state = await receipt_manage_start(update, SimpleNamespace(user_data={}))
+
+        self.assertEqual(state, ConversationHandler.END)
+        query.edit_message_text.assert_awaited_once_with("Недостаточно прав.")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint, desc, distinct, select, text
+from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint, delete, desc, distinct, select, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from modules.storage.postgres import Base, get_engine, session_scope
@@ -120,6 +120,90 @@ class ConsumableInventoryCount(Base):
     batch_id: Mapped[str | None] = mapped_column(String(100))
 
 
+class ConsumableReceipt(Base):
+    __tablename__ = "consumable_receipts"
+    __table_args__ = (
+        Index("ix_consumable_receipts_created_at", "created_at"),
+        Index("ix_consumable_receipts_item_id", "item_id"),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(12, 3), nullable=False)
+    accepted_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    accepted_by_name: Mapped[str | None] = mapped_column(String(255))
+    layout_photo_file_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    closing_document_kind: Mapped[str] = mapped_column(String(50), nullable=False, default="no_paper")
+    closing_document_file_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+
+class ConsumableInventorySession(Base):
+    __tablename__ = "consumable_inventory_sessions"
+    __table_args__ = (
+        Index("ix_consumable_inventory_sessions_status", "status"),
+        Index("ix_consumable_inventory_sessions_created_at", "created_at"),
+    )
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    created_by_name: Mapped[str | None] = mapped_column(String(255))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    completed_by_name: Mapped[str | None] = mapped_column(String(255))
+
+
+class ConsumableInventorySessionItem(Base):
+    __tablename__ = "consumable_inventory_session_items"
+    __table_args__ = (
+        UniqueConstraint("session_id", "item_id", name="uq_consumable_inventory_session_item"),
+        Index("ix_consumable_inventory_session_items_session", "session_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    system_quantity: Mapped[float] = mapped_column(Numeric(12, 3), nullable=False, default=0)
+    counted_quantity: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    counted_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    counted_by_name: Mapped[str | None] = mapped_column(String(255))
+    counted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class ConsumableInventorySessionParticipant(Base):
+    __tablename__ = "consumable_inventory_session_participants"
+    __table_args__ = (
+        UniqueConstraint("session_id", "user_id", name="uq_consumable_inventory_session_participant"),
+        Index("ix_consumable_inventory_session_participants_session", "session_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    user_name: Mapped[str | None] = mapped_column(String(255))
+    joined_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class ConsumableInventorySessionChange(Base):
+    __tablename__ = "consumable_inventory_session_changes"
+    __table_args__ = (
+        Index("ix_consumable_inventory_session_changes_session", "session_id"),
+        Index("ix_consumable_inventory_session_changes_item", "item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_quantity: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    new_quantity: Mapped[float] = mapped_column(Numeric(12, 3), nullable=False)
+    changed_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    changed_by_name: Mapped[str | None] = mapped_column(String(255))
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
 LABEL_58_40 = "Этикетки для принтера 58х40"
 SUPPLIER_DOCUMENTS_EDO = "edo"
 SUPPLIER_DOCUMENTS_PAPER = "paper"
@@ -222,6 +306,11 @@ def init_consumables_storage():
             ProductConsumableRule.__table__,
             ConsumableMovement.__table__,
             ConsumableInventoryCount.__table__,
+            ConsumableReceipt.__table__,
+            ConsumableInventorySession.__table__,
+            ConsumableInventorySessionItem.__table__,
+            ConsumableInventorySessionParticipant.__table__,
+            ConsumableInventorySessionChange.__table__,
         ],
     )
     ensure_consumables_columns()
@@ -470,6 +559,16 @@ def ensure_consumables_columns():
         "create index if not exists ix_consumable_inventory_counts_item_id on consumable_inventory_counts (item_id)",
         "alter table consumable_inventory_counts add column if not exists batch_id varchar(100)",
         "create index if not exists ix_consumable_inventory_counts_batch_id on consumable_inventory_counts (batch_id)",
+        "create index if not exists ix_consumable_receipts_created_at on consumable_receipts (created_at)",
+        "create index if not exists ix_consumable_receipts_item_id on consumable_receipts (item_id)",
+        "create index if not exists ix_consumable_inventory_sessions_status on consumable_inventory_sessions (status)",
+        "create index if not exists ix_consumable_inventory_sessions_created_at on consumable_inventory_sessions (created_at)",
+        "create unique index if not exists uq_consumable_inventory_session_item on consumable_inventory_session_items (session_id, item_id)",
+        "create index if not exists ix_consumable_inventory_session_items_session on consumable_inventory_session_items (session_id)",
+        "create unique index if not exists uq_consumable_inventory_session_participant on consumable_inventory_session_participants (session_id, user_id)",
+        "create index if not exists ix_consumable_inventory_session_participants_session on consumable_inventory_session_participants (session_id)",
+        "create index if not exists ix_consumable_inventory_session_changes_session on consumable_inventory_session_changes (session_id)",
+        "create index if not exists ix_consumable_inventory_session_changes_item on consumable_inventory_session_changes (item_id)",
     ]
 
     with get_engine().begin() as connection:
@@ -1361,6 +1460,460 @@ def apply_inventory_batch_counts(batch_id, item_ids, created_by_user_id="", crea
             session.flush()
             movements.append(movement_to_dict(movement, item.name))
         return movements
+
+
+def _normalize_file_entries(values, default_kind):
+    result = []
+    for value in values or []:
+        if isinstance(value, dict):
+            file_id = str(value.get("file_id") or "").strip()
+            kind = str(value.get("kind") or default_kind).strip()
+        else:
+            file_id = str(value or "").strip()
+            kind = default_kind
+        if file_id:
+            result.append({"file_id": file_id, "kind": kind})
+    return result
+
+
+def _file_entries_from_json(value, default_kind):
+    try:
+        return _normalize_file_entries(json.loads(value or "[]"), default_kind)
+    except (TypeError, ValueError):
+        return []
+
+
+def receipt_to_dict(receipt, item=None):
+    return {
+        "receipt_id": receipt.receipt_id,
+        "created_at": receipt.created_at,
+        "item_id": receipt.item_id,
+        "item_name": item.name if item else "",
+        "unit": item.unit if item else "шт",
+        "quantity": float(receipt.quantity or 0),
+        "accepted_by_user_id": receipt.accepted_by_user_id or "",
+        "accepted_by_name": receipt.accepted_by_name or "",
+        "layout_photo_file_ids": _file_entries_from_json(receipt.layout_photo_file_ids, "photo"),
+        "closing_document_kind": receipt.closing_document_kind or "no_paper",
+        "closing_document_file_ids": _file_entries_from_json(receipt.closing_document_file_ids, "document"),
+    }
+
+
+def create_consumable_receipt(
+    item_id,
+    quantity,
+    accepted_by_user_id,
+    accepted_by_name,
+    layout_photo_file_ids,
+    closing_document_kind="no_paper",
+    closing_document_file_ids=None,
+):
+    quantity = float(quantity or 0)
+    layout_photo_file_ids = _normalize_file_entries(layout_photo_file_ids, "photo")
+    closing_document_file_ids = _normalize_file_entries(closing_document_file_ids, "document")
+    if quantity <= 0:
+        raise RuntimeError("Количество должно быть больше нуля.")
+    if not layout_photo_file_ids:
+        raise RuntimeError("Добавьте хотя бы одно фото принятого расходника.")
+    if closing_document_kind not in {"no_paper", "scan", "photo"}:
+        raise RuntimeError("Выберите тип закрывающего документа.")
+    if closing_document_kind != "no_paper" and not closing_document_file_ids:
+        raise RuntimeError("Добавьте закрывающий документ.")
+
+    with session_scope() as session:
+        item = session.get(ConsumableItem, int(item_id))
+        if not item or not item.is_active:
+            raise RuntimeError("Расходник не найден.")
+        receipt = ConsumableReceipt(
+            receipt_id=f"receipt_{uuid4().hex[:12]}",
+            item_id=item.item_id,
+            quantity=quantity,
+            accepted_by_user_id=str(accepted_by_user_id or ""),
+            accepted_by_name=str(accepted_by_name or ""),
+            layout_photo_file_ids=json.dumps(layout_photo_file_ids),
+            closing_document_kind=closing_document_kind,
+            closing_document_file_ids=json.dumps(closing_document_file_ids),
+        )
+        session.add(receipt)
+        item.current_quantity = float(item.current_quantity or 0) + quantity
+        movement = ConsumableMovement(
+            item_id=item.item_id,
+            quantity_delta=quantity,
+            source="consumable_receipt",
+            source_id=receipt.receipt_id,
+            comment="Приемка расходника на складе",
+            created_by_user_id=str(accepted_by_user_id or ""),
+            created_by_name=str(accepted_by_name or ""),
+        )
+        session.add(movement)
+        session.flush()
+        return receipt_to_dict(receipt, item)
+
+
+def get_consumable_receipt(receipt_id):
+    with session_scope() as session:
+        receipt = session.get(ConsumableReceipt, str(receipt_id))
+        item = session.get(ConsumableItem, receipt.item_id) if receipt else None
+        return receipt_to_dict(receipt, item) if receipt else None
+
+
+def list_consumable_receipts(limit=30):
+    with session_scope() as session:
+        receipts = (
+            session.execute(
+                select(ConsumableReceipt)
+                .order_by(desc(ConsumableReceipt.created_at))
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        item_ids = {receipt.item_id for receipt in receipts}
+        items = {}
+        if item_ids:
+            items = {
+                item.item_id: item
+                for item in session.execute(
+                    select(ConsumableItem).where(ConsumableItem.item_id.in_(item_ids))
+                ).scalars().all()
+            }
+    return [receipt_to_dict(receipt, items.get(receipt.item_id)) for receipt in receipts]
+
+
+def update_consumable_receipt_quantity(receipt_id, quantity, changed_by_user_id="", changed_by_name=""):
+    quantity = float(quantity or 0)
+    if quantity <= 0:
+        raise RuntimeError("Количество должно быть больше нуля.")
+    with session_scope() as session:
+        receipt = session.get(ConsumableReceipt, str(receipt_id))
+        if not receipt:
+            return None
+        item = session.get(ConsumableItem, receipt.item_id)
+        if not item or not item.is_active:
+            raise RuntimeError("Расходник не найден.")
+        previous_quantity = float(receipt.quantity or 0)
+        delta = quantity - previous_quantity
+        receipt.quantity = quantity
+        if delta:
+            item.current_quantity = float(item.current_quantity or 0) + delta
+            session.add(
+                ConsumableMovement(
+                    item_id=item.item_id,
+                    quantity_delta=delta,
+                    source="consumable_receipt_adjustment",
+                    source_id=receipt.receipt_id,
+                    comment="Изменение количества приемки расходников",
+                    created_by_user_id=str(changed_by_user_id or ""),
+                    created_by_name=str(changed_by_name or ""),
+                )
+            )
+        session.flush()
+        return receipt_to_dict(receipt, item)
+
+
+def delete_consumable_receipt(receipt_id, deleted_by_user_id="", deleted_by_name=""):
+    with session_scope() as session:
+        receipt = session.get(ConsumableReceipt, str(receipt_id))
+        if not receipt:
+            return None
+        item = session.get(ConsumableItem, receipt.item_id)
+        result = receipt_to_dict(receipt, item)
+        if item:
+            quantity = float(receipt.quantity or 0)
+            item.current_quantity = float(item.current_quantity or 0) - quantity
+            session.add(
+                ConsumableMovement(
+                    item_id=item.item_id,
+                    quantity_delta=-quantity,
+                    source="consumable_receipt_reversal",
+                    source_id=receipt.receipt_id,
+                    comment="Удаление приемки расходников",
+                    created_by_user_id=str(deleted_by_user_id or ""),
+                    created_by_name=str(deleted_by_name or ""),
+                )
+            )
+        session.delete(receipt)
+        return result
+
+
+def _inventory_session_to_dict(session, participant_count=0):
+    return {
+        "session_id": session.session_id,
+        "status": session.status,
+        "created_at": session.created_at,
+        "created_by_user_id": session.created_by_user_id or "",
+        "created_by_name": session.created_by_name or "",
+        "completed_at": session.completed_at,
+        "completed_by_user_id": session.completed_by_user_id or "",
+        "completed_by_name": session.completed_by_name or "",
+        "participant_count": participant_count,
+    }
+
+
+def _add_inventory_session_participant(session, session_id, user_id, user_name):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return
+    participant = session.execute(
+        select(ConsumableInventorySessionParticipant).where(
+            ConsumableInventorySessionParticipant.session_id == session_id,
+            ConsumableInventorySessionParticipant.user_id == user_id,
+        )
+    ).scalars().first()
+    if not participant:
+        session.add(
+            ConsumableInventorySessionParticipant(
+                session_id=session_id,
+                user_id=user_id,
+                user_name=str(user_name or ""),
+            )
+        )
+
+
+def get_or_create_active_inventory_session(user_id="", user_name=""):
+    with session_scope() as session:
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(ConsumableInventorySession.status == "draft")
+            .order_by(ConsumableInventorySession.created_at.desc())
+            .limit(1)
+        ).scalars().first()
+        if not inventory_session:
+            inventory_session = ConsumableInventorySession(
+                session_id=f"inventory_{uuid4().hex[:12]}",
+                status="draft",
+                created_by_user_id=str(user_id or ""),
+                created_by_name=str(user_name or ""),
+            )
+            session.add(inventory_session)
+            session.flush()
+            items = session.execute(
+                select(ConsumableItem)
+                .where(ConsumableItem.is_active.is_(True))
+                .order_by(ConsumableItem.name)
+            ).scalars().all()
+            for item in items:
+                session.add(
+                    ConsumableInventorySessionItem(
+                        session_id=inventory_session.session_id,
+                        item_id=item.item_id,
+                        system_quantity=float(item.current_quantity or 0),
+                    )
+                )
+        _add_inventory_session_participant(
+            session,
+            inventory_session.session_id,
+            user_id,
+            user_name,
+        )
+        session.flush()
+        participant_count = session.execute(
+            select(ConsumableInventorySessionParticipant.id).where(
+                ConsumableInventorySessionParticipant.session_id == inventory_session.session_id
+            )
+        ).all()
+        return _inventory_session_to_dict(inventory_session, len(participant_count))
+
+
+def get_inventory_session(session_id, user_id="", user_name=""):
+    with session_scope() as session:
+        inventory_session = session.get(ConsumableInventorySession, str(session_id))
+        if not inventory_session:
+            return None
+        if inventory_session.status == "draft":
+            _add_inventory_session_participant(session, inventory_session.session_id, user_id, user_name)
+        session.flush()
+        participant_count = session.execute(
+            select(ConsumableInventorySessionParticipant.id).where(
+                ConsumableInventorySessionParticipant.session_id == inventory_session.session_id
+            )
+        ).all()
+        return _inventory_session_to_dict(inventory_session, len(participant_count))
+
+
+def get_inventory_session_items(session_id):
+    with session_scope() as session:
+        records = session.execute(
+            select(ConsumableInventorySessionItem)
+            .where(ConsumableInventorySessionItem.session_id == str(session_id))
+            .order_by(ConsumableInventorySessionItem.item_id)
+        ).scalars().all()
+        item_ids = {record.item_id for record in records}
+        items = {}
+        if item_ids:
+            items = {
+                item.item_id: item
+                for item in session.execute(
+                    select(ConsumableItem).where(ConsumableItem.item_id.in_(item_ids))
+                ).scalars().all()
+            }
+    result = []
+    for record in records:
+        item = items.get(record.item_id)
+        counted = record.counted_quantity is not None
+        system_quantity = float(record.system_quantity or 0)
+        counted_quantity = float(record.counted_quantity or 0) if counted else None
+        result.append(
+            {
+                "item_id": record.item_id,
+                "item_name": item.name if item else "",
+                "unit": item.unit if item else "шт",
+                "system_quantity": system_quantity,
+                "counted_quantity": counted_quantity,
+                "difference": (counted_quantity - system_quantity) if counted else None,
+                "counted": counted,
+                "counted_by_user_id": record.counted_by_user_id or "",
+                "counted_by_name": record.counted_by_name or "",
+                "counted_at": record.counted_at,
+            }
+        )
+    return result
+
+
+def save_inventory_session_item(session_id, item_id, counted_quantity, user_id="", user_name=""):
+    quantity = float(counted_quantity)
+    if quantity < 0:
+        raise RuntimeError("Количество не может быть отрицательным.")
+    with session_scope() as session:
+        inventory_session = session.get(ConsumableInventorySession, str(session_id))
+        if not inventory_session or inventory_session.status != "draft":
+            raise RuntimeError("Пересчет не найден или уже завершен.")
+        record = session.execute(
+            select(ConsumableInventorySessionItem).where(
+                ConsumableInventorySessionItem.session_id == inventory_session.session_id,
+                ConsumableInventorySessionItem.item_id == int(item_id),
+            )
+        ).scalars().first()
+        if not record:
+            raise RuntimeError("Расходник не найден в пересчете.")
+        _add_inventory_session_participant(session, inventory_session.session_id, user_id, user_name)
+        previous_quantity = record.counted_quantity
+        now_value = datetime.now()
+        record.counted_quantity = quantity
+        record.counted_by_user_id = str(user_id or "")
+        record.counted_by_name = str(user_name or "")
+        record.counted_at = now_value
+        record.updated_at = now_value
+        session.add(
+            ConsumableInventorySessionChange(
+                session_id=inventory_session.session_id,
+                item_id=int(item_id),
+                previous_quantity=previous_quantity,
+                new_quantity=quantity,
+                changed_by_user_id=str(user_id or ""),
+                changed_by_name=str(user_name or ""),
+            )
+        )
+        item = session.get(ConsumableItem, int(item_id))
+        session.flush()
+        return {
+            "item_id": int(item_id),
+            "item_name": item.name if item else "",
+            "quantity": quantity,
+            "counted_by_name": str(user_name or ""),
+        }
+
+
+def complete_inventory_session(session_id, user_id="", user_name=""):
+    with session_scope() as session:
+        inventory_session = session.get(ConsumableInventorySession, str(session_id))
+        if not inventory_session or inventory_session.status != "draft":
+            raise RuntimeError("Пересчет не найден или уже завершен.")
+        records = session.execute(
+            select(ConsumableInventorySessionItem).where(
+                ConsumableInventorySessionItem.session_id == inventory_session.session_id,
+                ConsumableInventorySessionItem.counted_quantity.is_not(None),
+            )
+        ).scalars().all()
+        if not records:
+            raise RuntimeError("Нельзя завершить пересчет без посчитанных позиций.")
+
+        result_records = []
+        movements = []
+        for record in records:
+            item = session.get(ConsumableItem, record.item_id)
+            if not item or not item.is_active:
+                continue
+            counted_quantity = float(record.counted_quantity or 0)
+            system_quantity = float(record.system_quantity or 0)
+            final_record = ConsumableInventoryCount(
+                item_id=item.item_id,
+                system_quantity=system_quantity,
+                counted_quantity=counted_quantity,
+                difference=counted_quantity - system_quantity,
+                counted_by_user_id=record.counted_by_user_id,
+                counted_by_name=record.counted_by_name,
+                batch_id=inventory_session.session_id,
+            )
+            session.add(final_record)
+            current_quantity = float(item.current_quantity or 0)
+            delta = counted_quantity - current_quantity
+            if delta:
+                item.current_quantity = counted_quantity
+                movement = ConsumableMovement(
+                    item_id=item.item_id,
+                    quantity_delta=delta,
+                    source="inventory_adjustment",
+                    source_id=inventory_session.session_id,
+                    comment="Корректировка по параллельному пересчету",
+                    created_by_user_id=str(user_id or ""),
+                    created_by_name=str(user_name or ""),
+                )
+                session.add(movement)
+                movements.append((movement, item.name))
+            session.flush()
+            result_records.append(inventory_count_to_dict(final_record, item.name, item.unit))
+
+        inventory_session.status = "completed"
+        inventory_session.completed_at = datetime.now()
+        inventory_session.completed_by_user_id = str(user_id or "")
+        inventory_session.completed_by_name = str(user_name or "")
+        _add_inventory_session_participant(session, inventory_session.session_id, user_id, user_name)
+        session.flush()
+        return {
+            "session": _inventory_session_to_dict(inventory_session),
+            "records": result_records,
+            "movements": [movement_to_dict(movement, item_name) for movement, item_name in movements],
+        }
+
+
+def list_completed_inventory_sessions(limit=20):
+    with session_scope() as session:
+        sessions = session.execute(
+            select(ConsumableInventorySession)
+            .where(ConsumableInventorySession.status == "completed")
+            .order_by(ConsumableInventorySession.completed_at.desc())
+            .limit(limit)
+        ).scalars().all()
+    return [_inventory_session_to_dict(inventory_session) for inventory_session in sessions]
+
+
+def get_completed_inventory_session_records(session_id):
+    return get_inventory_batch_comparison(session_id)
+
+
+def discard_inventory_session(session_id):
+    with session_scope() as session:
+        inventory_session = session.get(ConsumableInventorySession, str(session_id))
+        if not inventory_session or inventory_session.status != "draft":
+            return False
+        session.execute(
+            delete(ConsumableInventorySessionChange).where(
+                ConsumableInventorySessionChange.session_id == inventory_session.session_id
+            )
+        )
+        session.execute(
+            delete(ConsumableInventorySessionParticipant).where(
+                ConsumableInventorySessionParticipant.session_id == inventory_session.session_id
+            )
+        )
+        session.execute(
+            delete(ConsumableInventorySessionItem).where(
+                ConsumableInventorySessionItem.session_id == inventory_session.session_id
+            )
+        )
+        session.delete(inventory_session)
+        return True
 
 
 def set_product_consumable_rule(product_id, product_name, item_id, quantity_per_unit):

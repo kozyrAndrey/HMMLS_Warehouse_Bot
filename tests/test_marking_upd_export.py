@@ -4,10 +4,13 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
+from openpyxl import load_workbook
+
 from modules.marking.export import (
     TrendExportValidationError,
     build_trend_island_upd_rows,
     calculate_net_price,
+    create_stock_marking_codes_xlsx,
     create_trend_island_upd_csv,
     extract_article,
     extract_gtin,
@@ -18,6 +21,23 @@ from modules.marking.storage import normalize_gtin
 
 
 class MarkingUpdExportTests(unittest.TestCase):
+    def test_stock_codes_xlsx_contains_only_codes_without_header(self):
+        rows = [
+            {"codes": ["CODE-1", "CODE-2"]},
+            {"codes": ["CODE-3"]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stock_codes.xlsx"
+            create_stock_marking_codes_xlsx(rows, path)
+            worksheet = load_workbook(path)["Коды маркировки"]
+
+        self.assertEqual(worksheet.max_column, 1)
+        self.assertEqual(
+            [worksheet.cell(row=index, column=1).value for index in range(1, 4)],
+            ["CODE-1", "CODE-2", "CODE-3"],
+        )
+
     def test_price_without_vat_has_eight_decimal_places(self):
         self.assertEqual(calculate_net_price("49.00"), Decimal("45.79439252"))
         self.assertEqual(calculate_net_price("11890"), Decimal("11112.14953271"))

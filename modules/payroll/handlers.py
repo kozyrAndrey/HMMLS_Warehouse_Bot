@@ -61,6 +61,14 @@ from modules.payroll.google_sheets import (
     now_str,
 )
 from modules.payroll.pdf_reports import create_payroll_pdf
+from modules.payroll.vacations import (
+    VacationValidationError,
+    create_vacation,
+    delete_vacation,
+    get_vacation,
+    list_vacations,
+    update_vacation_period,
+)
 from modules.tasks.config import TASK_TYPE_GENERAL, TASK_TYPE_WAREHOUSE
 from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_date
 
@@ -113,7 +121,14 @@ from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_d
     BONUS_COMMENT,
     BONUS_DELETE_SELECT,
     CLEANUP_CONFIRM,
-) = range(300, 347)
+    VACATION_EMPLOYEE,
+    VACATION_START,
+    VACATION_END,
+    VACATION_EDIT_SELECT,
+    VACATION_EDIT_START,
+    VACATION_EDIT_END,
+    VACATION_DELETE_SELECT,
+) = range(300, 354)
 
 
 # ============================================================
@@ -134,6 +149,7 @@ def payroll_main_keyboard(manager=False):
             [
                 [InlineKeyboardButton("⚠️ Штраф", callback_data="pay:add_penalty")],
                 [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
+                [InlineKeyboardButton("🏖 Отпускные", callback_data="pay:vacations")],
                 [InlineKeyboardButton("📊 Рассчитать ЗП за период", callback_data="pay:calculate_period")],
                 [InlineKeyboardButton("⚙️ Расчетные периоды", callback_data="pay:periods")],
                 [InlineKeyboardButton("⚙️ Позиции KPI", callback_data="pay:kpi_management")],
@@ -173,6 +189,54 @@ def bonuses_keyboard():
                 InlineKeyboardButton("Просмотр последних 10 записей", callback_data="bonus:view"),
             ],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
+        ]
+    )
+
+
+def vacations_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Добавить отпуск", callback_data="vacation:add")],
+            [
+                InlineKeyboardButton("✏️ Изменить период", callback_data="vacation:edit"),
+                InlineKeyboardButton("🗑 Удалить", callback_data="vacation:delete"),
+            ],
+            [InlineKeyboardButton("👀 Последние записи", callback_data="vacation:view")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
+        ]
+    )
+
+
+def vacations_select_keyboard(vacations, prefix):
+    rows = []
+    for vacation in vacations:
+        label = (
+            f"{vacation['employee_name']} · "
+            f"{vacation['start_date']}—{vacation['end_date']}"
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label[:60],
+                    callback_data=f"{prefix}:{vacation['vacation_id']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def vacation_delete_confirm_keyboard(vacation_id):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Да, удалить",
+                    callback_data=f"vacationdelconfirm:{vacation_id}",
+                )
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="vacation:delete")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
         ]
     )
 
@@ -2103,6 +2167,239 @@ async def bonus_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 
+def format_vacation_line(vacation, index=None):
+    prefix = f"{index}. " if index else ""
+    return (
+        f"{prefix}{vacation['employee_name']}\n"
+        f"{vacation['start_date']} — {vacation['end_date']} · {vacation['days']} дн.\n"
+        f"Ставка: {money(vacation['hourly_rate'])}; отпускные: {money(vacation['amount'])}"
+    )
+
+
+def ensure_vacation_manager(update):
+    return is_manager(current_employee_or_none(update))
+
+
+async def vacations_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    await query.edit_message_text("🏖 Отпускные", reply_markup=vacations_keyboard())
+    return ConversationHandler.END
+
+
+async def vacation_create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите сотрудника для отпуска:",
+        reply_markup=employees_keyboard("vacemp"),
+    )
+    return VACATION_EMPLOYEE
+
+
+async def vacation_employee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    employee = get_employee_by_id(query.data.replace("vacemp:", ""))
+    if not employee:
+        await query.edit_message_text("Сотрудник не найден.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    context.user_data["vacation_employee_id"] = employee["employee_id"]
+    await query.edit_message_text(
+        "Введите дату начала отпуска в формате ДД.ММ.ГГГГ:",
+        reply_markup=payroll_back_keyboard(),
+    )
+    return VACATION_START
+
+
+async def vacation_start_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = (update.message.text or "").strip()
+    if not validate_date(value):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return VACATION_START
+    context.user_data["vacation_start"] = value
+    await update.message.reply_text(
+        "Введите дату окончания отпуска в формате ДД.ММ.ГГГГ:",
+        reply_markup=payroll_back_keyboard(),
+    )
+    return VACATION_END
+
+
+async def vacation_end_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = (update.message.text or "").strip()
+    if not validate_date(value):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return VACATION_END
+    employee = get_employee_by_id(context.user_data.get("vacation_employee_id"))
+    current_employee = current_employee_or_none(update)
+    if not employee or not is_manager(current_employee):
+        await update.message.reply_text("Недостаточно прав или сотрудник не найден.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    try:
+        vacation = create_vacation(
+            employee,
+            context.user_data["vacation_start"],
+            value,
+            created_by=current_employee["full_name"],
+        )
+    except VacationValidationError as error:
+        await update.message.reply_text(str(error), reply_markup=payroll_back_keyboard())
+        return VACATION_END
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Отпускные добавлены ✅\n\n" + format_vacation_line(vacation),
+        reply_markup=vacations_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def vacation_view_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    vacations = list_vacations()[-10:]
+    if not vacations:
+        await query.edit_message_text("Записей отпускных пока нет.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    lines = ["Последние записи отпускных", ""]
+    for index, vacation in enumerate(vacations, start=1):
+        lines.extend([format_vacation_line(vacation, index=index), ""])
+    await query.edit_message_text("\n".join(lines).strip(), reply_markup=vacations_keyboard())
+    return ConversationHandler.END
+
+
+async def vacation_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    vacations = list_vacations()
+    if not vacations:
+        await query.edit_message_text("Записей отпускных пока нет.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите отпуск для изменения периода:",
+        reply_markup=vacations_select_keyboard(vacations, "vacationedit"),
+    )
+    return VACATION_EDIT_SELECT
+
+
+async def vacation_edit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    vacation = get_vacation(query.data.replace("vacationedit:", ""))
+    if not vacation:
+        await query.edit_message_text("Запись не найдена.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    context.user_data["vacation_edit_id"] = vacation["vacation_id"]
+    await query.edit_message_text(
+        "Введите новую дату начала отпуска в формате ДД.ММ.ГГГГ:",
+        reply_markup=payroll_back_keyboard(),
+    )
+    return VACATION_EDIT_START
+
+
+async def vacation_edit_start_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = (update.message.text or "").strip()
+    if not validate_date(value):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return VACATION_EDIT_START
+    context.user_data["vacation_edit_start"] = value
+    await update.message.reply_text(
+        "Введите новую дату окончания отпуска в формате ДД.ММ.ГГГГ:",
+        reply_markup=payroll_back_keyboard(),
+    )
+    return VACATION_EDIT_END
+
+
+async def vacation_edit_end_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value = (update.message.text or "").strip()
+    if not validate_date(value):
+        await update.message.reply_text("Неверный формат даты. Введите ДД.ММ.ГГГГ:")
+        return VACATION_EDIT_END
+    if not ensure_vacation_manager(update):
+        await update.message.reply_text("Недостаточно прав.")
+        return ConversationHandler.END
+    try:
+        vacation = update_vacation_period(
+            context.user_data.get("vacation_edit_id"),
+            context.user_data["vacation_edit_start"],
+            value,
+        )
+    except VacationValidationError as error:
+        await update.message.reply_text(str(error), reply_markup=payroll_back_keyboard())
+        return VACATION_EDIT_END
+    context.user_data.clear()
+    if not vacation:
+        await update.message.reply_text("Запись не найдена.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "Период отпуска обновлён ✅\n\n" + format_vacation_line(vacation),
+        reply_markup=vacations_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def vacation_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    vacations = list_vacations()
+    if not vacations:
+        await query.edit_message_text("Записей отпускных пока нет.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите отпуск для удаления:",
+        reply_markup=vacations_select_keyboard(vacations, "vacationdel"),
+    )
+    return VACATION_DELETE_SELECT
+
+
+async def vacation_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    vacation = get_vacation(query.data.replace("vacationdel:", ""))
+    if not vacation:
+        await query.edit_message_text("Запись не найдена.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Удалить эту запись?\n\n" + format_vacation_line(vacation),
+        reply_markup=vacation_delete_confirm_keyboard(vacation["vacation_id"]),
+    )
+    return VACATION_DELETE_SELECT
+
+
+async def vacation_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not ensure_vacation_manager(update):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    vacation = delete_vacation(query.data.replace("vacationdelconfirm:", ""))
+    if not vacation:
+        await query.edit_message_text("Запись не найдена.", reply_markup=vacations_keyboard())
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Отпускные удалены ✅\n\n" + format_vacation_line(vacation),
+        reply_markup=vacations_keyboard(),
+    )
+    return ConversationHandler.END
+
+
 # ============================================================
 # РАСХОДЫ
 # ============================================================
@@ -3008,6 +3305,11 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(bonus_start, pattern=r"^bonus:add$"),
             CallbackQueryHandler(bonus_view_start, pattern=r"^bonus:view$"),
             CallbackQueryHandler(bonus_delete_start, pattern=r"^bonus:delete$"),
+            CallbackQueryHandler(vacations_menu_start, pattern=r"^pay:vacations$"),
+            CallbackQueryHandler(vacation_create_start, pattern=r"^vacation:add$"),
+            CallbackQueryHandler(vacation_view_start, pattern=r"^vacation:view$"),
+            CallbackQueryHandler(vacation_edit_start, pattern=r"^vacation:edit$"),
+            CallbackQueryHandler(vacation_delete_start, pattern=r"^vacation:delete$"),
             CallbackQueryHandler(periods_menu_start, pattern=r"^pay:periods$"),
             CallbackQueryHandler(period_create_start, pattern=r"^period:create$"),
             CallbackQueryHandler(period_edit_start, pattern=r"^period:edit$"),
@@ -3123,6 +3425,37 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(bonus_delete_confirmed, pattern=r"^bonusdelconfirm:"),
                 CallbackQueryHandler(bonus_delete_start, pattern=r"^bonus:delete$"),
                 CallbackQueryHandler(bonuses_menu_start, pattern=r"^pay:bonuses$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_EMPLOYEE: [
+                CallbackQueryHandler(vacation_employee_selected, pattern=r"^vacemp:"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_START: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, vacation_start_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_END: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, vacation_end_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_EDIT_SELECT: [
+                CallbackQueryHandler(vacation_edit_selected, pattern=r"^vacationedit:"),
+                CallbackQueryHandler(vacation_edit_start, pattern=r"^vacation:edit$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_EDIT_START: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, vacation_edit_start_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_EDIT_END: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, vacation_edit_end_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            VACATION_DELETE_SELECT: [
+                CallbackQueryHandler(vacation_delete_selected, pattern=r"^vacationdel:"),
+                CallbackQueryHandler(vacation_delete_confirmed, pattern=r"^vacationdelconfirm:"),
+                CallbackQueryHandler(vacation_delete_start, pattern=r"^vacation:delete$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             PENALTY_EMPLOYEE: [

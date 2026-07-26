@@ -38,6 +38,7 @@ from modules.tasks.storage import (
     can_user_complete_task,
     create_task,
     create_task_template,
+    assign_working_employees_to_unassigned_template_tasks,
     delete_task_template,
     get_task_by_id,
     get_task_export,
@@ -961,6 +962,7 @@ async def export_warehouse_tasks_for_date(context, day):
     if not GROUP_CHAT_ID or not SCHEDULE_REMINDER_TOPIC_ID:
         return "не настроены GROUP_CHAT_ID или SCHEDULE_REMINDER_TOPIC_ID"
     materialize_templates_for_date(day)
+    assign_working_employees_to_unassigned_template_tasks(day)
     tasks = get_tasks_by_date(day)
     return await send_or_edit_task_message(
         context,
@@ -1068,6 +1070,10 @@ async def daily_tasks_job(context: ContextTypes.DEFAULT_TYPE):
     await export_tasks_for_date(context, today_msk())
 
 
+async def auto_assign_template_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    assign_working_employees_to_unassigned_template_tasks(today_msk())
+
+
 async def weekly_template_job(context: ContextTypes.DEFAULT_TYPE):
     logging.info("Создано задач из регулярных задач: %s", materialize_next_week_templates(today_msk()))
 
@@ -1077,6 +1083,11 @@ def setup_tasks_jobs(app):
         logging.warning("JobQueue не включен. Установите python-telegram-bot[job-queue].")
         return
     app.job_queue.run_daily(daily_staff_job, time=time(hour=10, minute=30, tzinfo=MSK_TZ), name="daily_staff_message")
+    app.job_queue.run_daily(
+        auto_assign_template_tasks_job,
+        time=time(hour=10, minute=30, tzinfo=MSK_TZ),
+        name="template_task_auto_assignment",
+    )
     app.job_queue.run_daily(daily_tasks_job, time=time(hour=10, minute=35, tzinfo=MSK_TZ), name="daily_tasks_export")
     app.job_queue.run_daily(
         weekly_template_job,

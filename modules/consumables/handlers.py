@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from html import escape
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -22,16 +23,21 @@ from config import (
 from core.keyboards import (
     build_consumables_counting_menu_keyboard,
     build_consumables_menu_keyboard,
+    build_consumables_receipt_menu_keyboard,
     build_consumables_supplies_menu_keyboard,
     build_consumables_suppliers_menu_keyboard,
 )
 from modules.consumables.storage import (
     apply_inventory_batch_counts,
+    complete_inventory_session,
+    create_consumable_receipt,
     create_supply,
     clear_acceptance,
     add_consumable_movement,
     create_inventory_count,
     create_inventory_count_batch,
+    discard_inventory_session,
+    delete_consumable_receipt,
     create_supplier,
     deactivate_supplier,
     delete_supply,
@@ -39,10 +45,16 @@ from modules.consumables.storage import (
     get_active_suppliers,
     get_consumable_item,
     get_consumable_items,
+    get_consumable_receipt,
     get_inventory_batch_comparison,
+    get_completed_inventory_session_records,
+    get_or_create_active_inventory_session,
+    get_inventory_session,
+    get_inventory_session_items,
     get_recent_consumable_movements,
     get_recent_inventory_batches,
-    get_recent_inventory_counts,
+    list_completed_inventory_sessions,
+    list_consumable_receipts,
     get_pending_supplies,
     get_product_consumable_rules,
     get_recent_organizations,
@@ -52,16 +64,18 @@ from modules.consumables.storage import (
     get_supplier_records,
     format_quantity,
     mark_supply_accepted,
+    save_inventory_session_item,
     set_product_consumable_rule,
     split_message_ids,
     update_acceptance,
+    update_consumable_receipt_quantity,
     update_supply,
     update_supplier,
     upsert_consumable_item,
     SUPPLIER_DOCUMENTS_EDO,
     SUPPLIER_DOCUMENTS_PAPER,
 )
-from modules.consumables.pdf_reports import create_inventory_count_pdf
+from modules.consumables.pdf_reports import create_consumables_stock_pdf, create_inventory_count_pdf
 from modules.payroll.google_sheets import find_employee_for_telegram_user, is_manager, money, safe_float
 from modules.receiving.products import CATEGORIES, SIZES
 
@@ -103,7 +117,18 @@ from modules.receiving.products import CATEGORIES, SIZES
     SUPPLIER_EDIT_SELECT,
     SUPPLIER_EDIT_NAME,
     SUPPLIER_EDIT_DELIVERY,
-) = range(500, 536)
+    RECEIPT_ITEM_SELECT,
+    RECEIPT_QUANTITY,
+    RECEIPT_LAYOUT_PHOTOS,
+    RECEIPT_DOCUMENT_KIND,
+    RECEIPT_DOCUMENT_FILES,
+    RECEIPT_CONFIRM,
+    INVENTORY_PDF_SELECT,
+    INVENTORY_EXIT_CONFIRM,
+    RECEIPT_MANAGE_SELECT,
+    RECEIPT_EDIT_QUANTITY,
+    RECEIPT_DELETE_CONFIRM,
+) = range(500, 547)
 
 
 def current_employee_or_none(update):
@@ -120,6 +145,10 @@ def current_employee_name(update):
 
 def consumables_main_keyboard(update):
     return build_consumables_menu_keyboard(manager=is_manager(current_employee_or_none(update)))
+
+
+def consumables_receipt_keyboard(update):
+    return build_consumables_receipt_menu_keyboard(manager=is_manager(current_employee_or_none(update)))
 
 
 def consumables_supplies_keyboard(update):
@@ -315,6 +344,160 @@ def inventory_count_text(context):
     return f"🔢 Пересчет расходников\n\nЗаполнено: {len(counts)}"
 
 
+def receipt_layout_photos_keyboard(has_photos):
+    rows = []
+    if has_photos:
+        rows.append([InlineKeyboardButton("✅ Фото загружены", callback_data="receiptphotos:done")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def receipt_document_kind_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Нет бумажного документа", callback_data="receiptdoc:no_paper")],
+            [InlineKeyboardButton("Скан-копия", callback_data="receiptdoc:scan")],
+            [InlineKeyboardButton("Фото", callback_data="receiptdoc:photo")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
+def receipt_document_files_keyboard(has_files):
+    rows = []
+    if has_files:
+        rows.append([InlineKeyboardButton("✅ Документы загружены", callback_data="receiptdocs:done")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def receipt_preview_text(context):
+    item = get_consumable_item(context.user_data.get("receipt_item_id"))
+    item_name = item["name"] if item else "Расходник"
+    document_labels = {
+        "no_paper": "Нет бумажного документа",
+        "scan": "Скан-копия",
+        "photo": "Фото",
+    }
+    return "\n".join(
+        [
+            "📥 Приемка расходника",
+            "",
+            f"Расходник: {item_name}",
+            f"Количество: {format_quantity(context.user_data.get('receipt_quantity'))} {item.get('unit', 'шт') if item else 'шт'}",
+            f"Фото приемки: {len(context.user_data.get('receipt_layout_photo_file_ids', []))}",
+            "Закрывающий документ: " + document_labels[context.user_data["receipt_document_kind"]],
+            f"Вложений документа: {len(context.user_data.get('receipt_document_file_ids', []))}",
+        ]
+    )
+
+
+def receipt_manage_keyboard(receipts):
+    rows = []
+    for receipt in receipts:
+        created_at = receipt.get("created_at")
+        created_text = created_at.strftime("%d.%m %H:%M") if created_at else ""
+        label = (
+            f"{created_text} · {button_text(receipt['item_name'], limit=30)} · "
+            f"{format_quantity(receipt['quantity'])} {receipt['unit']}"
+        )
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"consreceiptmanage:{receipt['receipt_id']}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def receipt_delete_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗑 Да, удалить приемку", callback_data="consreceiptdelete:yes")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
+def inventory_session_text(session, records):
+    counted = sum(1 for record in records if record["counted"])
+    lines = [
+        "🔢 Параллельный пересчет расходников",
+        "",
+        f"Участников: {session['participant_count']}",
+        f"Посчитано: {counted} из {len(records)}",
+    ]
+    if counted:
+        lines.extend(["", "Последние внесенные значения:"])
+        for record in records:
+            if not record["counted"]:
+                continue
+            counted_at = record.get("counted_at")
+            changed_at = counted_at.strftime("%d.%m %H:%M") if counted_at else ""
+            lines.append(
+                f"• {button_text(record['item_name'], limit=36)}: "
+                f"{format_quantity(record['counted_quantity'])} {record['unit']} — "
+                f"{record.get('counted_by_name') or '—'} {changed_at}".strip()
+            )
+    return "\n".join(lines)
+
+
+def inventory_session_keyboard(records):
+    rows = []
+    for record in records:
+        status = "⬜"
+        if record["counted"]:
+            status = "✅"
+        label = f"{status} {button_text(record['item_name'], limit=46)}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"consinventoryitem:{record['item_id']}",
+                )
+            ]
+        )
+    if any(record["counted"] for record in records):
+        rows.append([InlineKeyboardButton("✅ Завершить пересчет", callback_data="consinventory:finish")])
+    rows.append([InlineKeyboardButton("❌ Выйти", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def inventory_exit_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("💾 Сохранить и выйти", callback_data="consinventory:exit:save")],
+            [InlineKeyboardButton("↩️ Продолжить пересчет", callback_data="consinventory:exit:resume")],
+            [InlineKeyboardButton("🗑 Удалить черновик", callback_data="consinventory:exit:discard")],
+        ]
+    )
+
+
+def inventory_discard_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗑 Да, удалить черновик", callback_data="consinventory:discard:yes")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="consinventory:exit:resume")],
+        ]
+    )
+
+
+def inventory_complete_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Завершить и применить", callback_data="consinventory:complete:yes")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="consinventory:complete:no")],
+        ]
+    )
+
+
+def inventory_pdf_keyboard(sessions):
+    rows = []
+    for inventory_session in sessions:
+        completed_at = inventory_session.get("completed_at") or inventory_session.get("created_at")
+        completed_text = completed_at.strftime("%d.%m.%Y %H:%M") if completed_at else ""
+        label = f"{completed_text} · {inventory_session.get('completed_by_name') or inventory_session.get('created_by_name') or '-'}"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"consinventorypdf:{inventory_session['session_id']}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 def comparison_is_large(diff, current_quantity):
     diff = abs(float(diff or 0))
     current_quantity = abs(float(current_quantity or 0))
@@ -445,26 +628,6 @@ def format_movements_text(movements):
     return "\n".join(lines)
 
 
-def format_inventory_counts_text(records):
-    if not records:
-        return "📋 Последние пересчеты\n\nПересчетов пока нет."
-    lines = ["📋 Последние пересчеты", ""]
-    for record in records:
-        created = record["created_at"].strftime("%d.%m.%Y %H:%M") if record.get("created_at") else ""
-        diff = float(record["difference"] or 0)
-        sign = "+" if diff > 0 else ""
-        lines.append(f"{created} · {record['item_name']}")
-        lines.append(
-            f"Система: {format_quantity(record['system_quantity'])} {record['unit']} · "
-            f"Факт: {format_quantity(record['counted_quantity'])} {record['unit']} · "
-            f"Расхождение: {sign}{format_quantity(diff)}"
-        )
-        if record.get("counted_by_name"):
-            lines.append(f"Считал: {record['counted_by_name']}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
 def format_rules_text(product_name, rules):
     lines = [f"⚙️ Нормы расходников\n\nТовар: {product_name}", ""]
     if not rules:
@@ -515,6 +678,14 @@ async def consumables_counting_menu(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 
+async def consumables_receipt_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    set_consumables_module(context, "receipt")
+    await query.edit_message_text("📥 Приемка расходника", reply_markup=consumables_receipt_keyboard(update))
+    return ConversationHandler.END
+
+
 async def consumables_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     module = context.user_data.get("consumables_module")
     context.user_data.clear()
@@ -538,6 +709,315 @@ async def consumables_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text("Действие отменено.", reply_markup=keyboard)
 
+    return ConversationHandler.END
+
+
+async def receipt_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    set_consumables_module(context, "receipt")
+    items = get_consumable_items(active_only=True)
+    if not items:
+        await query.edit_message_text("Расходники пока не заведены.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите принятый расходник:",
+        reply_markup=consumable_items_keyboard(items, "consreceiptitem"),
+    )
+    return RECEIPT_ITEM_SELECT
+
+
+async def receipt_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["receipt_item_id"] = int(query.data.replace("consreceiptitem:", ""))
+    item = get_consumable_item(context.user_data["receipt_item_id"])
+    if not item:
+        await query.edit_message_text("Расходник не найден.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    await query.edit_message_text(
+        f"Введите принятое количество ({item['unit']}):",
+        reply_markup=consumables_back_keyboard(),
+    )
+    return RECEIPT_QUANTITY
+
+
+async def receipt_quantity_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quantity = safe_float(update.message.text)
+    if quantity <= 0:
+        await update.message.reply_text("Введите число больше нуля:")
+        return RECEIPT_QUANTITY
+    context.user_data["receipt_quantity"] = quantity
+    context.user_data["receipt_layout_photo_file_ids"] = []
+    await update.message.reply_text(
+        "Отправьте фото принятого расходника, разложенного на складе. Можно добавить несколько фото.",
+        reply_markup=receipt_layout_photos_keyboard(False),
+    )
+    return RECEIPT_LAYOUT_PHOTOS
+
+
+async def receipt_layout_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photos = context.user_data.setdefault("receipt_layout_photo_file_ids", [])
+    photos.append({"file_id": update.message.photo[-1].file_id, "kind": "photo"})
+    await update.message.reply_text(
+        f"Фото добавлено ✅ Всего: {len(photos)}. Отправьте еще фото или нажмите «Фото загружены».",
+        reply_markup=receipt_layout_photos_keyboard(True),
+    )
+    return RECEIPT_LAYOUT_PHOTOS
+
+
+async def receipt_layout_photos_finished(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not context.user_data.get("receipt_layout_photo_file_ids"):
+        await query.edit_message_text(
+            "Нужно добавить хотя бы одно фото приемки.",
+            reply_markup=receipt_layout_photos_keyboard(False),
+        )
+        return RECEIPT_LAYOUT_PHOTOS
+    await query.edit_message_text(
+        "Выберите тип закрывающего документа:",
+        reply_markup=receipt_document_kind_keyboard(),
+    )
+    return RECEIPT_DOCUMENT_KIND
+
+
+async def receipt_document_kind_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kind = query.data.replace("receiptdoc:", "")
+    context.user_data["receipt_document_kind"] = kind
+    context.user_data["receipt_document_file_ids"] = []
+    if kind == "no_paper":
+        await query.edit_message_text(
+            receipt_preview_text(context),
+            reply_markup=confirm_keyboard("receipt:confirm"),
+        )
+        return RECEIPT_CONFIRM
+    await query.edit_message_text(
+        "Отправьте закрывающий документ. Можно добавить несколько файлов или фото.",
+        reply_markup=receipt_document_files_keyboard(False),
+    )
+    return RECEIPT_DOCUMENT_FILES
+
+
+async def receipt_document_file_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        file_kind = "photo"
+    elif update.message.document:
+        file_id = update.message.document.file_id
+        file_kind = "document"
+    else:
+        await update.message.reply_text(
+            "Отправьте документ или фото закрывающего документа.",
+            reply_markup=receipt_document_files_keyboard(
+                bool(context.user_data.get("receipt_document_file_ids"))
+            ),
+        )
+        return RECEIPT_DOCUMENT_FILES
+    files = context.user_data.setdefault("receipt_document_file_ids", [])
+    files.append({"file_id": file_id, "kind": file_kind})
+    await update.message.reply_text(
+        f"Документ добавлен ✅ Всего: {len(files)}. Отправьте еще файл или нажмите «Документы загружены».",
+        reply_markup=receipt_document_files_keyboard(True),
+    )
+    return RECEIPT_DOCUMENT_FILES
+
+
+async def receipt_document_files_finished(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not context.user_data.get("receipt_document_file_ids"):
+        await query.edit_message_text(
+            "Нужно добавить хотя бы один закрывающий документ.",
+            reply_markup=receipt_document_files_keyboard(False),
+        )
+        return RECEIPT_DOCUMENT_FILES
+    await query.edit_message_text(
+        receipt_preview_text(context),
+        reply_markup=confirm_keyboard("receipt:confirm"),
+    )
+    return RECEIPT_CONFIRM
+
+
+async def receipt_confirm_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    try:
+        receipt = create_consumable_receipt(
+            item_id=context.user_data["receipt_item_id"],
+            quantity=context.user_data["receipt_quantity"],
+            accepted_by_user_id=update.effective_user.id,
+            accepted_by_name=current_employee_name(update),
+            layout_photo_file_ids=context.user_data.get("receipt_layout_photo_file_ids"),
+            closing_document_kind=context.user_data.get("receipt_document_kind", "no_paper"),
+            closing_document_file_ids=context.user_data.get("receipt_document_file_ids"),
+        )
+    except RuntimeError as error:
+        await query.edit_message_text(f"Не удалось сохранить приемку: {error}", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    try:
+        _, topic_status = await send_receipt_to_consumables_topic(context, receipt)
+    except Exception as error:
+        logging.exception("Не удалось отправить отчет о приемке расходников в тему")
+        topic_status = f"Приемка сохранена, но отчет в тему не отправлен ⚠️\nОшибка: {error}"
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Приемка расходника сохранена ✅\n\n"
+        f"{receipt['item_name']}: +{format_quantity(receipt['quantity'])} {receipt['unit']}\n\n"
+        f"{topic_status}",
+        reply_markup=consumables_main_keyboard(update),
+    )
+    return ConversationHandler.END
+
+
+def receipt_document_kind_text(kind):
+    return {
+        "no_paper": "Нет бумажного документа",
+        "scan": "Скан-копия",
+        "photo": "Фото",
+    }.get(kind, "—")
+
+
+def receipt_topic_caption(receipt):
+    return "\n".join(
+        [
+            "📥 Приемка расходников",
+            "",
+            f"Расходник: {receipt['item_name']}",
+            f"Количество: +{format_quantity(receipt['quantity'])} {receipt['unit']}",
+            f"Принял: {receipt['accepted_by_name'] or '—'}",
+            f"Закрывающий документ: {receipt_document_kind_text(receipt['closing_document_kind'])}",
+        ]
+    )
+
+
+async def send_receipt_to_consumables_topic(context: ContextTypes.DEFAULT_TYPE, receipt):
+    if not GROUP_CHAT_ID:
+        return [], "GROUP_CHAT_ID не настроен, отчет в тему не отправлен."
+
+    kwargs = {"chat_id": int(GROUP_CHAT_ID)}
+    if CONSUMABLES_TOPIC_ID:
+        kwargs["message_thread_id"] = int(CONSUMABLES_TOPIC_ID)
+
+    message_ids = []
+    for index, photo in enumerate(receipt["layout_photo_file_ids"]):
+        message = await context.bot.send_photo(
+            **kwargs,
+            photo=photo["file_id"],
+            caption=receipt_topic_caption(receipt) if index == 0 else "Фото приемки расходников",
+        )
+        message_ids.append(message.message_id)
+
+    closing_documents = receipt["closing_document_file_ids"]
+    for index, document in enumerate(closing_documents):
+        caption = "Закрывающий документ" if index == 0 else "Закрывающий документ (продолжение)"
+        if document.get("kind") == "photo":
+            message = await context.bot.send_photo(
+                **kwargs,
+                photo=document["file_id"],
+                caption=caption,
+            )
+        else:
+            message = await context.bot.send_document(
+                **kwargs,
+                document=document["file_id"],
+                caption=caption,
+            )
+        message_ids.append(message.message_id)
+    return message_ids, "Отчет о приемке отправлен в тему расходников ✅"
+
+
+async def receipt_manage_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    action = "edit" if query.data == "cons:receipt_edit" else "delete"
+    receipts = list_consumable_receipts(limit=30)
+    if not receipts:
+        await query.edit_message_text("Приемок пока нет.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    set_consumables_module(context, "receipt")
+    context.user_data["receipt_manage_action"] = action
+    title = "Выберите приемку для изменения количества:" if action == "edit" else "Выберите приемку для удаления:"
+    await query.edit_message_text(title, reply_markup=receipt_manage_keyboard(receipts))
+    return RECEIPT_MANAGE_SELECT
+
+
+async def receipt_manage_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    receipt = get_consumable_receipt(query.data.replace("consreceiptmanage:", ""))
+    if not receipt:
+        await query.edit_message_text("Приемка не найдена.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    context.user_data["receipt_manage_id"] = receipt["receipt_id"]
+    action = context.user_data.get("receipt_manage_action")
+    if action == "edit":
+        await query.edit_message_text(
+            "Изменение приемки\n\n"
+            f"{receipt['item_name']}\n"
+            f"Текущее количество: {format_quantity(receipt['quantity'])} {receipt['unit']}\n\n"
+            "Введите новое количество:",
+            reply_markup=consumables_back_keyboard(),
+        )
+        return RECEIPT_EDIT_QUANTITY
+    await query.edit_message_text(
+        "Удалить приемку и вычесть ее количество из остатка?\n\n"
+        f"{receipt['item_name']}: {format_quantity(receipt['quantity'])} {receipt['unit']}",
+        reply_markup=receipt_delete_confirm_keyboard(),
+    )
+    return RECEIPT_DELETE_CONFIRM
+
+
+async def receipt_edit_quantity_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quantity = safe_float(update.message.text)
+    if quantity <= 0:
+        await update.message.reply_text("Введите количество больше нуля:")
+        return RECEIPT_EDIT_QUANTITY
+    try:
+        receipt = update_consumable_receipt_quantity(
+            context.user_data.get("receipt_manage_id"),
+            quantity,
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await update.message.reply_text(str(error), reply_markup=consumables_main_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.clear()
+    if not receipt:
+        await update.message.reply_text("Приемка не найдена.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "Приемка изменена ✅\n\n"
+        f"{receipt['item_name']}: {format_quantity(receipt['quantity'])} {receipt['unit']}",
+        reply_markup=consumables_main_keyboard(update),
+    )
+    return ConversationHandler.END
+
+
+async def receipt_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    receipt = delete_consumable_receipt(
+        context.user_data.get("receipt_manage_id"),
+        update.effective_user.id,
+        current_employee_name(update),
+    )
+    context.user_data.clear()
+    if not receipt:
+        await query.edit_message_text("Приемка не найдена.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Приемка удалена, остаток скорректирован ✅\n\n"
+        f"{receipt['item_name']}: -{format_quantity(receipt['quantity'])} {receipt['unit']}",
+        reply_markup=consumables_main_keyboard(update),
+    )
     return ConversationHandler.END
 
 
@@ -699,8 +1179,27 @@ async def stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data["consumables_module"] = "counting"
+    items = get_consumable_items(active_only=True)
+    if not items:
+        await query.edit_message_text(
+            "Расходники пока не заведены.",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        return ConversationHandler.END
+    filename = f"consumables_stock_{datetime.now().strftime('%Y-%m-%d')}.pdf"
+    report_path = create_consumables_stock_pdf(items, filename=filename)
+    try:
+        with report_path.open("rb") as document:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=document,
+                filename=filename,
+                caption="Остатки расходников",
+            )
+    finally:
+        Path(report_path).unlink(missing_ok=True)
     await query.edit_message_text(
-        format_stock_text(get_consumable_items(active_only=True)),
+        "PDF с остатками отправлен ✅",
         reply_markup=consumables_counting_keyboard(update),
     )
     return ConversationHandler.END
@@ -717,45 +1216,80 @@ async def movements_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def inventory_recent_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["consumables_module"] = "counting"
-    await query.edit_message_text(
-        format_inventory_counts_text(get_recent_inventory_counts(limit=20)),
-        reply_markup=consumables_counting_keyboard(update),
-    )
-    return ConversationHandler.END
-
-
 async def inventory_count_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     set_consumables_module(context, "counting")
-    items = get_consumable_items(active_only=True)
-    if not items:
+    if not get_consumable_items(active_only=True):
         await query.edit_message_text("Расходники пока не заведены.", reply_markup=consumables_counting_keyboard(update))
         return ConversationHandler.END
-    context.user_data["inventory_items"] = items
-    context.user_data["inventory_counts"] = {}
-    await query.edit_message_text(inventory_count_text(context), reply_markup=inventory_count_keyboard(context))
+    inventory_session = get_or_create_active_inventory_session(
+        update.effective_user.id,
+        current_employee_name(update),
+    )
+    context.user_data["inventory_session_id"] = inventory_session["session_id"]
+    records = get_inventory_session_items(inventory_session["session_id"])
+    await query.edit_message_text(
+        inventory_session_text(inventory_session, records),
+        reply_markup=inventory_session_keyboard(records),
+    )
     return INVENTORY_ITEM_SELECT
 
 
 async def inventory_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not context.user_data.get("inventory_session_id"):
+        await query.edit_message_text("Откройте пересчет заново.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
     context.user_data["inventory_item_id"] = int(query.data.replace("consinventoryitem:", ""))
     item = get_consumable_item(context.user_data["inventory_item_id"])
     item_name = item["name"] if item else "Расходник"
-    await query.edit_message_text(f"Введите фактическое количество:\n\n{item_name}", reply_markup=inventory_quantity_keyboard())
+    current_record = next(
+        (
+            record
+            for record in get_inventory_session_items(context.user_data["inventory_session_id"])
+            if int(record["item_id"]) == context.user_data["inventory_item_id"]
+        ),
+        None,
+    )
+    current_value_text = ""
+    if current_record and current_record["counted"]:
+        current_value_text = (
+            f"\n\nТекущее значение: "
+            f"{format_quantity(current_record['counted_quantity'])} {current_record['unit']}"
+        )
+    await query.edit_message_text(
+        f"Введите фактическое количество:\n\n{item_name}{current_value_text}",
+        reply_markup=inventory_quantity_keyboard(),
+    )
     return INVENTORY_QUANTITY
 
 
 async def inventory_back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(inventory_count_text(context), reply_markup=inventory_count_keyboard(context))
+    session_id = context.user_data.get("inventory_session_id")
+    inventory_session = get_or_create_active_inventory_session(
+        update.effective_user.id,
+        current_employee_name(update),
+    ) if not session_id else None
+    if inventory_session:
+        session_id = inventory_session["session_id"]
+        context.user_data["inventory_session_id"] = session_id
+    records = get_inventory_session_items(session_id)
+    session_info = inventory_session or {
+        "participant_count": 0,
+    }
+    if not inventory_session:
+        session_info = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+    if not session_info or session_info["status"] != "draft":
+        await query.edit_message_text("Пересчет уже завершен.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    await query.edit_message_text(
+        inventory_session_text(session_info, records),
+        reply_markup=inventory_session_keyboard(records),
+    )
     return INVENTORY_ITEM_SELECT
 
 
@@ -764,48 +1298,226 @@ async def inventory_quantity_received(update: Update, context: ContextTypes.DEFA
     if quantity < 0:
         await update.message.reply_text("Введите число от 0 и выше:")
         return INVENTORY_QUANTITY
-    context.user_data.setdefault("inventory_counts", {})[str(context.user_data["inventory_item_id"])] = quantity
+    try:
+        save_inventory_session_item(
+            context.user_data["inventory_session_id"],
+            context.user_data["inventory_item_id"],
+            quantity,
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await update.message.reply_text(str(error), reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
     context.user_data.pop("inventory_item_id", None)
-    await update.message.reply_text(inventory_count_text(context), reply_markup=inventory_count_keyboard(context))
+    session_id = context.user_data["inventory_session_id"]
+    inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+    records = get_inventory_session_items(session_id)
+    await update.message.reply_text(
+        inventory_session_text(inventory_session, records),
+        reply_markup=inventory_session_keyboard(records),
+    )
     return INVENTORY_ITEM_SELECT
 
 
 async def inventory_count_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    counts = context.user_data.get("inventory_counts", {})
-    if not counts:
-        await query.edit_message_text(inventory_count_text(context), reply_markup=inventory_count_keyboard(context))
+    session_id = context.user_data.get("inventory_session_id")
+    if not session_id:
+        await query.edit_message_text("Откройте пересчет заново.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    records = get_inventory_session_items(session_id)
+    counted = sum(1 for record in records if record["counted"])
+    if not counted:
+        await query.edit_message_text(
+            "Сначала укажите количество хотя бы одного расходника.",
+            reply_markup=inventory_session_keyboard(records),
+        )
+        return INVENTORY_ITEM_SELECT
+    uncounted = len(records) - counted
+    await query.edit_message_text(
+        f"Завершить пересчет?\n\nПосчитано: {counted} из {len(records)}.\n"
+        f"Непосчитано: {uncounted}.",
+        reply_markup=inventory_complete_keyboard(),
+    )
+    return INVENTORY_ITEM_SELECT
+
+
+async def inventory_complete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    session_id = context.user_data.get("inventory_session_id")
+    if not session_id:
+        await query.edit_message_text("Откройте пересчет заново.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+
+    if query.data == "consinventory:complete:no":
+        inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+        records = get_inventory_session_items(session_id)
+        await query.edit_message_text(
+            inventory_session_text(inventory_session, records),
+            reply_markup=inventory_session_keyboard(records),
+        )
         return INVENTORY_ITEM_SELECT
 
-    counted_by = current_employee_name(update)
-    batch = create_inventory_count_batch(
-        counts,
-        counted_by_user_id=update.effective_user.id,
-        counted_by_name=counted_by,
-    )
-    pdf_path = create_inventory_count_pdf(
-        batch["records"],
-        counted_by_name=counted_by,
-        filename=f"consumables_inventory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-    )
-    topic_status = "PDF не отправлен: GROUP_CHAT_ID не настроен."
-    if GROUP_CHAT_ID:
-        kwargs = {"chat_id": int(GROUP_CHAT_ID)}
-        if CONSUMABLES_TOPIC_ID:
-            kwargs["message_thread_id"] = int(CONSUMABLES_TOPIC_ID)
-        with open(pdf_path, "rb") as file:
-            await context.bot.send_document(
-                **kwargs,
-                document=file,
-                filename=pdf_path.name,
-                caption=f"🔢 Пересчет расходников\nСотрудник: {counted_by}",
-            )
-        topic_status = "PDF отправлен в тему расходников ✅"
+    try:
+        result = complete_inventory_session(
+            session_id,
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await query.edit_message_text(str(error), reply_markup=consumables_counting_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
 
+    try:
+        topic_status = await send_completed_inventory_pdf_to_topic(context, result)
+    except Exception as error:
+        logging.exception("Не удалось отправить PDF пересчета расходников в тему")
+        topic_status = f"PDF пересчета не отправлен в тему ⚠️\nОшибка: {error}"
     context.user_data.clear()
     await query.edit_message_text(
-        f"Пересчет сохранен ✅\nЗаполнено позиций: {len(batch['records'])}\n{topic_status}",
+        "Пересчет завершен и применен ✅\n\n"
+        f"Зафиксировано позиций: {len(result['records'])}.\n"
+        f"{topic_status}",
+        reply_markup=consumables_counting_keyboard(update),
+    )
+    return ConversationHandler.END
+
+
+async def send_completed_inventory_pdf_to_topic(context: ContextTypes.DEFAULT_TYPE, result):
+    if not GROUP_CHAT_ID:
+        return "GROUP_CHAT_ID не настроен, PDF пересчета в тему не отправлен."
+
+    inventory_session = result["session"]
+    session_id = inventory_session["session_id"]
+    filename = f"consumables_inventory_{session_id}.pdf"
+    report_path = create_inventory_count_pdf(
+        result["records"],
+        counted_by_name=inventory_session.get("completed_by_name", ""),
+        filename=filename,
+    )
+    kwargs = {"chat_id": int(GROUP_CHAT_ID)}
+    if CONSUMABLES_TOPIC_ID:
+        kwargs["message_thread_id"] = int(CONSUMABLES_TOPIC_ID)
+    try:
+        with report_path.open("rb") as document:
+            await context.bot.send_document(
+                **kwargs,
+                document=document,
+                filename=filename,
+                caption="Завершенный пересчет расходников",
+            )
+    finally:
+        Path(report_path).unlink(missing_ok=True)
+    return "PDF пересчета отправлен в тему расходников ✅"
+
+
+async def inventory_exit_requested(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not context.user_data.get("inventory_session_id"):
+        return await consumables_cancel(update, context)
+    await query.edit_message_text(
+        "Пересчет сохранен как черновик. Что сделать дальше?",
+        reply_markup=inventory_exit_keyboard(),
+    )
+    return INVENTORY_EXIT_CONFIRM
+
+
+async def inventory_exit_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    session_id = context.user_data.get("inventory_session_id")
+    action = query.data.rsplit(":", 1)[-1]
+
+    if action == "save":
+        context.user_data.clear()
+        await query.edit_message_text(
+            "Черновик пересчета сохранен ✅",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        return ConversationHandler.END
+    if action == "discard":
+        await query.edit_message_text(
+            "Удалить черновик пересчета без возможности восстановления?",
+            reply_markup=inventory_discard_confirm_keyboard(),
+        )
+        return INVENTORY_EXIT_CONFIRM
+
+    inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+    if not inventory_session or inventory_session["status"] != "draft":
+        await query.edit_message_text("Черновик не найден.", reply_markup=consumables_counting_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    records = get_inventory_session_items(session_id)
+    await query.edit_message_text(
+        inventory_session_text(inventory_session, records),
+        reply_markup=inventory_session_keyboard(records),
+    )
+    return INVENTORY_ITEM_SELECT
+
+
+async def inventory_discard_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    discarded = discard_inventory_session(context.user_data.get("inventory_session_id"))
+    context.user_data.clear()
+    text = "Черновик пересчета удален." if discarded else "Черновик уже завершен или не найден."
+    await query.edit_message_text(text, reply_markup=consumables_counting_keyboard(update))
+    return ConversationHandler.END
+
+
+async def inventory_pdf_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    set_consumables_module(context, "counting")
+    sessions = list_completed_inventory_sessions(limit=20)
+    if not sessions:
+        await query.edit_message_text(
+            "Завершенных пересчетов пока нет.",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите завершенный пересчет для выгрузки PDF:",
+        reply_markup=inventory_pdf_keyboard(sessions),
+    )
+    return INVENTORY_PDF_SELECT
+
+
+async def inventory_pdf_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    session_id = query.data.replace("consinventorypdf:", "")
+    records = get_completed_inventory_session_records(session_id)
+    if not records:
+        await query.edit_message_text(
+            "В выбранном пересчете нет позиций.",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        return ConversationHandler.END
+    session_info = get_inventory_session(session_id)
+    filename = f"consumables_inventory_{session_id}.pdf"
+    report_path = create_inventory_count_pdf(
+        records,
+        counted_by_name=(session_info or {}).get("completed_by_name", ""),
+        filename=filename,
+    )
+    try:
+        with report_path.open("rb") as document:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=document,
+                filename=filename,
+                caption="Пересчет расходников",
+            )
+    finally:
+        Path(report_path).unlink(missing_ok=True)
+    await query.edit_message_text(
+        "PDF пересчета отправлен ✅",
         reply_markup=consumables_counting_keyboard(update),
     )
     return ConversationHandler.END
@@ -1852,11 +2564,12 @@ async def supplier_delete_confirmed(update: Update, context: ContextTypes.DEFAUL
 def get_consumables_conversation_handler():
     return ConversationHandler(
         entry_points=[
+            CallbackQueryHandler(receipt_start, pattern=r"^cons:receipt$"),
+            CallbackQueryHandler(receipt_manage_start, pattern=r"^cons:receipt_(edit|delete)$"),
             CallbackQueryHandler(stock_view, pattern=r"^cons:stock$"),
             CallbackQueryHandler(movements_view, pattern=r"^cons:movements$"),
             CallbackQueryHandler(inventory_count_start, pattern=r"^cons:inventory_count$"),
-            CallbackQueryHandler(inventory_recent_view, pattern=r"^cons:inventory_recent$"),
-            CallbackQueryHandler(inventory_compare_start, pattern=r"^cons:inventory_compare$"),
+            CallbackQueryHandler(inventory_pdf_start, pattern=r"^cons:inventory_pdf$"),
             CallbackQueryHandler(add_supply_start, pattern=r"^cons:add_supply$"),
             CallbackQueryHandler(add_item_start, pattern=r"^cons:add_item$"),
             CallbackQueryHandler(add_stock_start, pattern=r"^cons:add_stock$"),
@@ -2008,15 +2721,63 @@ def get_consumables_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, rule_quantity_received),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
+            RECEIPT_ITEM_SELECT: [
+                CallbackQueryHandler(receipt_item_selected, pattern=r"^consreceiptitem:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receipt_quantity_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_LAYOUT_PHOTOS: [
+                MessageHandler(filters.PHOTO, receipt_layout_photo_received),
+                CallbackQueryHandler(receipt_layout_photos_finished, pattern=r"^receiptphotos:done$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_DOCUMENT_KIND: [
+                CallbackQueryHandler(receipt_document_kind_selected, pattern=r"^receiptdoc:(no_paper|scan|photo)$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_DOCUMENT_FILES: [
+                MessageHandler((filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, receipt_document_file_received),
+                MessageHandler(filters.ALL & ~filters.COMMAND, receipt_document_file_received),
+                CallbackQueryHandler(receipt_document_files_finished, pattern=r"^receiptdocs:done$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_CONFIRM: [
+                CallbackQueryHandler(receipt_confirm_received, pattern=r"^receipt:confirm$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_MANAGE_SELECT: [
+                CallbackQueryHandler(receipt_manage_selected, pattern=r"^consreceiptmanage:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_EDIT_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receipt_edit_quantity_received),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            RECEIPT_DELETE_CONFIRM: [
+                CallbackQueryHandler(receipt_delete_confirmed, pattern=r"^consreceiptdelete:yes$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
             INVENTORY_ITEM_SELECT: [
                 CallbackQueryHandler(inventory_item_selected, pattern=r"^consinventoryitem:"),
                 CallbackQueryHandler(inventory_count_finish, pattern=r"^consinventory:finish$"),
-                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+                CallbackQueryHandler(inventory_complete_confirmed, pattern=r"^consinventory:complete:(yes|no)$"),
+                CallbackQueryHandler(inventory_exit_requested, pattern=r"^cons:cancel$"),
             ],
             INVENTORY_QUANTITY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, inventory_quantity_received),
                 CallbackQueryHandler(inventory_back_to_list, pattern=r"^consinventory:back$"),
-                CallbackQueryHandler(inventory_back_to_list, pattern=r"^cons:cancel$"),
+                CallbackQueryHandler(inventory_exit_requested, pattern=r"^cons:cancel$"),
+            ],
+            INVENTORY_EXIT_CONFIRM: [
+                CallbackQueryHandler(inventory_exit_action, pattern=r"^consinventory:exit:(save|resume|discard)$"),
+                CallbackQueryHandler(inventory_discard_confirmed, pattern=r"^consinventory:discard:yes$"),
+            ],
+            INVENTORY_PDF_SELECT: [
+                CallbackQueryHandler(inventory_pdf_selected, pattern=r"^consinventorypdf:"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
             INVENTORY_COMPARE_SELECT: [
                 CallbackQueryHandler(inventory_compare_toggle, pattern=r"^conscompare:toggle:"),
@@ -2031,8 +2792,7 @@ def get_consumables_conversation_handler():
 def get_consumables_handlers():
     return [
         CallbackQueryHandler(consumables_menu, pattern=r"^section:consumables$"),
-        CallbackQueryHandler(consumables_supplies_menu, pattern=r"^cons:module_supplies$"),
-        CallbackQueryHandler(consumables_suppliers_menu, pattern=r"^cons:suppliers$"),
+        CallbackQueryHandler(consumables_receipt_menu, pattern=r"^cons:receipt_menu$"),
         CallbackQueryHandler(consumables_counting_menu, pattern=r"^cons:module_counting$"),
         get_consumables_conversation_handler(),
     ]
