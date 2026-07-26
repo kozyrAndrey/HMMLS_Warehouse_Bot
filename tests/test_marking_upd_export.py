@@ -47,7 +47,7 @@ class MarkingUpdExportTests(unittest.TestCase):
                 "1",
                 'ART-1 ХУДИ "DIAMOND HOODIE BLACK", ЧЕРНЫЙ S',
                 "11112.14953271",
-                "1",
+                "2",
                 "796",
                 "7%",
                 "КИЗ",
@@ -91,6 +91,7 @@ class MarkingUpdExportTests(unittest.TestCase):
         )
 
         self.assertEqual([row[0] for row in result], ["1", "1", "2"])
+        self.assertEqual([row[3] for row in result], ["2", "2", "1"])
         self.assertEqual([row[1] for row in result], [
             "ART-1 Первый товар",
             "ART-1 Первый товар",
