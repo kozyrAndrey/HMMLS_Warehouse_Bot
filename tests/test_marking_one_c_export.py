@@ -129,7 +129,7 @@ class MarkingOneCExportTests(unittest.TestCase):
         )
 
         self.assertEqual(len(items), 2)
-        item = items[1]
+        item = items[0]
         self.assertEqual(item.article, "BAG-1")
         self.assertEqual(
             item.honest_sign_name,
@@ -146,10 +146,10 @@ class MarkingOneCExportTests(unittest.TestCase):
             render_one_c_xlsx(items, path)
             worksheet = load_workbook(path)["Список товаров"]
 
-        self.assertEqual(worksheet["C5"].value, item.honest_sign_name)
-        self.assertEqual(worksheet["I5"].value, "250x190x100")
-        self.assertEqual(worksheet["L5"].value, 3)
-        self.assertIsNone(worksheet["N5"].value)
+        self.assertEqual(worksheet["C4"].value, item.honest_sign_name)
+        self.assertEqual(worksheet["I4"].value, "250x190x100")
+        self.assertEqual(worksheet["L4"].value, 3)
+        self.assertIsNone(worksheet["N4"].value)
 
     def test_normalizes_all_gender_values(self):
         cases = {
@@ -325,11 +325,12 @@ class MarkingOneCExportTests(unittest.TestCase):
         )
 
         items = build_one_c_export_items(
-            [make_row(), second],
+            [second, make_row()],
             {GTIN: CATALOG_NAME, "04670332747728": "РУБАШКА ЧЕРНАЯ M"},
         )
 
         self.assertEqual(len(items), 2)
+        self.assertEqual([item.article for item in items], ["DS-L", "DS-M"])
         self.assertEqual({item.size for item in items}, {"L", "M"})
 
     def test_same_gtin_with_different_ean13_is_error(self):

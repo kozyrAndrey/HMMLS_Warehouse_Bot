@@ -475,6 +475,7 @@ def build_trend_island_upd_rows(rows, catalog_names):
         prepared_positions.append(
             {
                 "article": article,
+                "gtin": normalized_gtin,
                 "honest_sign_name": honest_sign_name,
                 "net_price": net_price,
                 "codes": codes,
@@ -485,8 +486,12 @@ def build_trend_island_upd_rows(rows, catalog_names):
         raise TrendExportValidationError(errors)
 
     csv_rows = []
-    row_number = 1
-    for item in prepared_positions:
+    row_numbers_by_gtin = {}
+    for item in sorted(prepared_positions, key=lambda item: item["article"].casefold()):
+        row_number = row_numbers_by_gtin.setdefault(
+            item["gtin"],
+            len(row_numbers_by_gtin) + 1,
+        )
         position_name = f"{item['article']} {item['honest_sign_name']}"
         price_text = format(item["net_price"], ".8f")
         for code in item["codes"]:
@@ -502,7 +507,6 @@ def build_trend_island_upd_rows(rows, catalog_names):
                     str(code),
                 ]
             )
-            row_number += 1
     return csv_rows
 
 

@@ -618,7 +618,7 @@ def build_one_c_export_items(
             price_type=price_type,
         )
     )
-    return items
+    return sorted(items, key=lambda item: item.article.casefold())
 
 
 def copy_row_style(source_cells, target_cells):

@@ -54,8 +54,48 @@ class MarkingUpdExportTests(unittest.TestCase):
                 code_one,
             ],
         )
-        self.assertEqual(result[1][0], "2")
+        self.assertEqual(result[1][0], "1")
         self.assertEqual(result[1][7], code_two)
+
+    def test_numbers_all_codes_of_the_same_gtin_identically(self):
+        rows = [
+            {
+                "name": "Другой товар",
+                "article": "ART-2",
+                "gtin": "4670332747734",
+                "sale_price": "49",
+                "codes": ["CODE-3"],
+            },
+            {
+                "name": "Тот же товар",
+                "article": "ART-1",
+                "gtin": "04670332744239",
+                "sale_price": "49",
+                "codes": ["CODE-2"],
+            },
+            {
+                "name": "Первый товар",
+                "article": "ART-1",
+                "gtin": "4670332744239",
+                "sale_price": "49",
+                "codes": ["CODE-1"],
+            },
+        ]
+
+        result = build_trend_island_upd_rows(
+            rows,
+            {
+                "4670332744239": "Первый товар",
+                "4670332747734": "Другой товар",
+            },
+        )
+
+        self.assertEqual([row[0] for row in result], ["1", "1", "2"])
+        self.assertEqual([row[1] for row in result], [
+            "ART-1 Первый товар",
+            "ART-1 Первый товар",
+            "ART-2 Другой товар",
+        ])
 
     def test_csv_matches_reference_dialect_and_preserves_code(self):
         code = "010467033274423921ABC123XYZ"
