@@ -2,6 +2,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telegram.ext import ConversationHandler
+
+from core.keyboards import build_marking_menu_keyboard
 from modules.marking.handlers import (
     MARKING_DISCOUNTS,
     MARKING_DOCUMENT_NAME,
@@ -17,10 +20,33 @@ from modules.marking.handlers import (
     trend_export_start,
     stock_codes_export_start,
     trend_unmarked_quantity_received,
+    catalog_start,
 )
 
 
 class MarkingHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_employee_menu_contains_all_actions_except_catalog(self):
+        callbacks = [
+            button.callback_data
+            for row in build_marking_menu_keyboard(manager=False).inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("marking:stock_codes_export", callbacks)
+        self.assertIn("marking:trend_export", callbacks)
+        self.assertIn("marking:duplicate_chz", callbacks)
+        self.assertNotIn("marking:catalog", callbacks)
+
+    async def test_catalog_remains_manager_only(self):
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query)
+
+        with patch("modules.marking.handlers.ensure_manager", return_value=False):
+            state = await catalog_start(update, SimpleNamespace(user_data={}))
+
+        self.assertEqual(state, ConversationHandler.END)
+        self.assertIn("только руководителям", query.edit_message_text.await_args.args[0])
+
     async def test_stock_codes_export_is_available_without_manager_role(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query)

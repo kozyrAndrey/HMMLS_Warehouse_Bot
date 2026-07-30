@@ -25,6 +25,12 @@ PERIODS_SHEET = "Расчетные периоды"
 KPI_DAILY_SHEET = "KPI за день"
 PAYMENT_MODE_HOURLY = "hourly"
 PAYMENT_MODE_SHIFT = "shift"
+SHIFT_TYPE_FULL = "full"
+SHIFT_TYPE_HALF = "half"
+SHIFT_TYPE_LABELS = {
+    SHIFT_TYPE_FULL: "10:00 — полная смена",
+    SHIFT_TYPE_HALF: "15:00 — половина смены",
+}
 PAYMENT_MODE_LABELS = {
     PAYMENT_MODE_HOURLY: "По часам",
     PAYMENT_MODE_SHIFT: "Посменно",
@@ -51,6 +57,7 @@ REPORT_HEADERS = [
     "telegram_user_id",
     "Рабочий промежуток",
     "Отработано часов",
+    "Тип смены",
     "Задачи",
     "KPI данные",
     "KPI сумма",
@@ -172,6 +179,25 @@ def normalize_payment_mode(value):
 def payment_mode_label(value):
     mode = normalize_payment_mode(value)
     return PAYMENT_MODE_LABELS.get(mode, PAYMENT_MODE_LABELS[PAYMENT_MODE_HOURLY])
+
+
+def normalize_shift_type(value):
+    value = str(value or "").strip().lower()
+    if value in {SHIFT_TYPE_FULL, "полная", "full_shift"}:
+        return SHIFT_TYPE_FULL
+    if value in {SHIFT_TYPE_HALF, "половина", "half_shift"}:
+        return SHIFT_TYPE_HALF
+    return ""
+
+
+def shift_type_label(value):
+    return SHIFT_TYPE_LABELS.get(normalize_shift_type(value), "Не указан")
+
+
+def paid_hours_for_report(hours, payment_mode, shift_type=""):
+    if normalize_payment_mode(payment_mode) != PAYMENT_MODE_SHIFT:
+        return safe_float(hours)
+    return 4.0 if normalize_shift_type(shift_type) == SHIFT_TYPE_HALF else 8.0
 
 
 def date_in_range(value, start_date, end_date):
@@ -401,6 +427,9 @@ def sync_kpi_sheet(worksheet):
 
 
 def init_payroll_sheet():
+    from modules.storage.structured_sheets import init_structured_sheet_tables
+
+    init_structured_sheet_tables()
     employees_ws = get_worksheet(EMPLOYEES_SHEET, rows=200, cols=12)
     reports_ws = get_worksheet(REPORTS_SHEET, rows=3000, cols=20)
     expenses_ws = get_worksheet(EXPENSES_SHEET, rows=1000, cols=12)
@@ -734,7 +763,13 @@ def find_kpi_daily_row(report_date, employee_full_name):
     return None
 
 
-def calculate_daily_salary_total(employee, hours, kpi_items):
+def calculate_daily_salary_total(
+    employee,
+    hours,
+    kpi_items,
+    payment_mode=PAYMENT_MODE_HOURLY,
+    shift_type="",
+):
     """Считает дневную сумму для листа «KPI за день».
 
     Формула:
@@ -744,16 +779,24 @@ def calculate_daily_salary_total(employee, hours, kpi_items):
     количеств KPI, а именно дневная сумма в рублях.
     """
     hourly_rate = safe_hourly_rate(employee.get("hourly_rate", 0))
-    hours_value = safe_float(hours)
+    hours_value = paid_hours_for_report(hours, payment_mode, shift_type)
     kpi_sum = calculate_kpi_sum(kpi_items)
 
     return hours_value * hourly_rate + kpi_sum
 
 
-def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
+def upsert_daily_kpi_row(employee, report_date, hours, kpi_items, shift_type=""):
     ws = get_worksheet(KPI_DAILY_SHEET)
     quantity_map = build_kpi_daily_quantity_map(kpi_items)
-    daily_salary_total = calculate_daily_salary_total(employee, hours, kpi_items)
+    period = get_period_for_date(report_date)
+    payment_mode = period.get("payment_mode") if period else PAYMENT_MODE_HOURLY
+    daily_salary_total = calculate_daily_salary_total(
+        employee,
+        hours,
+        kpi_items,
+        payment_mode=payment_mode,
+        shift_type=shift_type,
+    )
 
     row = [
         report_date,
@@ -775,7 +818,16 @@ def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
         ws.append_row(row)
 
 
-def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data=None):
+def append_daily_report(
+    employee,
+    report_date,
+    interval,
+    hours,
+    tasks,
+    kpi_items,
+    telegram_data=None,
+    shift_type="",
+):
     telegram_data = telegram_data or {}
     ws = get_worksheet(REPORTS_SHEET)
     report_id = generate_id("report")
@@ -790,6 +842,7 @@ def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items
         employee.get("telegram_user_id", ""),
         interval,
         hours,
+        normalize_shift_type(shift_type),
         tasks,
         kpi_to_json(kpi_items),
         kpi_sum,
@@ -800,14 +853,15 @@ def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items
         created_at,
     ]
     ws.append_row(row)
-    upsert_daily_kpi_row(employee, report_date, hours, kpi_items)
+    upsert_daily_kpi_row(employee, report_date, hours, kpi_items, shift_type=shift_type)
     return report_id
 
 
 def update_daily_report(row_index, report_data):
     ws = get_worksheet(REPORTS_SHEET)
     values = [[report_data.get(header, "") for header in REPORT_HEADERS]]
-    ws.update(f"A{row_index}:O{row_index}", values)
+    end_col = column_letter(len(REPORT_HEADERS))
+    ws.update(f"A{row_index}:{end_col}{row_index}", values)
 
     employee = get_employee_by_id(report_data.get("employee_id"))
     if employee:
@@ -816,6 +870,7 @@ def update_daily_report(row_index, report_data):
             report_date=report_data.get("Дата", ""),
             hours=safe_float(report_data.get("Отработано часов")),
             kpi_items=kpi_from_json(report_data.get("KPI данные", "")),
+            shift_type=report_data.get("Тип смены", ""),
         )
 
 
@@ -846,12 +901,16 @@ def report_data_to_model(report_data):
         "full_name": report_data.get("ФИО", ""),
         "telegram_user_id": report_data.get("telegram_user_id", ""),
     }
+    report_date = report_data.get("Дата", "")
+    period = get_period_for_date(report_date)
     return {
         "report_id": report_data.get("report_id", ""),
-        "date": report_data.get("Дата", ""),
+        "date": report_date,
         "employee": employee,
         "interval": report_data.get("Рабочий промежуток", ""),
         "hours": safe_float(report_data.get("Отработано часов")),
+        "shift_type": normalize_shift_type(report_data.get("Тип смены", "")),
+        "payment_mode": period.get("payment_mode") if period else PAYMENT_MODE_HOURLY,
         "tasks": report_data.get("Задачи", ""),
         "kpi_items": kpi_from_json(report_data.get("KPI данные", "")),
         "kpi_sum": safe_float(report_data.get("KPI сумма")),
@@ -1067,6 +1126,14 @@ def get_periods():
             "updated_at": str(record.get("Обновлено", "")),
         })
     return periods
+
+
+def get_period_for_date(report_date):
+    """Возвращает последний созданный период, включающий дату отчета."""
+    for period in reversed(get_periods()):
+        if date_in_range(report_date, period["start_date"], period["end_date"]):
+            return period
+    return None
 
 
 def find_active_period_row():

@@ -11,7 +11,7 @@ ROLE_PERMISSIONS = {
     "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
     "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
     "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products"},
-    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables"},
+    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables", "marking"},
     "viewer": {"last_records"},
 }
 

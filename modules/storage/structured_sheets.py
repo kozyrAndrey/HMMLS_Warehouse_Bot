@@ -29,6 +29,7 @@ SHEET_TABLES = {
             ("telegram_user_id", "telegram_user_id"),
             ("Рабочий промежуток", "work_interval"),
             ("Отработано часов", "worked_hours"),
+            ("Тип смены", "shift_type"),
             ("Задачи", "tasks"),
             ("KPI данные", "kpi_data"),
             ("KPI сумма", "kpi_sum"),

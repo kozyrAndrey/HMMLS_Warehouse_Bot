@@ -12,7 +12,10 @@ from modules.payroll.google_sheets import (
     get_reports_in_period,
     money,
     normalize_payment_mode,
+    normalize_shift_type,
+    paid_hours_for_report,
     PAYMENT_MODE_SHIFT,
+    SHIFT_TYPE_HALF,
 )
 from modules.payroll.vacations import get_vacations_in_period, vacation_amount_for_period
 
@@ -53,6 +56,8 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             "salary_without_expenses": 0.0,
             "salary_with_expenses": 0.0,
             "reports_count": 0,
+            "full_shifts": 0,
+            "half_shifts": 0,
         }
 
     for report in reports:
@@ -60,7 +65,17 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
         if employee_id not in totals:
             continue
         totals[employee_id]["hours"] += report["hours"]
-        totals[employee_id]["paid_hours"] += 8 if payment_mode == PAYMENT_MODE_SHIFT else report["hours"]
+        totals[employee_id]["paid_hours"] += paid_hours_for_report(
+            report["hours"],
+            payment_mode,
+            report.get("shift_type"),
+        )
+        if payment_mode == PAYMENT_MODE_SHIFT:
+            if normalize_shift_type(report.get("shift_type")) == SHIFT_TYPE_HALF:
+                totals[employee_id]["half_shifts"] += 1
+            else:
+                # Старые отчеты без типа смены сохраняют прежнюю оплату как полная смена.
+                totals[employee_id]["full_shifts"] += 1
         totals[employee_id]["kpi_sum"] += report["kpi_sum"]
         totals[employee_id]["reports_count"] += 1
 
@@ -172,6 +187,8 @@ def format_employee_salary_block(item):
     ]
 
     if item.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        lines.append(f"Полных смен: {item['full_shifts']}")
+        lines.append(f"Половин смен: {item['half_shifts']}")
         lines.append(f"Оплачиваемые часы: {money(item['paid_hours'])}")
 
     lines.extend(
@@ -226,6 +243,18 @@ def build_personal_salary_text(employee, period=None, show_bonus_details=False):
         employee["full_name"],
         f"Штрафы: {money(item['penalties'])}",
     ]
+
+    if item.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        lines.extend(
+            [
+                f"Фактические часы: {money(item['hours'])}",
+                f"Полных смен: {item['full_shifts']}",
+                f"Половин смен: {item['half_shifts']}",
+                f"Оплачиваемые часы: {money(item['paid_hours'])}",
+                f"Ставка: {money(item['hourly_rate'])}",
+                f"Оплата смен: {money(item['hourly_pay'])}",
+            ]
+        )
 
     if item["penalty_bonus"]:
         lines.append(f"Бонус от штрафов: {money(item['penalty_bonus'])}")
@@ -289,7 +318,18 @@ def format_payroll_statement_line(item):
     else:
         parts.append(f"{money_pretty(0)} (расходы)")
 
-    return f"{employee['full_name']}: " + " + ".join(parts) + f" = {money_pretty(item['salary_with_expenses'])}"
+    result = f"{employee['full_name']}: " + " + ".join(parts) + f" = {money_pretty(item['salary_with_expenses'])}"
+    if item.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        result += (
+            "\n"
+            f"Факт: {money_pretty(item['hours'])} ч.; "
+            f"полных смен: {item['full_shifts']}; "
+            f"половин смен: {item['half_shifts']}; "
+            f"оплачено: {money_pretty(item['paid_hours'])} ч.; "
+            f"ставка: {money_pretty(item['hourly_rate'])}; "
+            f"оплата смен: {money_pretty(item['hourly_pay'])}"
+        )
+    return result
 
 
 def build_full_payroll_text(period=None):

@@ -1,0 +1,17 @@
+{
+  "cat_362441baad": {
+    "name": "Джинсы",
+    "models": {
+      "model_2342d3e060": {
+        "name": "DIAMOND JEANS",
+        "variants": {
+          "variant_11fdd7ee78": {
+            "id": "custom_11fdd7ee78",
+            "color": "BLACK",
+            "name": "DIAMOND JEANS BLACK"
+          }
+        }
+      }
+    }
+  }
+}

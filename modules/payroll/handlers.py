@@ -41,6 +41,7 @@ from modules.payroll.google_sheets import (
     get_employee_by_id,
     get_employees,
     get_kpi_items,
+    get_period_for_date,
     get_periods,
     is_manager,
     list_expenses_in_period,
@@ -52,8 +53,12 @@ from modules.payroll.google_sheets import (
     report_data_to_model,
     safe_float,
     payment_mode_label,
+    shift_type_label,
+    normalize_shift_type,
     PAYMENT_MODE_HOURLY,
     PAYMENT_MODE_SHIFT,
+    SHIFT_TYPE_FULL,
+    SHIFT_TYPE_HALF,
     update_active_period,
     update_daily_report,
     update_report_message_ids,
@@ -128,7 +133,9 @@ from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_d
     VACATION_EDIT_START,
     VACATION_EDIT_END,
     VACATION_DELETE_SELECT,
-) = range(300, 354)
+    CREATE_SHIFT_TYPE,
+    EDIT_SHIFT_TYPE,
+) = range(300, 356)
 
 
 # ============================================================
@@ -287,14 +294,44 @@ def kpi_keyboard(prefix):
     return InlineKeyboardMarkup(rows)
 
 
-def edit_field_keyboard():
-    return InlineKeyboardMarkup(
+def edit_field_keyboard(include_shift_type=False):
+    rows = [
+        [InlineKeyboardButton("Рабочий промежуток", callback_data="editfield:interval")],
+        [InlineKeyboardButton("Отработано часов", callback_data="editfield:hours")],
+    ]
+    if include_shift_type:
+        rows.append([InlineKeyboardButton("Тип смены", callback_data="editfield:shift_type")])
+    rows.extend(
         [
-            [InlineKeyboardButton("Рабочий промежуток", callback_data="editfield:interval")],
-            [InlineKeyboardButton("Отработано часов", callback_data="editfield:hours")],
             [InlineKeyboardButton("Задачи", callback_data="editfield:tasks")],
             [InlineKeyboardButton("KPI", callback_data="editfield:kpi")],
             [InlineKeyboardButton("✅ Завершить изменение", callback_data="editfield:finish")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def edit_field_keyboard_for_context(context):
+    period = context.user_data.get("edit_period") or {}
+    return edit_field_keyboard(period.get("payment_mode") == PAYMENT_MODE_SHIFT)
+
+
+def shift_type_keyboard(prefix):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "10:00 — полная смена",
+                    callback_data=f"{prefix}:{SHIFT_TYPE_FULL}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "15:00 — половина смены",
+                    callback_data=f"{prefix}:{SHIFT_TYPE_HALF}",
+                )
+            ],
             [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
         ]
     )
@@ -732,6 +769,16 @@ def format_daily_report_text(report_model):
             "",
             f"Сотрудник: {employee['full_name']}",
             *([] if report_model.get("manager_report") else [f"Дата: {report_model['date']}"]),
+            *(
+                [
+                    "Тип смены: "
+                    + shift_type_label(
+                        report_model.get("shift_type") or SHIFT_TYPE_FULL
+                    )
+                ]
+                if report_model.get("payment_mode") == PAYMENT_MODE_SHIFT
+                else []
+            ),
             f"Время работы: {report_model['interval']}",
             f"Отработано часов: {money(report_model['hours'])}",
             "",
@@ -1060,10 +1107,47 @@ async def create_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
+    period = get_period_for_date(report_date)
+    if not period:
+        await query.edit_message_text(
+            "Для выбранной даты не настроен расчетный период. Обратитесь к руководителю.",
+            reply_markup=payroll_main_keyboard(manager=is_manager(current_employee_or_none(update))),
+        )
+        return ConversationHandler.END
+
     context.user_data["report_date"] = report_date
+    context.user_data["report_period"] = period
+    context.user_data["shift_type"] = ""
+    if period.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        await query.edit_message_text(
+            f"Сотрудник: {employee['full_name']}\nДата: {report_date}\n\n"
+            "Выберите тип смены:",
+            reply_markup=shift_type_keyboard("crshift"),
+        )
+        return CREATE_SHIFT_TYPE
+
     await query.edit_message_text(
         f"Сотрудник: {employee['full_name']}\nДата: {report_date}\n\n"
         "Введите рабочий временной промежуток, например: 10:00-19:00",
+        reply_markup=payroll_back_keyboard(),
+    )
+    return CREATE_INTERVAL
+
+
+async def create_shift_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    shift_type = normalize_shift_type(query.data.replace("crshift:", ""))
+    if not shift_type:
+        await query.edit_message_text(
+            "Выберите тип смены:",
+            reply_markup=shift_type_keyboard("crshift"),
+        )
+        return CREATE_SHIFT_TYPE
+    context.user_data["shift_type"] = shift_type
+    await query.edit_message_text(
+        f"Тип смены: {shift_type_label(shift_type)}\n\n"
+        "Введите фактический рабочий временной промежуток, например: 10:00-19:00",
         reply_markup=payroll_back_keyboard(),
     )
     return CREATE_INTERVAL
@@ -1090,7 +1174,20 @@ async def create_hours_received(update: Update, context: ContextTypes.DEFAULT_TY
         return CREATE_HOURS
 
     context.user_data["hours"] = hours
-    await update.message.reply_text("Опишите выполненные за день задачи:", reply_markup=payroll_back_keyboard())
+    warning = ""
+    period = context.user_data.get("report_period") or {}
+    shift_type = normalize_shift_type(context.user_data.get("shift_type"))
+    if period.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        expected_hours = 4 if shift_type == SHIFT_TYPE_HALF else 8
+        if hours != expected_hours:
+            warning = (
+                f"⚠️ Фактически указано {money(hours)} ч., "
+                f"но {shift_type_label(shift_type)} оплачивается как {expected_hours} ч.\n\n"
+            )
+    await update.message.reply_text(
+        warning + "Опишите выполненные за день задачи:",
+        reply_markup=payroll_back_keyboard(),
+    )
     return CREATE_TASKS
 
 
@@ -1459,6 +1556,26 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
     report_date = context.user_data["report_date"]
     interval = context.user_data["interval"]
     hours = context.user_data["hours"]
+    shift_type = normalize_shift_type(context.user_data.get("shift_type"))
+    period = context.user_data.get("report_period") or get_period_for_date(report_date)
+    if period and period.get("payment_mode") == PAYMENT_MODE_SHIFT and not shift_type:
+        kwargs = {
+            "reply_markup": payroll_main_keyboard(
+                manager=is_manager(find_employee_for_telegram_user(telegram_user))
+            )
+        }
+        if hasattr(target, "edit_message_text"):
+            await target.edit_message_text(
+                "Тип смены не выбран. Начните создание отчета заново.",
+                **kwargs,
+            )
+        else:
+            await target.reply_text(
+                "Тип смены не выбран. Начните создание отчета заново.",
+                **kwargs,
+            )
+        context.user_data.clear()
+        return ConversationHandler.END
     tasks = context.user_data["tasks"]
     kpi_items = context.user_data.get("kpi_items", [])
 
@@ -1467,6 +1584,10 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         "employee": employee,
         "interval": interval,
         "hours": hours,
+        "shift_type": shift_type,
+        "payment_mode": (
+            period.get("payment_mode") if period else PAYMENT_MODE_HOURLY
+        ),
         "tasks": tasks,
         "kpi_items": kpi_items,
         "kpi_sum": calculate_kpi_sum(kpi_items),
@@ -1492,7 +1613,16 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
                 else None
             ),
         )
-        append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data)
+        append_daily_report(
+            employee,
+            report_date,
+            interval,
+            hours,
+            tasks,
+            kpi_items,
+            telegram_data,
+            shift_type=shift_type,
+        )
         if is_warehouse_manager(employee):
             status = "Отчет сохранен и отправлен руководителю склада в личные сообщения ✅"
         else:
@@ -1576,11 +1706,20 @@ async def edit_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
+    period = get_period_for_date(report_date)
+    if not period:
+        await query.edit_message_text(
+            "Для выбранной даты не настроен расчетный период. Обратитесь к руководителю.",
+            reply_markup=payroll_main_keyboard(manager=is_manager(current_employee_or_none(update))),
+        )
+        return ConversationHandler.END
+
     context.user_data["edit_row_index"] = row_index
     context.user_data["edit_report_data"] = report_data
+    context.user_data["edit_period"] = period
     await query.edit_message_text(
         "Отчет найден. Что нужно изменить?",
-        reply_markup=edit_field_keyboard(),
+        reply_markup=edit_field_keyboard_for_context(context),
     )
     return EDIT_FIELD
 
@@ -1596,12 +1735,26 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
     if field == "back":
         await query.edit_message_text(
             "Что нужно изменить?",
-            reply_markup=edit_field_keyboard(),
+            reply_markup=edit_field_keyboard_for_context(context),
         )
         return EDIT_FIELD
 
     context.user_data["edit_field"] = field
     report_data = context.user_data.get("edit_report_data") or {}
+
+    if field == "shift_type":
+        period = context.user_data.get("edit_period") or {}
+        if period.get("payment_mode") != PAYMENT_MODE_SHIFT:
+            await query.edit_message_text(
+                "Тип смены можно изменить только для посменного расчетного периода.",
+                reply_markup=edit_field_keyboard_for_context(context),
+            )
+            return EDIT_FIELD
+        await query.edit_message_text(
+            "Выберите новый тип смены:",
+            reply_markup=shift_type_keyboard("edshift"),
+        )
+        return EDIT_SHIFT_TYPE
 
     if field == "interval":
         current_value = report_data.get("Рабочий промежуток", "") or "—"
@@ -1643,7 +1796,41 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return EDIT_FIELD
 
-    await query.edit_message_text("Неизвестное поле.", reply_markup=edit_field_keyboard())
+    await query.edit_message_text(
+        "Неизвестное поле.",
+        reply_markup=edit_field_keyboard_for_context(context),
+    )
+    return EDIT_FIELD
+
+
+async def edit_shift_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    period = context.user_data.get("edit_period") or {}
+    if period.get("payment_mode") != PAYMENT_MODE_SHIFT:
+        await query.edit_message_text(
+            "Тип смены можно изменить только для посменного расчетного периода.",
+            reply_markup=edit_field_keyboard_for_context(context),
+        )
+        return EDIT_FIELD
+    shift_type = normalize_shift_type(query.data.replace("edshift:", ""))
+    if not shift_type:
+        await query.edit_message_text(
+            "Выберите тип смены:",
+            reply_markup=shift_type_keyboard("edshift"),
+        )
+        return EDIT_SHIFT_TYPE
+    report_data = context.user_data.get("edit_report_data") or {}
+    report_data["Тип смены"] = shift_type
+    report_data["Обновлено"] = now_str()
+    context.user_data["edit_report_data"] = report_data
+    model_preview = report_data_to_model(report_data)
+    await query.edit_message_text(
+        "Тип смены изменен. Текущая версия отчета:\n\n"
+        f"{format_daily_report_text(model_preview)}\n\n"
+        "Выберите ещё поле или нажмите «Завершить изменение».",
+        reply_markup=edit_field_keyboard_for_context(context),
+    )
     return EDIT_FIELD
 
 
@@ -1653,7 +1840,10 @@ async def edit_tasks_mode_selected(update: Update, context: ContextTypes.DEFAULT
 
     mode = query.data.replace("edittasks:", "")
     if mode not in {"replace", "append"}:
-        await query.edit_message_text("Неизвестное действие.", reply_markup=edit_field_keyboard())
+        await query.edit_message_text(
+            "Неизвестное действие.",
+            reply_markup=edit_field_keyboard_for_context(context),
+        )
         return EDIT_FIELD
 
     context.user_data["edit_field"] = "tasks"
@@ -1698,7 +1888,10 @@ async def edit_kpi_mode_selected(update: Update, context: ContextTypes.DEFAULT_T
 
     mode = query.data.replace("editkpi:", "")
     if mode not in {"replace", "append"}:
-        await query.edit_message_text("Неизвестное действие.", reply_markup=edit_field_keyboard())
+        await query.edit_message_text(
+            "Неизвестное действие.",
+            reply_markup=edit_field_keyboard_for_context(context),
+        )
         return EDIT_FIELD
 
     report_data = context.user_data.get("edit_report_data") or {}
@@ -1763,12 +1956,24 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["edit_report_data"] = report_data
 
     model_preview = report_data_to_model(report_data)
+    warning = ""
+    if field == "hours" and model_preview.get("payment_mode") == PAYMENT_MODE_SHIFT:
+        expected_hours = (
+            4 if model_preview.get("shift_type") == SHIFT_TYPE_HALF else 8
+        )
+        if model_preview["hours"] != expected_hours:
+            warning = (
+                f"⚠️ Фактически указано {money(model_preview['hours'])} ч., "
+                f"но {shift_type_label(model_preview.get('shift_type') or SHIFT_TYPE_FULL)} "
+                f"оплачивается как {expected_hours} ч.\n\n"
+            )
 
     await update.message.reply_text(
-        "Изменение принято. Текущая версия отчета:\n\n"
+        warning
+        + "Изменение принято. Текущая версия отчета:\n\n"
         f"{format_daily_report_text(model_preview)}\n\n"
         "Выберите ещё поле или нажмите «Завершить изменение».",
-        reply_markup=edit_field_keyboard(),
+        reply_markup=edit_field_keyboard_for_context(context),
     )
     return EDIT_FIELD
 
@@ -1794,7 +1999,7 @@ async def edit_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "KPI обновлен. Текущая версия отчета:\n\n"
             f"{format_daily_report_text(model_preview)}\n\n"
             "Выберите ещё поле или нажмите «Завершить изменение».",
-            reply_markup=edit_field_keyboard(),
+            reply_markup=edit_field_keyboard_for_context(context),
         )
         return EDIT_FIELD
 
@@ -3326,6 +3531,10 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(create_date_selected, pattern=r"^crdate:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
+            CREATE_SHIFT_TYPE: [
+                CallbackQueryHandler(create_shift_type_selected, pattern=r"^crshift:(full|half)$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
             CREATE_INTERVAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_interval_received),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
@@ -3367,6 +3576,10 @@ def get_payroll_conversation_handler():
             ],
             EDIT_VALUE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value_received),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            EDIT_SHIFT_TYPE: [
+                CallbackQueryHandler(edit_shift_type_selected, pattern=r"^edshift:(full|half)$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EDIT_KPI_SELECT: [

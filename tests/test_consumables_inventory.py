@@ -2,11 +2,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telegram.ext import ConversationHandler
+
 from modules.consumables.handlers import (
     INVENTORY_EXIT_CONFIRM,
     RECEIPT_LAYOUT_PHOTOS,
     inventory_exit_requested,
     inventory_item_selected,
+    inventory_review_apply,
     inventory_session_keyboard,
     receipt_layout_photos_finished,
     send_completed_inventory_pdf_to_topic,
@@ -15,6 +18,29 @@ from modules.consumables.pdf_reports import create_consumables_stock_pdf
 
 
 class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_employee_cannot_apply_inventory_review(self):
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=7),
+        )
+        context = SimpleNamespace(
+            user_data={"inventory_review_session_id": "inventory-1"}
+        )
+
+        with (
+            patch(
+                "modules.consumables.handlers.current_employee_or_none",
+                return_value={"role": "warehouse_employee"},
+            ),
+            patch("modules.consumables.handlers.apply_inventory_session") as apply_inventory,
+        ):
+            state = await inventory_review_apply(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        apply_inventory.assert_not_called()
+        self.assertIn("Недостаточно прав", query.edit_message_text.await_args.args[0])
+
     async def test_receipt_requires_at_least_one_layout_photo(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
         context = SimpleNamespace(user_data={"receipt_layout_photo_file_ids": []})
@@ -50,6 +76,7 @@ class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "item_id": 7,
                         "counted": True,
+                        "system_quantity": 10,
                         "counted_quantity": 12,
                         "unit": "шт",
                     }
@@ -58,7 +85,45 @@ class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
         ):
             await inventory_item_selected(SimpleNamespace(callback_query=query), context)
 
-        self.assertIn("Текущее значение: 12 шт", query.edit_message_text.await_args.args[0])
+        text = query.edit_message_text.await_args.args[0]
+        self.assertIn("Расходник: Коробки", text)
+        self.assertIn("Значение в системе: 10 шт", text)
+        self.assertIn("Фактическое значение: 12 шт", text)
+
+    async def test_uncounted_item_shows_zero_as_actual_value(self):
+        query = SimpleNamespace(
+            data="consinventoryitem:7",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(user_data={"inventory_session_id": "inventory-1"})
+
+        with (
+            patch(
+                "modules.consumables.handlers.get_consumable_item",
+                return_value={"name": "Коробки", "unit": "шт"},
+            ),
+            patch(
+                "modules.consumables.handlers.get_inventory_session_items",
+                return_value=[
+                    {
+                        "item_id": 7,
+                        "counted": False,
+                        "system_quantity": 10,
+                        "counted_quantity": None,
+                        "unit": "шт",
+                    }
+                ],
+            ),
+        ):
+            await inventory_item_selected(
+                SimpleNamespace(callback_query=query),
+                context,
+            )
+
+        text = query.edit_message_text.await_args.args[0]
+        self.assertIn("Значение в системе: 10 шт", text)
+        self.assertIn("Фактическое значение: 0 шт", text)
 
     def test_stock_pdf_is_created(self):
         report_path = create_consumables_stock_pdf(

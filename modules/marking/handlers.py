@@ -167,13 +167,6 @@ async def trend_export_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
 
-    if not ensure_manager(update):
-        await query.edit_message_text(
-            "⛔️ Выгрузка доступна только руководителям.",
-            reply_markup=marking_menu_keyboard(update),
-        )
-        return ConversationHandler.END
-
     clear_trend_export_context(context)
     await query.edit_message_text(
         "Есть ли сейчас скидки?",
@@ -253,14 +246,6 @@ async def trend_export_discounts_received(update: Update, context: ContextTypes.
     query = update.callback_query
     await query.answer()
 
-    if not ensure_manager(update):
-        clear_trend_export_context(context)
-        await query.edit_message_text(
-            "⛔️ Выгрузка доступна только руководителям.",
-            reply_markup=marking_menu_keyboard(update),
-        )
-        return ConversationHandler.END
-
     has_discounts = query.data.endswith(":yes")
     price_type = (
         TREND_PRICE_TYPE_WITH_DISCOUNTS
@@ -277,13 +262,6 @@ async def trend_export_discounts_received(update: Update, context: ContextTypes.
 
 
 async def trend_export_document_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not ensure_manager(update):
-        await update.message.reply_text(
-            "⛔️ Выгрузка доступна только руководителям.",
-            reply_markup=marking_menu_keyboard(update),
-        )
-        return ConversationHandler.END
-
     document_name = (update.message.text or "").strip()
     if not document_name:
         await update.message.reply_text(

@@ -28,6 +28,7 @@ from core.keyboards import (
     build_consumables_suppliers_menu_keyboard,
 )
 from modules.consumables.storage import (
+    apply_inventory_session,
     apply_inventory_batch_counts,
     complete_inventory_session,
     create_consumable_receipt,
@@ -51,6 +52,7 @@ from modules.consumables.storage import (
     get_or_create_active_inventory_session,
     get_inventory_session,
     get_inventory_session_items,
+    get_pending_inventory_session,
     get_recent_consumable_movements,
     get_recent_inventory_batches,
     list_completed_inventory_sessions,
@@ -64,11 +66,13 @@ from modules.consumables.storage import (
     get_supplier_records,
     format_quantity,
     mark_supply_accepted,
+    return_inventory_session_to_draft,
     save_inventory_session_item,
     set_product_consumable_rule,
     split_message_ids,
     update_acceptance,
     update_consumable_receipt_quantity,
+    update_inventory_review_item,
     update_supply,
     update_supplier,
     upsert_consumable_item,
@@ -128,7 +132,9 @@ from modules.receiving.products import CATEGORIES, SIZES
     RECEIPT_MANAGE_SELECT,
     RECEIPT_EDIT_QUANTITY,
     RECEIPT_DELETE_CONFIRM,
-) = range(500, 547)
+    INVENTORY_REVIEW_SELECT,
+    INVENTORY_REVIEW_QUANTITY,
+) = range(500, 549)
 
 
 def current_employee_or_none(update):
@@ -481,7 +487,7 @@ def inventory_discard_confirm_keyboard():
 def inventory_complete_keyboard():
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✅ Завершить и применить", callback_data="consinventory:complete:yes")],
+            [InlineKeyboardButton("✅ Отправить руководителю", callback_data="consinventory:complete:yes")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="consinventory:complete:no")],
         ]
     )
@@ -541,6 +547,60 @@ def comparison_keyboard(records, selected_ids):
         rows.append([InlineKeyboardButton("✅ Применить выбранное", callback_data="conscompare:apply")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+def inventory_review_text(inventory_session, records):
+    lines = [
+        "🔎 Проверка пересчета расходников",
+        "",
+        f"Отправил: {inventory_session.get('completed_by_name') or '—'}",
+        f"Заполнено: {sum(1 for record in records if record['counted'])} из {len(records)}",
+        "",
+    ]
+    for record in records:
+        system_quantity = format_quantity(record["system_quantity"])
+        if not record["counted"]:
+            lines.append(
+                f"• {button_text(record['item_name'], 34)}: "
+                f"система {system_quantity} {record['unit']}, факт не указан"
+            )
+            continue
+        counted_quantity = float(record["counted_quantity"] or 0)
+        difference = counted_quantity - float(record["system_quantity"] or 0)
+        sign = "+" if difference > 0 else ""
+        lines.append(
+            f"• {button_text(record['item_name'], 34)}: "
+            f"система {system_quantity}, факт {format_quantity(counted_quantity)}, "
+            f"разница {sign}{format_quantity(difference)} {record['unit']} — "
+            f"{record.get('counted_by_name') or '—'}"
+        )
+    return "\n".join(lines)
+
+
+def inventory_review_keyboard(records):
+    rows = [
+        [
+            InlineKeyboardButton(
+                button_text(f"✏️ {record['item_name']}"),
+                callback_data=f"consreview:item:{record['item_id']}",
+            )
+        ]
+        for record in records
+    ]
+    rows.extend(
+        [
+            [InlineKeyboardButton("✅ Применить пересчет", callback_data="consreview:apply")],
+            [InlineKeyboardButton("↩️ Вернуть на исправление", callback_data="consreview:reject")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="cons:cancel")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def inventory_review_quantity_keyboard():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ К проверке", callback_data="consreview:back")]]
+    )
 
 
 def consumable_category_keyboard():
@@ -1178,12 +1238,12 @@ async def supply_invoice_wrong_message(update: Update, context: ContextTypes.DEF
 async def stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data["consumables_module"] = "counting"
+    context.user_data.clear()
     items = get_consumable_items(active_only=True)
     if not items:
         await query.edit_message_text(
             "Расходники пока не заведены.",
-            reply_markup=consumables_counting_keyboard(update),
+            reply_markup=consumables_main_keyboard(update),
         )
         return ConversationHandler.END
     filename = f"consumables_stock_{datetime.now().strftime('%Y-%m-%d')}.pdf"
@@ -1200,7 +1260,7 @@ async def stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Path(report_path).unlink(missing_ok=True)
     await query.edit_message_text(
         "PDF с остатками отправлен ✅",
-        reply_markup=consumables_counting_keyboard(update),
+        reply_markup=consumables_main_keyboard(update),
     )
     return ConversationHandler.END
 
@@ -1223,10 +1283,14 @@ async def inventory_count_start(update: Update, context: ContextTypes.DEFAULT_TY
     if not get_consumable_items(active_only=True):
         await query.edit_message_text("Расходники пока не заведены.", reply_markup=consumables_counting_keyboard(update))
         return ConversationHandler.END
-    inventory_session = get_or_create_active_inventory_session(
-        update.effective_user.id,
-        current_employee_name(update),
-    )
+    try:
+        inventory_session = get_or_create_active_inventory_session(
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await query.edit_message_text(str(error), reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
     context.user_data["inventory_session_id"] = inventory_session["session_id"]
     records = get_inventory_session_items(inventory_session["session_id"])
     await query.edit_message_text(
@@ -1253,14 +1317,18 @@ async def inventory_item_selected(update: Update, context: ContextTypes.DEFAULT_
         ),
         None,
     )
-    current_value_text = ""
-    if current_record and current_record["counted"]:
-        current_value_text = (
-            f"\n\nТекущее значение: "
-            f"{format_quantity(current_record['counted_quantity'])} {current_record['unit']}"
-        )
+    unit = current_record["unit"] if current_record else (item.get("unit", "шт") if item else "шт")
+    system_quantity = current_record["system_quantity"] if current_record else 0
+    counted_quantity = (
+        current_record["counted_quantity"]
+        if current_record and current_record["counted"]
+        else 0
+    )
     await query.edit_message_text(
-        f"Введите фактическое количество:\n\n{item_name}{current_value_text}",
+        "Введите фактическое количество:\n\n"
+        f"Расходник: {item_name}\n"
+        f"Значение в системе: {format_quantity(system_quantity)} {unit}\n"
+        f"Фактическое значение: {format_quantity(counted_quantity)} {unit}",
         reply_markup=inventory_quantity_keyboard(),
     )
     return INVENTORY_QUANTITY
@@ -1379,9 +1447,150 @@ async def inventory_complete_confirmed(update: Update, context: ContextTypes.DEF
         topic_status = f"PDF пересчета не отправлен в тему ⚠️\nОшибка: {error}"
     context.user_data.clear()
     await query.edit_message_text(
-        "Пересчет завершен и применен ✅\n\n"
+        "Пересчет отправлен руководителю на проверку ✅\n\n"
         f"Зафиксировано позиций: {len(result['records'])}.\n"
+        "Системные остатки пока не изменены.\n"
         f"{topic_status}",
+        reply_markup=consumables_counting_keyboard(update),
+    )
+    return ConversationHandler.END
+
+
+async def inventory_review_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    inventory_session = get_pending_inventory_session()
+    if not inventory_session:
+        await query.edit_message_text(
+            "Пересчетов, ожидающих проверки, нет.",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        return ConversationHandler.END
+    context.user_data.clear()
+    context.user_data["inventory_review_session_id"] = inventory_session["session_id"]
+    records = get_inventory_session_items(inventory_session["session_id"])
+    await query.edit_message_text(
+        inventory_review_text(inventory_session, records),
+        reply_markup=inventory_review_keyboard(records),
+    )
+    return INVENTORY_REVIEW_SELECT
+
+
+async def inventory_review_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    item_id = int(query.data.replace("consreview:item:", ""))
+    context.user_data["inventory_review_item_id"] = item_id
+    item = get_consumable_item(item_id)
+    await query.edit_message_text(
+        f"Введите подтвержденное фактическое количество:\n\n"
+        f"{item['name'] if item else 'Расходник'}",
+        reply_markup=inventory_review_quantity_keyboard(),
+    )
+    return INVENTORY_REVIEW_QUANTITY
+
+
+async def inventory_review_quantity_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_manager(current_employee_or_none(update)):
+        await update.message.reply_text("Недостаточно прав.")
+        return ConversationHandler.END
+    quantity = safe_float(update.message.text)
+    if quantity < 0:
+        await update.message.reply_text("Введите число от 0 и выше:")
+        return INVENTORY_REVIEW_QUANTITY
+    try:
+        update_inventory_review_item(
+            context.user_data["inventory_review_session_id"],
+            context.user_data["inventory_review_item_id"],
+            quantity,
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await update.message.reply_text(str(error), reply_markup=consumables_counting_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.pop("inventory_review_item_id", None)
+    inventory_session = get_pending_inventory_session()
+    if not inventory_session:
+        await update.message.reply_text(
+            "Пересчет уже обработан.",
+            reply_markup=consumables_counting_keyboard(update),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    records = get_inventory_session_items(inventory_session["session_id"])
+    await update.message.reply_text(
+        inventory_review_text(inventory_session, records),
+        reply_markup=inventory_review_keyboard(records),
+    )
+    return INVENTORY_REVIEW_SELECT
+
+
+async def inventory_review_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    inventory_session = get_pending_inventory_session()
+    if not inventory_session:
+        await query.edit_message_text("Пересчет уже обработан.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    records = get_inventory_session_items(inventory_session["session_id"])
+    await query.edit_message_text(
+        inventory_review_text(inventory_session, records),
+        reply_markup=inventory_review_keyboard(records),
+    )
+    return INVENTORY_REVIEW_SELECT
+
+
+async def inventory_review_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    try:
+        result = apply_inventory_session(
+            context.user_data.get("inventory_review_session_id"),
+            update.effective_user.id,
+            current_employee_name(update),
+        )
+    except RuntimeError as error:
+        await query.edit_message_text(str(error), reply_markup=consumables_counting_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Пересчет применен ✅\n\n"
+        f"Зафиксировано позиций: {len(result['records'])}.\n"
+        f"Создано движений: {len(result['movements'])}.",
+        reply_markup=consumables_counting_keyboard(update),
+    )
+    return ConversationHandler.END
+
+
+async def inventory_review_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    returned = return_inventory_session_to_draft(
+        context.user_data.get("inventory_review_session_id")
+    )
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Пересчет возвращен сотрудникам на исправление."
+        if returned
+        else "Пересчет уже обработан.",
         reply_markup=consumables_counting_keyboard(update),
     )
     return ConversationHandler.END
@@ -1408,7 +1617,7 @@ async def send_completed_inventory_pdf_to_topic(context: ContextTypes.DEFAULT_TY
                 **kwargs,
                 document=document,
                 filename=filename,
-                caption="Завершенный пересчет расходников",
+                caption="Пересчет расходников — ожидает проверки руководителем",
             )
     finally:
         Path(report_path).unlink(missing_ok=True)
@@ -2569,6 +2778,7 @@ def get_consumables_conversation_handler():
             CallbackQueryHandler(stock_view, pattern=r"^cons:stock$"),
             CallbackQueryHandler(movements_view, pattern=r"^cons:movements$"),
             CallbackQueryHandler(inventory_count_start, pattern=r"^cons:inventory_count$"),
+            CallbackQueryHandler(inventory_review_start, pattern=r"^cons:inventory_review$"),
             CallbackQueryHandler(inventory_pdf_start, pattern=r"^cons:inventory_pdf$"),
             CallbackQueryHandler(add_supply_start, pattern=r"^cons:add_supply$"),
             CallbackQueryHandler(add_item_start, pattern=r"^cons:add_item$"),
@@ -2782,6 +2992,17 @@ def get_consumables_conversation_handler():
             INVENTORY_COMPARE_SELECT: [
                 CallbackQueryHandler(inventory_compare_toggle, pattern=r"^conscompare:toggle:"),
                 CallbackQueryHandler(inventory_compare_apply, pattern=r"^conscompare:apply$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            INVENTORY_REVIEW_SELECT: [
+                CallbackQueryHandler(inventory_review_item_selected, pattern=r"^consreview:item:"),
+                CallbackQueryHandler(inventory_review_apply, pattern=r"^consreview:apply$"),
+                CallbackQueryHandler(inventory_review_reject, pattern=r"^consreview:reject$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            INVENTORY_REVIEW_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, inventory_review_quantity_received),
+                CallbackQueryHandler(inventory_review_back, pattern=r"^consreview:back$"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
         },

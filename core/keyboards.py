@@ -44,8 +44,8 @@ def build_marking_menu_keyboard(manager=False):
             )
         ]
     )
+    keyboard.append([InlineKeyboardButton("📤 Файлы Trend Island (УПД + 1С)", callback_data="marking:trend_export")])
     if manager:
-        keyboard.append([InlineKeyboardButton("📤 Файлы Trend Island (УПД + 1С)", callback_data="marking:trend_export")])
         keyboard.append([InlineKeyboardButton("📚 Справочник Честного ЗНАКа", callback_data="marking:catalog")])
     keyboard.extend(
         [
@@ -110,6 +110,7 @@ def build_returns_menu_keyboard():
 def build_consumables_menu_keyboard(manager=False):
     keyboard = [
         [InlineKeyboardButton("📥 Приемка расходника", callback_data="cons:receipt_menu")],
+        [InlineKeyboardButton("📄 Остатки (PDF)", callback_data="cons:stock")],
         [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:module_counting")],
     ]
     if manager:
@@ -154,8 +155,8 @@ def build_consumables_counting_menu_keyboard(manager=False):
     if manager:
         keyboard = [
             [InlineKeyboardButton("⚙️ Норма на товар", callback_data="cons:set_rule")],
-            [InlineKeyboardButton("📄 Остатки (PDF)", callback_data="cons:stock")],
             [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:inventory_count")],
+            [InlineKeyboardButton("🔎 Проверка пересчета", callback_data="cons:inventory_review")],
             [InlineKeyboardButton("📄 PDF пересчета", callback_data="cons:inventory_pdf")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:consumables")],
         ]

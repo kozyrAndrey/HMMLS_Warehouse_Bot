@@ -56,6 +56,7 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 "report_date": "16.07.2026",
                 "interval": "10:00-19:00",
                 "hours": 8,
+                "report_period": {"payment_mode": "hourly"},
                 "tasks": "Управление складом",
                 "kpi_items": [],
             },

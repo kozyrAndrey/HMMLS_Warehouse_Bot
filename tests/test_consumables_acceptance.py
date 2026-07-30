@@ -26,13 +26,14 @@ from modules.consumables.handlers import (
 
 
 class ConsumablesAcceptanceTests(unittest.IsolatedAsyncioTestCase):
-    def test_main_menu_exposes_receipt_and_counting_only(self):
+    def test_main_menu_exposes_receipt_stock_and_counting(self):
         employee_keyboard = build_consumables_menu_keyboard(manager=False)
         manager_keyboard = build_consumables_menu_keyboard(manager=True)
         callbacks = [button.callback_data for row in employee_keyboard.inline_keyboard for button in row]
         manager_callbacks = [button.callback_data for row in manager_keyboard.inline_keyboard for button in row]
 
         self.assertIn("cons:receipt_menu", callbacks)
+        self.assertIn("cons:stock", callbacks)
         self.assertIn("cons:module_counting", callbacks)
         self.assertNotIn("cons:module_supplies", callbacks)
         self.assertNotIn("cons:add_item", callbacks)

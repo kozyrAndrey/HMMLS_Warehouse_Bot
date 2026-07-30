@@ -153,6 +153,9 @@ class ConsumableInventorySession(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_by_user_id: Mapped[str | None] = mapped_column(String(100))
     completed_by_name: Mapped[str | None] = mapped_column(String(255))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime)
+    applied_by_user_id: Mapped[str | None] = mapped_column(String(100))
+    applied_by_name: Mapped[str | None] = mapped_column(String(255))
 
 
 class ConsumableInventorySessionItem(Base):
@@ -563,6 +566,9 @@ def ensure_consumables_columns():
         "create index if not exists ix_consumable_receipts_item_id on consumable_receipts (item_id)",
         "create index if not exists ix_consumable_inventory_sessions_status on consumable_inventory_sessions (status)",
         "create index if not exists ix_consumable_inventory_sessions_created_at on consumable_inventory_sessions (created_at)",
+        "alter table consumable_inventory_sessions add column if not exists applied_at timestamp",
+        "alter table consumable_inventory_sessions add column if not exists applied_by_user_id varchar(100)",
+        "alter table consumable_inventory_sessions add column if not exists applied_by_name varchar(255)",
         "create unique index if not exists uq_consumable_inventory_session_item on consumable_inventory_session_items (session_id, item_id)",
         "create index if not exists ix_consumable_inventory_session_items_session on consumable_inventory_session_items (session_id)",
         "create unique index if not exists uq_consumable_inventory_session_participant on consumable_inventory_session_participants (session_id, user_id)",
@@ -1646,6 +1652,9 @@ def _inventory_session_to_dict(session, participant_count=0):
         "completed_at": session.completed_at,
         "completed_by_user_id": session.completed_by_user_id or "",
         "completed_by_name": session.completed_by_name or "",
+        "applied_at": session.applied_at,
+        "applied_by_user_id": session.applied_by_user_id or "",
+        "applied_by_name": session.applied_by_name or "",
         "participant_count": participant_count,
     }
 
@@ -1672,6 +1681,15 @@ def _add_inventory_session_participant(session, session_id, user_id, user_name):
 
 def get_or_create_active_inventory_session(user_id="", user_name=""):
     with session_scope() as session:
+        pending_review = session.execute(
+            select(ConsumableInventorySession)
+            .where(ConsumableInventorySession.status == "pending_review")
+            .order_by(ConsumableInventorySession.completed_at.desc())
+            .limit(1)
+        ).scalars().first()
+        if pending_review:
+            raise RuntimeError("Текущий пересчет ожидает проверки руководителем.")
+
         inventory_session = session.execute(
             select(ConsumableInventorySession)
             .where(ConsumableInventorySession.status == "draft")
@@ -1816,8 +1834,15 @@ def save_inventory_session_item(session_id, item_id, counted_quantity, user_id="
 
 def complete_inventory_session(session_id, user_id="", user_name=""):
     with session_scope() as session:
-        inventory_session = session.get(ConsumableInventorySession, str(session_id))
-        if not inventory_session or inventory_session.status != "draft":
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(
+                ConsumableInventorySession.session_id == str(session_id),
+                ConsumableInventorySession.status == "draft",
+            )
+            .with_for_update()
+        ).scalars().first()
+        if not inventory_session:
             raise RuntimeError("Пересчет не найден или уже завершен.")
         records = session.execute(
             select(ConsumableInventorySessionItem).where(
@@ -1827,6 +1852,155 @@ def complete_inventory_session(session_id, user_id="", user_name=""):
         ).scalars().all()
         if not records:
             raise RuntimeError("Нельзя завершить пересчет без посчитанных позиций.")
+
+        result_records = []
+        for record in records:
+            item = session.get(ConsumableItem, record.item_id)
+            if not item or not item.is_active:
+                continue
+            counted_quantity = float(record.counted_quantity or 0)
+            system_quantity = float(record.system_quantity or 0)
+            result_records.append(
+                {
+                    "item_id": item.item_id,
+                    "item_name": item.name,
+                    "unit": item.unit,
+                    "system_quantity": system_quantity,
+                    "counted_quantity": counted_quantity,
+                    "difference": counted_quantity - system_quantity,
+                    "counted_by_user_id": record.counted_by_user_id or "",
+                    "counted_by_name": record.counted_by_name or "",
+                }
+            )
+
+        inventory_session.status = "pending_review"
+        inventory_session.completed_at = datetime.now()
+        inventory_session.completed_by_user_id = str(user_id or "")
+        inventory_session.completed_by_name = str(user_name or "")
+        _add_inventory_session_participant(session, inventory_session.session_id, user_id, user_name)
+        session.flush()
+        return {
+            "session": _inventory_session_to_dict(inventory_session),
+            "records": result_records,
+            "movements": [],
+        }
+
+
+def list_completed_inventory_sessions(limit=20):
+    with session_scope() as session:
+        sessions = session.execute(
+            select(ConsumableInventorySession)
+            .where(ConsumableInventorySession.status.in_(["applied", "completed"]))
+            .order_by(ConsumableInventorySession.completed_at.desc())
+            .limit(limit)
+        ).scalars().all()
+    return [_inventory_session_to_dict(inventory_session) for inventory_session in sessions]
+
+
+def get_completed_inventory_session_records(session_id):
+    return get_inventory_batch_comparison(session_id)
+
+
+def get_pending_inventory_session():
+    with session_scope() as session:
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(ConsumableInventorySession.status == "pending_review")
+            .order_by(ConsumableInventorySession.completed_at.desc())
+            .limit(1)
+        ).scalars().first()
+        if not inventory_session:
+            return None
+        participant_count = session.execute(
+            select(ConsumableInventorySessionParticipant.id).where(
+                ConsumableInventorySessionParticipant.session_id == inventory_session.session_id
+            )
+        ).all()
+        return _inventory_session_to_dict(inventory_session, len(participant_count))
+
+
+def update_inventory_review_item(session_id, item_id, counted_quantity, user_id="", user_name=""):
+    quantity = float(counted_quantity)
+    if quantity < 0:
+        raise RuntimeError("Количество не может быть отрицательным.")
+    with session_scope() as session:
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(
+                ConsumableInventorySession.session_id == str(session_id),
+                ConsumableInventorySession.status == "pending_review",
+            )
+            .with_for_update()
+        ).scalars().first()
+        if not inventory_session:
+            raise RuntimeError("Пересчет не найден или уже обработан.")
+        record = session.execute(
+            select(ConsumableInventorySessionItem).where(
+                ConsumableInventorySessionItem.session_id == inventory_session.session_id,
+                ConsumableInventorySessionItem.item_id == int(item_id),
+            )
+        ).scalars().first()
+        if not record:
+            raise RuntimeError("Расходник не найден в пересчете.")
+        previous_quantity = record.counted_quantity
+        record.counted_quantity = quantity
+        record.counted_by_user_id = str(user_id or "")
+        record.counted_by_name = str(user_name or "")
+        record.counted_at = datetime.now()
+        record.updated_at = datetime.now()
+        session.add(
+            ConsumableInventorySessionChange(
+                session_id=inventory_session.session_id,
+                item_id=int(item_id),
+                previous_quantity=previous_quantity,
+                new_quantity=quantity,
+                changed_by_user_id=str(user_id or ""),
+                changed_by_name=str(user_name or ""),
+            )
+        )
+        return True
+
+
+def return_inventory_session_to_draft(session_id):
+    with session_scope() as session:
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(
+                ConsumableInventorySession.session_id == str(session_id),
+                ConsumableInventorySession.status == "pending_review",
+            )
+            .with_for_update()
+        ).scalars().first()
+        if not inventory_session:
+            return False
+        inventory_session.status = "draft"
+        inventory_session.completed_at = None
+        inventory_session.completed_by_user_id = None
+        inventory_session.completed_by_name = None
+        return True
+
+
+def apply_inventory_session(session_id, user_id="", user_name=""):
+    with session_scope() as session:
+        inventory_session = session.execute(
+            select(ConsumableInventorySession)
+            .where(
+                ConsumableInventorySession.session_id == str(session_id),
+                ConsumableInventorySession.status == "pending_review",
+            )
+            .with_for_update()
+        ).scalars().first()
+        if not inventory_session:
+            raise RuntimeError("Пересчет не найден, уже применен или возвращен на исправление.")
+
+        records = session.execute(
+            select(ConsumableInventorySessionItem).where(
+                ConsumableInventorySessionItem.session_id == inventory_session.session_id,
+                ConsumableInventorySessionItem.counted_quantity.is_not(None),
+            )
+        ).scalars().all()
+        if not records:
+            raise RuntimeError("В пересчете нет заполненных позиций.")
 
         result_records = []
         movements = []
@@ -1846,6 +2020,7 @@ def complete_inventory_session(session_id, user_id="", user_name=""):
                 batch_id=inventory_session.session_id,
             )
             session.add(final_record)
+
             current_quantity = float(item.current_quantity or 0)
             delta = counted_quantity - current_quantity
             if delta:
@@ -1855,7 +2030,7 @@ def complete_inventory_session(session_id, user_id="", user_name=""):
                     quantity_delta=delta,
                     source="inventory_adjustment",
                     source_id=inventory_session.session_id,
-                    comment="Корректировка по параллельному пересчету",
+                    comment="Корректировка после проверки пересчета руководителем",
                     created_by_user_id=str(user_id or ""),
                     created_by_name=str(user_name or ""),
                 )
@@ -1864,32 +2039,16 @@ def complete_inventory_session(session_id, user_id="", user_name=""):
             session.flush()
             result_records.append(inventory_count_to_dict(final_record, item.name, item.unit))
 
-        inventory_session.status = "completed"
-        inventory_session.completed_at = datetime.now()
-        inventory_session.completed_by_user_id = str(user_id or "")
-        inventory_session.completed_by_name = str(user_name or "")
-        _add_inventory_session_participant(session, inventory_session.session_id, user_id, user_name)
+        inventory_session.status = "applied"
+        inventory_session.applied_at = datetime.now()
+        inventory_session.applied_by_user_id = str(user_id or "")
+        inventory_session.applied_by_name = str(user_name or "")
         session.flush()
         return {
             "session": _inventory_session_to_dict(inventory_session),
             "records": result_records,
             "movements": [movement_to_dict(movement, item_name) for movement, item_name in movements],
         }
-
-
-def list_completed_inventory_sessions(limit=20):
-    with session_scope() as session:
-        sessions = session.execute(
-            select(ConsumableInventorySession)
-            .where(ConsumableInventorySession.status == "completed")
-            .order_by(ConsumableInventorySession.completed_at.desc())
-            .limit(limit)
-        ).scalars().all()
-    return [_inventory_session_to_dict(inventory_session) for inventory_session in sessions]
-
-
-def get_completed_inventory_session_records(session_id):
-    return get_inventory_batch_comparison(session_id)
 
 
 def discard_inventory_session(session_id):
