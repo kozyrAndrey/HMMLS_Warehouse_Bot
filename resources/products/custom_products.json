@@ -1,4 +1,19 @@
 {
+  "shorts": {
+    "name": "Шорты",
+    "models": {
+      "model_626aa5aa90": {
+        "name": "DIAMOND SHORTS",
+        "variants": {
+          "variant_b4aacc8880": {
+            "id": "custom_b4aacc8880",
+            "color": "BLACK",
+            "name": "DIAMOND SHORTS BLACK"
+          }
+        }
+      }
+    }
+  },
   "cat_362441baad": {
     "name": "Джинсы",
     "models": {
