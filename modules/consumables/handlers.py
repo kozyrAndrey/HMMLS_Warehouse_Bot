@@ -84,6 +84,9 @@ from modules.payroll.google_sheets import find_employee_for_telegram_user, is_ma
 from modules.receiving.products import CATEGORIES, SIZES
 
 
+INVENTORY_REVIEW_PAGE_SIZE = 15
+
+
 (
     SUPPLY_NAME,
     SUPPLY_ORGANIZATION,
@@ -549,20 +552,31 @@ def comparison_keyboard(records, selected_ids):
     return InlineKeyboardMarkup(rows)
 
 
-def inventory_review_text(inventory_session, records):
+def inventory_review_page(records, page=0):
+    page_count = max(1, (len(records) + INVENTORY_REVIEW_PAGE_SIZE - 1) // INVENTORY_REVIEW_PAGE_SIZE)
+    page = min(max(int(page or 0), 0), page_count - 1)
+    start = page * INVENTORY_REVIEW_PAGE_SIZE
+    end = min(start + INVENTORY_REVIEW_PAGE_SIZE, len(records))
+    return page, page_count, start, end, records[start:end]
+
+
+def inventory_review_text(inventory_session, records, page=0):
+    page, page_count, start, end, page_records = inventory_review_page(records, page)
     lines = [
         "🔎 Проверка пересчета расходников",
         "",
         f"Отправил: {inventory_session.get('completed_by_name') or '—'}",
         f"Заполнено: {sum(1 for record in records if record['counted'])} из {len(records)}",
+        f"Позиции: {start + 1 if records else 0}–{end} из {len(records)} · страница {page + 1}/{page_count}",
         "",
     ]
-    for record in records:
+    for record in page_records:
         system_quantity = format_quantity(record["system_quantity"])
+        unit = button_text(record["unit"], 16)
         if not record["counted"]:
             lines.append(
                 f"• {button_text(record['item_name'], 34)}: "
-                f"система {system_quantity} {record['unit']}, факт не указан"
+                f"система {system_quantity} {unit}, факт не указан"
             )
             continue
         counted_quantity = float(record["counted_quantity"] or 0)
@@ -571,13 +585,14 @@ def inventory_review_text(inventory_session, records):
         lines.append(
             f"• {button_text(record['item_name'], 34)}: "
             f"система {system_quantity}, факт {format_quantity(counted_quantity)}, "
-            f"разница {sign}{format_quantity(difference)} {record['unit']} — "
-            f"{record.get('counted_by_name') or '—'}"
+            f"разница {sign}{format_quantity(difference)} {unit} — "
+            f"{button_text(record.get('counted_by_name') or '—', 32)}"
         )
     return "\n".join(lines)
 
 
-def inventory_review_keyboard(records):
+def inventory_review_keyboard(records, page=0):
+    page, page_count, _, _, page_records = inventory_review_page(records, page)
     rows = [
         [
             InlineKeyboardButton(
@@ -585,8 +600,15 @@ def inventory_review_keyboard(records):
                 callback_data=f"consreview:item:{record['item_id']}",
             )
         ]
-        for record in records
+        for record in page_records
     ]
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton("⬅️", callback_data=f"consreview:page:{page - 1}"))
+    if page + 1 < page_count:
+        navigation.append(InlineKeyboardButton("➡️", callback_data=f"consreview:page:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
     rows.extend(
         [
             [InlineKeyboardButton("✅ Применить пересчет", callback_data="consreview:apply")],
@@ -1471,10 +1493,37 @@ async def inventory_review_start(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     context.user_data.clear()
     context.user_data["inventory_review_session_id"] = inventory_session["session_id"]
+    context.user_data["inventory_review_page"] = 0
     records = get_inventory_session_items(inventory_session["session_id"])
     await query.edit_message_text(
         inventory_review_text(inventory_session, records),
         reply_markup=inventory_review_keyboard(records),
+    )
+    return INVENTORY_REVIEW_SELECT
+
+
+async def inventory_review_page_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    inventory_session = get_pending_inventory_session()
+    if not inventory_session:
+        await query.edit_message_text("Пересчет уже обработан.", reply_markup=consumables_counting_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    try:
+        requested_page = int(query.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        requested_page = 0
+    records = get_inventory_session_items(inventory_session["session_id"])
+    page, _, _, _, _ = inventory_review_page(records, requested_page)
+    context.user_data["inventory_review_session_id"] = inventory_session["session_id"]
+    context.user_data["inventory_review_page"] = page
+    await query.edit_message_text(
+        inventory_review_text(inventory_session, records, page),
+        reply_markup=inventory_review_keyboard(records, page),
     )
     return INVENTORY_REVIEW_SELECT
 
@@ -1526,9 +1575,10 @@ async def inventory_review_quantity_received(update: Update, context: ContextTyp
         context.user_data.clear()
         return ConversationHandler.END
     records = get_inventory_session_items(inventory_session["session_id"])
+    page = context.user_data.get("inventory_review_page", 0)
     await update.message.reply_text(
-        inventory_review_text(inventory_session, records),
-        reply_markup=inventory_review_keyboard(records),
+        inventory_review_text(inventory_session, records, page),
+        reply_markup=inventory_review_keyboard(records, page),
     )
     return INVENTORY_REVIEW_SELECT
 
@@ -1544,9 +1594,10 @@ async def inventory_review_back(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Пересчет уже обработан.", reply_markup=consumables_counting_keyboard(update))
         return ConversationHandler.END
     records = get_inventory_session_items(inventory_session["session_id"])
+    page = context.user_data.get("inventory_review_page", 0)
     await query.edit_message_text(
-        inventory_review_text(inventory_session, records),
-        reply_markup=inventory_review_keyboard(records),
+        inventory_review_text(inventory_session, records, page),
+        reply_markup=inventory_review_keyboard(records, page),
     )
     return INVENTORY_REVIEW_SELECT
 
@@ -2996,6 +3047,7 @@ def get_consumables_conversation_handler():
             ],
             INVENTORY_REVIEW_SELECT: [
                 CallbackQueryHandler(inventory_review_item_selected, pattern=r"^consreview:item:"),
+                CallbackQueryHandler(inventory_review_page_selected, pattern=r"^consreview:page:\d+$"),
                 CallbackQueryHandler(inventory_review_apply, pattern=r"^consreview:apply$"),
                 CallbackQueryHandler(inventory_review_reject, pattern=r"^consreview:reject$"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),

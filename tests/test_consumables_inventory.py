@@ -10,6 +10,8 @@ from modules.consumables.handlers import (
     inventory_exit_requested,
     inventory_item_selected,
     inventory_review_apply,
+    inventory_review_keyboard,
+    inventory_review_text,
     inventory_session_keyboard,
     receipt_layout_photos_finished,
     send_completed_inventory_pdf_to_topic,
@@ -18,6 +20,43 @@ from modules.consumables.pdf_reports import create_consumables_stock_pdf
 
 
 class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
+    def test_inventory_review_is_paginated_below_telegram_text_limit(self):
+        records = [
+            {
+                "item_id": item_id,
+                "item_name": f"Очень длинное название расходника номер {item_id}",
+                "unit": "Очень длинное название единицы измерения",
+                "system_quantity": 123,
+                "counted_quantity": 125,
+                "counted": True,
+                "counted_by_name": "Очень Длинное Имя Сотрудника Склада" * 8,
+            }
+            for item_id in range(1, 55)
+        ]
+        inventory_session = {"completed_by_name": "Очень Длинное Имя Сотрудника Склада" * 8}
+
+        first_page_text = inventory_review_text(inventory_session, records)
+        first_page_keyboard = inventory_review_keyboard(records)
+        second_page_keyboard = inventory_review_keyboard(records, page=1)
+
+        self.assertLessEqual(len(first_page_text), 4096)
+        self.assertIn("страница 1/4", first_page_text)
+        self.assertEqual(
+            [row[0].callback_data for row in first_page_keyboard.inline_keyboard[:15]],
+            [f"consreview:item:{item_id}" for item_id in range(1, 16)],
+        )
+        self.assertEqual(
+            [row[0].callback_data for row in second_page_keyboard.inline_keyboard[:15]],
+            [f"consreview:item:{item_id}" for item_id in range(16, 31)],
+        )
+        self.assertTrue(
+            any(
+                button.callback_data == "consreview:page:1"
+                for row in first_page_keyboard.inline_keyboard
+                for button in row
+            )
+        )
+
     async def test_employee_cannot_apply_inventory_review(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
         update = SimpleNamespace(
