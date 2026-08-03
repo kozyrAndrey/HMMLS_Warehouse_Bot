@@ -355,7 +355,6 @@ def seed_default_consumable_items():
             )
             if item:
                 item.unit = unit
-                item.is_active = True
             else:
                 session.add(ConsumableItem(name=name, unit=unit, current_quantity=0, is_active=True))
 
@@ -400,7 +399,7 @@ def seed_default_product_consumable_rules():
                 if rule:
                     rule.product_name = spec["product_name"]
                     rule.quantity_per_unit = quantity
-                    rule.is_active = True
+                    rule.is_active = bool(item.is_active)
                 else:
                     session.add(
                         ProductConsumableRule(
@@ -408,7 +407,7 @@ def seed_default_product_consumable_rules():
                             product_name=spec["product_name"],
                             item_id=item.item_id,
                             quantity_per_unit=quantity,
-                            is_active=True,
+                            is_active=bool(item.is_active),
                         )
                     )
 
@@ -1225,6 +1224,30 @@ def upsert_consumable_item(name, unit="шт"):
         else:
             item = ConsumableItem(name=normalized_name, unit=normalized_unit, current_quantity=0, is_active=True)
             session.add(item)
+        session.flush()
+        return consumable_item_to_dict(item)
+
+
+def deactivate_consumable_item(item_id):
+    with session_scope() as session:
+        item = session.get(ConsumableItem, int(item_id))
+        if not item or not item.is_active:
+            raise RuntimeError("Расходник не найден или уже удален из учета.")
+
+        item.is_active = False
+        rules = (
+            session.execute(
+                select(ProductConsumableRule).where(
+                    ProductConsumableRule.item_id == item.item_id,
+                    ProductConsumableRule.is_active.is_(True),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for rule in rules:
+            rule.is_active = False
+
         session.flush()
         return consumable_item_to_dict(item)
 

@@ -37,7 +37,9 @@ class ConsumablesAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cons:module_counting", callbacks)
         self.assertNotIn("cons:module_supplies", callbacks)
         self.assertNotIn("cons:add_item", callbacks)
+        self.assertNotIn("cons:delete_item", callbacks)
         self.assertIn("cons:add_item", manager_callbacks)
+        self.assertIn("cons:delete_item", manager_callbacks)
 
     def test_receipt_submenu_is_available_to_all_employees(self):
         keyboard = build_consumables_receipt_menu_keyboard(manager=False)

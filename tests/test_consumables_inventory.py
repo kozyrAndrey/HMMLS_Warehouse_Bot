@@ -7,8 +7,10 @@ from telegram.ext import ConversationHandler
 from modules.consumables.handlers import (
     INVENTORY_EXIT_CONFIRM,
     RECEIPT_LAYOUT_PHOTOS,
+    delete_item_confirmed,
     inventory_exit_requested,
     inventory_item_selected,
+    inventory_record_category,
     inventory_review_apply,
     inventory_review_keyboard,
     inventory_review_text,
@@ -17,9 +19,45 @@ from modules.consumables.handlers import (
     send_completed_inventory_pdf_to_topic,
 )
 from modules.consumables.pdf_reports import create_consumables_stock_pdf
+from modules.consumables.storage import DEFAULT_CONSUMABLE_ITEMS
 
 
 class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_manager_can_confirm_consumable_item_deletion(self):
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=42),
+        )
+        context = SimpleNamespace(user_data={"delete_consumable_item_id": 17})
+        deleted_item = {
+            "item_id": 17,
+            "name": "Старые пакеты",
+            "is_active": False,
+        }
+
+        with (
+            patch(
+                "modules.consumables.handlers.current_employee_or_none",
+                return_value={"role": "warehouse_manager"},
+            ),
+            patch(
+                "modules.consumables.handlers.deactivate_consumable_item",
+                return_value=deleted_item,
+            ) as deactivate_item,
+            patch(
+                "modules.consumables.handlers.consumables_main_keyboard",
+                return_value="menu",
+            ),
+        ):
+            state = await delete_item_confirmed(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        self.assertEqual(context.user_data, {})
+        deactivate_item.assert_called_once_with(17)
+        self.assertIn("удален из активного учета", query.edit_message_text.await_args.args[0])
+        self.assertEqual(query.edit_message_text.await_args.kwargs["reply_markup"], "menu")
+
     def test_inventory_review_is_paginated_below_telegram_text_limit(self):
         records = [
             {
@@ -185,10 +223,48 @@ class ConsumablesInventoryTests(unittest.IsolatedAsyncioTestCase):
                     "counted": True,
                     "counted_quantity": 12,
                 }
-            ]
+            ],
+            category_key="other",
         )
 
         self.assertTrue(keyboard.inline_keyboard[0][0].text.startswith("✅ "))
+
+    def test_inventory_groups_items_into_semantic_folders(self):
+        records = [
+            {"item_id": 1, "item_name": "Коробки для футболок", "counted": False},
+            {"item_id": 2, "item_name": "Открытка для заказа", "counted": True},
+            {"item_id": 3, "item_name": "Нестандартный расходник", "counted": False},
+        ]
+
+        folders_keyboard = inventory_session_keyboard(records)
+        folder_callbacks = [
+            button.callback_data
+            for row in folders_keyboard.inline_keyboard
+            for button in row
+        ]
+        inserts_keyboard = inventory_session_keyboard(records, category_key="inserts")
+        inserts_callbacks = [
+            button.callback_data
+            for row in inserts_keyboard.inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("consinventory:category:boxes", folder_callbacks)
+        self.assertIn("consinventory:category:inserts", folder_callbacks)
+        self.assertIn("consinventory:category:other", folder_callbacks)
+        self.assertNotIn("consinventoryitem:1", folder_callbacks)
+        self.assertIn("consinventoryitem:2", inserts_callbacks)
+        self.assertNotIn("consinventoryitem:1", inserts_callbacks)
+        self.assertIn("consinventory:categories", inserts_callbacks)
+
+    def test_default_inventory_folders_contain_at_most_fifteen_items(self):
+        folder_counts = {}
+        for item_name, _ in DEFAULT_CONSUMABLE_ITEMS:
+            category_key = inventory_record_category({"item_name": item_name})
+            folder_counts[category_key] = folder_counts.get(category_key, 0) + 1
+
+        self.assertNotIn("other", folder_counts)
+        self.assertLessEqual(max(folder_counts.values()), 15)
 
     async def test_completed_inventory_pdf_is_sent_to_consumables_topic(self):
         bot = SimpleNamespace(send_document=AsyncMock())

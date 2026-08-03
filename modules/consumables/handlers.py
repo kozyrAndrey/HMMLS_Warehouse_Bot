@@ -41,6 +41,7 @@ from modules.consumables.storage import (
     delete_consumable_receipt,
     create_supplier,
     deactivate_supplier,
+    deactivate_consumable_item,
     delete_supply,
     get_accepted_supplies,
     get_active_suppliers,
@@ -85,6 +86,16 @@ from modules.receiving.products import CATEGORIES, SIZES
 
 
 INVENTORY_REVIEW_PAGE_SIZE = 15
+INVENTORY_CATEGORIES = (
+    ("boxes", "📦 Коробки и упаковка", ("короб", "скотч")),
+    ("bags", "🛍 Пакеты и мешки", ("пыльник", "курьерский пакет", "дой-пак", "мешк", "zip lock", "пакет")),
+    ("labels", "🏷 Бирки, пломбы и наклейки", ("бирк", "пломб", "наклейк")),
+    ("number_signs", "🔢 Номерные знаки", ("номерной знак",)),
+    ("inserts", "💌 Открытки и вложения", ("открытк", "сертификат")),
+    ("printing", "🖨 Печать и этикетки", ("картридж", "бумаг", "этикетк")),
+    ("household", "🍴 Хозяйственные товары", ("стакан", "вилк", "ложк")),
+    ("other", "📁 Прочее", ()),
+)
 
 
 (
@@ -137,7 +148,9 @@ INVENTORY_REVIEW_PAGE_SIZE = 15
     RECEIPT_DELETE_CONFIRM,
     INVENTORY_REVIEW_SELECT,
     INVENTORY_REVIEW_QUANTITY,
-) = range(500, 549)
+    ITEM_DELETE_SELECT,
+    ITEM_DELETE_CONFIRM,
+) = range(500, 551)
 
 
 def current_employee_or_none(update):
@@ -301,6 +314,16 @@ def consumable_items_keyboard(items, prefix):
     return InlineKeyboardMarkup(rows)
 
 
+def consumable_item_delete_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗑 Да, удалить из учета", callback_data="consdeleteitem:yes")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="consdeleteitem:back")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
+        ]
+    )
+
+
 def button_text(value, limit=58):
     value = str(value)
     return value if len(value) <= limit else value[: limit - 1] + "…"
@@ -424,44 +447,81 @@ def receipt_delete_confirm_keyboard():
     )
 
 
-def inventory_session_text(session, records):
+def inventory_category_definition(category_key):
+    return next(
+        (category for category in INVENTORY_CATEGORIES if category[0] == category_key),
+        None,
+    )
+
+
+def inventory_record_category(record):
+    item_name = str(record.get("item_name") or "").strip().casefold().replace("ё", "е")
+    for category_key, _, patterns in INVENTORY_CATEGORIES:
+        if category_key == "other":
+            continue
+        if any(pattern in item_name for pattern in patterns):
+            return category_key
+    return "other"
+
+
+def inventory_category_records(records, category_key):
+    return [record for record in records if inventory_record_category(record) == category_key]
+
+
+def inventory_session_text(session, records, category_key=None):
     counted = sum(1 for record in records if record["counted"])
     lines = [
         "🔢 Параллельный пересчет расходников",
         "",
-        f"Участников: {session['participant_count']}",
+        f"Участников: {session.get('participant_count', 0)}",
         f"Посчитано: {counted} из {len(records)}",
     ]
-    if counted:
-        lines.extend(["", "Последние внесенные значения:"])
-        for record in records:
-            if not record["counted"]:
-                continue
-            counted_at = record.get("counted_at")
-            changed_at = counted_at.strftime("%d.%m %H:%M") if counted_at else ""
-            lines.append(
-                f"• {button_text(record['item_name'], limit=36)}: "
-                f"{format_quantity(record['counted_quantity'])} {record['unit']} — "
-                f"{record.get('counted_by_name') or '—'} {changed_at}".strip()
-            )
+    category = inventory_category_definition(category_key)
+    if category:
+        category_records = inventory_category_records(records, category_key)
+        category_counted = sum(1 for record in category_records if record["counted"])
+        lines.extend(
+            [
+                "",
+                category[1],
+                f"В папке посчитано: {category_counted} из {len(category_records)}",
+            ]
+        )
+    else:
+        lines.extend(["", "Выберите папку расходников:"])
     return "\n".join(lines)
 
 
-def inventory_session_keyboard(records):
+def inventory_session_keyboard(records, category_key=None):
     rows = []
-    for record in records:
-        status = "⬜"
-        if record["counted"]:
-            status = "✅"
-        label = f"{status} {button_text(record['item_name'], limit=46)}"
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    label,
-                    callback_data=f"consinventoryitem:{record['item_id']}",
-                )
-            ]
-        )
+    category = inventory_category_definition(category_key)
+    if category:
+        for record in inventory_category_records(records, category_key):
+            status = "✅" if record["counted"] else "⬜"
+            label = f"{status} {button_text(record['item_name'], limit=46)}"
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"consinventoryitem:{record['item_id']}",
+                    )
+                ]
+            )
+        rows.append([InlineKeyboardButton("⬅️ К папкам", callback_data="consinventory:categories")])
+    else:
+        for folder_key, folder_name, _ in INVENTORY_CATEGORIES:
+            folder_records = inventory_category_records(records, folder_key)
+            if not folder_records:
+                continue
+            folder_counted = sum(1 for record in folder_records if record["counted"])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"{folder_name} · {folder_counted}/{len(folder_records)}",
+                        callback_data=f"consinventory:category:{folder_key}",
+                    )
+                ]
+            )
     if any(record["counted"] for record in records):
         rows.append([InlineKeyboardButton("✅ Завершить пересчет", callback_data="consinventory:finish")])
     rows.append([InlineKeyboardButton("❌ Выйти", callback_data="cons:cancel")])
@@ -1322,6 +1382,51 @@ async def inventory_count_start(update: Update, context: ContextTypes.DEFAULT_TY
     return INVENTORY_ITEM_SELECT
 
 
+async def inventory_category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    session_id = context.user_data.get("inventory_session_id")
+    if not session_id:
+        await query.edit_message_text("Откройте пересчет заново.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    category_key = query.data.rsplit(":", 1)[-1]
+    if not inventory_category_definition(category_key):
+        await query.edit_message_text("Папка не найдена.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+    if not inventory_session or inventory_session["status"] != "draft":
+        await query.edit_message_text("Пересчет уже завершен.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    records = get_inventory_session_items(session_id)
+    context.user_data["inventory_category"] = category_key
+    await query.edit_message_text(
+        inventory_session_text(inventory_session, records, category_key),
+        reply_markup=inventory_session_keyboard(records, category_key),
+    )
+    return INVENTORY_ITEM_SELECT
+
+
+async def inventory_categories_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    session_id = context.user_data.get("inventory_session_id")
+    inventory_session = (
+        get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
+        if session_id
+        else None
+    )
+    if not inventory_session or inventory_session["status"] != "draft":
+        await query.edit_message_text("Пересчет уже завершен.", reply_markup=consumables_counting_keyboard(update))
+        return ConversationHandler.END
+    context.user_data.pop("inventory_category", None)
+    records = get_inventory_session_items(session_id)
+    await query.edit_message_text(
+        inventory_session_text(inventory_session, records),
+        reply_markup=inventory_session_keyboard(records),
+    )
+    return INVENTORY_ITEM_SELECT
+
+
 async def inventory_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1376,9 +1481,10 @@ async def inventory_back_to_list(update: Update, context: ContextTypes.DEFAULT_T
     if not session_info or session_info["status"] != "draft":
         await query.edit_message_text("Пересчет уже завершен.", reply_markup=consumables_counting_keyboard(update))
         return ConversationHandler.END
+    category_key = context.user_data.get("inventory_category")
     await query.edit_message_text(
-        inventory_session_text(session_info, records),
-        reply_markup=inventory_session_keyboard(records),
+        inventory_session_text(session_info, records, category_key),
+        reply_markup=inventory_session_keyboard(records, category_key),
     )
     return INVENTORY_ITEM_SELECT
 
@@ -1403,9 +1509,10 @@ async def inventory_quantity_received(update: Update, context: ContextTypes.DEFA
     session_id = context.user_data["inventory_session_id"]
     inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
     records = get_inventory_session_items(session_id)
+    category_key = context.user_data.get("inventory_category")
     await update.message.reply_text(
-        inventory_session_text(inventory_session, records),
-        reply_markup=inventory_session_keyboard(records),
+        inventory_session_text(inventory_session, records, category_key),
+        reply_markup=inventory_session_keyboard(records, category_key),
     )
     return INVENTORY_ITEM_SELECT
 
@@ -1420,9 +1527,10 @@ async def inventory_count_finish(update: Update, context: ContextTypes.DEFAULT_T
     records = get_inventory_session_items(session_id)
     counted = sum(1 for record in records if record["counted"])
     if not counted:
+        category_key = context.user_data.get("inventory_category")
         await query.edit_message_text(
             "Сначала укажите количество хотя бы одного расходника.",
-            reply_markup=inventory_session_keyboard(records),
+            reply_markup=inventory_session_keyboard(records, category_key),
         )
         return INVENTORY_ITEM_SELECT
     uncounted = len(records) - counted
@@ -1445,9 +1553,10 @@ async def inventory_complete_confirmed(update: Update, context: ContextTypes.DEF
     if query.data == "consinventory:complete:no":
         inventory_session = get_inventory_session(session_id, update.effective_user.id, current_employee_name(update))
         records = get_inventory_session_items(session_id)
+        category_key = context.user_data.get("inventory_category")
         await query.edit_message_text(
-            inventory_session_text(inventory_session, records),
-            reply_markup=inventory_session_keyboard(records),
+            inventory_session_text(inventory_session, records, category_key),
+            reply_markup=inventory_session_keyboard(records, category_key),
         )
         return INVENTORY_ITEM_SELECT
 
@@ -1713,9 +1822,10 @@ async def inventory_exit_action(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.clear()
         return ConversationHandler.END
     records = get_inventory_session_items(session_id)
+    category_key = context.user_data.get("inventory_category")
     await query.edit_message_text(
-        inventory_session_text(inventory_session, records),
-        reply_markup=inventory_session_keyboard(records),
+        inventory_session_text(inventory_session, records, category_key),
+        reply_markup=inventory_session_keyboard(records, category_key),
     )
     return INVENTORY_ITEM_SELECT
 
@@ -1868,6 +1978,72 @@ async def item_unit_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         f"Расходник добавлен в учет ✅\n\n{item['name']}, единица: {item['unit']}",
         reply_markup=build_consumables_counting_menu_keyboard(manager=True),
+    )
+    return ConversationHandler.END
+
+
+async def delete_item_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    items = get_consumable_items(active_only=True)
+    if not items:
+        await query.edit_message_text("Активных расходников нет.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите неактуальный расходник, который нужно убрать из учета:",
+        reply_markup=consumable_items_keyboard(items, "consdeleteitem"),
+    )
+    return ITEM_DELETE_SELECT
+
+
+async def delete_item_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    try:
+        item_id = int(query.data.replace("consdeleteitem:", ""))
+    except (TypeError, ValueError):
+        await query.edit_message_text("Расходник не найден.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    item = get_consumable_item(item_id)
+    if not item or not item["is_active"]:
+        await query.edit_message_text("Расходник не найден или уже удален.", reply_markup=consumables_main_keyboard(update))
+        return ConversationHandler.END
+    context.user_data["delete_consumable_item_id"] = item_id
+    await query.edit_message_text(
+        "Удалить расходник из активного учета?\n\n"
+        f"{item['name']}\n"
+        f"Текущий остаток: {format_quantity(item['current_quantity'])} {item['unit']}\n\n"
+        "Он исчезнет из приемки, пересчетов и норм на товары. История движений сохранится.",
+        reply_markup=consumable_item_delete_confirm_keyboard(),
+    )
+    return ITEM_DELETE_CONFIRM
+
+
+async def delete_item_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    try:
+        item = deactivate_consumable_item(context.user_data.get("delete_consumable_item_id"))
+    except (RuntimeError, TypeError, ValueError) as error:
+        await query.edit_message_text(str(error), reply_markup=consumables_main_keyboard(update))
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Расходник удален из активного учета ✅\n\n"
+        f"{item['name']}\n"
+        "История остатков и движений сохранена.",
+        reply_markup=consumables_main_keyboard(update),
     )
     return ConversationHandler.END
 
@@ -2833,6 +3009,7 @@ def get_consumables_conversation_handler():
             CallbackQueryHandler(inventory_pdf_start, pattern=r"^cons:inventory_pdf$"),
             CallbackQueryHandler(add_supply_start, pattern=r"^cons:add_supply$"),
             CallbackQueryHandler(add_item_start, pattern=r"^cons:add_item$"),
+            CallbackQueryHandler(delete_item_start, pattern=r"^cons:delete_item$"),
             CallbackQueryHandler(add_stock_start, pattern=r"^cons:add_stock$"),
             CallbackQueryHandler(set_rule_start, pattern=r"^cons:set_rule$"),
             CallbackQueryHandler(accept_supply_start, pattern=r"^cons:accept_supply$"),
@@ -2954,6 +3131,15 @@ def get_consumables_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, item_unit_received),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
+            ITEM_DELETE_SELECT: [
+                CallbackQueryHandler(delete_item_selected, pattern=r"^consdeleteitem:\d+$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
+            ITEM_DELETE_CONFIRM: [
+                CallbackQueryHandler(delete_item_confirmed, pattern=r"^consdeleteitem:yes$"),
+                CallbackQueryHandler(delete_item_start, pattern=r"^consdeleteitem:back$"),
+                CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
+            ],
             STOCK_ITEM_SELECT: [
                 CallbackQueryHandler(stock_item_selected, pattern=r"^consstockitem:"),
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
@@ -3022,6 +3208,8 @@ def get_consumables_conversation_handler():
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
             INVENTORY_ITEM_SELECT: [
+                CallbackQueryHandler(inventory_category_selected, pattern=r"^consinventory:category:[a-z_]+$"),
+                CallbackQueryHandler(inventory_categories_back, pattern=r"^consinventory:categories$"),
                 CallbackQueryHandler(inventory_item_selected, pattern=r"^consinventoryitem:"),
                 CallbackQueryHandler(inventory_count_finish, pattern=r"^consinventory:finish$"),
                 CallbackQueryHandler(inventory_complete_confirmed, pattern=r"^consinventory:complete:(yes|no)$"),

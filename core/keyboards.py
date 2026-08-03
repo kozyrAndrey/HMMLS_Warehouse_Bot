@@ -114,7 +114,12 @@ def build_consumables_menu_keyboard(manager=False):
         [InlineKeyboardButton("🔢 Пересчет расходников", callback_data="cons:module_counting")],
     ]
     if manager:
-        keyboard.append([InlineKeyboardButton("➕ Добавить расходник в учет", callback_data="cons:add_item")])
+        keyboard.extend(
+            [
+                [InlineKeyboardButton("➕ Добавить расходник в учет", callback_data="cons:add_item")],
+                [InlineKeyboardButton("🗑 Удалить расходник из учета", callback_data="cons:delete_item")],
+            ]
+        )
     keyboard.append([InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")])
     return InlineKeyboardMarkup(keyboard)
 
