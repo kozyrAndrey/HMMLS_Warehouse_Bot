@@ -130,48 +130,60 @@ def regular_tasks_menu_keyboard():
     ])
 
 
-def task_type_keyboard(cancel_callback="task:cancel"):
-    return InlineKeyboardMarkup([
+def task_type_keyboard(cancel_callback="task:cancel", back_target=None):
+    rows = [
         [InlineKeyboardButton("📦 Складская", callback_data="tasktype:warehouse")],
         [InlineKeyboardButton("🧩 Нескладская", callback_data="tasktype:general")],
-        [InlineKeyboardButton("❌ Отмена", callback_data=cancel_callback)],
-    ])
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data=cancel_callback)])
+    return InlineKeyboardMarkup(rows)
 
 
-def date_keyboard(prefix, days=14):
+def date_keyboard(prefix, days=14, back_target=None):
     rows = []
     current = today_msk()
     for offset in range(days):
         day = current + timedelta(days=offset)
         rows.append([InlineKeyboardButton(day_label(day), callback_data=f"{prefix}:{date_to_str(day)}")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def weekday_keyboard(prefix):
+def weekday_keyboard(prefix, back_target=None):
     rows = []
     for index, name in enumerate(WEEKDAY_NAMES):
         rows.append([InlineKeyboardButton(name, callback_data=f"{prefix}:{index}")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def deadline_keyboard():
+def deadline_keyboard(back_target=None):
     rows = []
     for index in range(0, len(TASK_DEADLINES), 3):
         rows.append([InlineKeyboardButton(value, callback_data=f"taskdeadline:{value}") for value in TASK_DEADLINES[index:index + 3]])
     rows.append([InlineKeyboardButton(NO_DEADLINE_TEXT, callback_data="taskdeadline:none")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def assignee_mode_keyboard():
-    return InlineKeyboardMarkup([
+def assignee_mode_keyboard(back_target=None):
+    rows = [
         [InlineKeyboardButton("Все, кто работает в этот день", callback_data="regassigneemode:working_today")],
         [InlineKeyboardButton("Конкретные сотрудники", callback_data="regassigneemode:specific")],
         [InlineKeyboardButton("Без исполнителей", callback_data="regassigneemode:none")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
-    ])
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def employee_label(employee, selected_ids):
@@ -180,7 +192,7 @@ def employee_label(employee, selected_ids):
     return f"{mark} {employee['full_name']}" + (f" @{username}" if username else "")
 
 
-def assignees_keyboard(working, selected_ids):
+def assignees_keyboard(working, selected_ids, back_target=None):
     selected_ids = set(selected_ids or [])
     rows = [
         [InlineKeyboardButton(employee_label(employee, selected_ids), callback_data=f"taskassignee:{employee['employee_id']}")]
@@ -188,11 +200,13 @@ def assignees_keyboard(working, selected_ids):
     ]
     rows.append([InlineKeyboardButton("✅ Завершить выбор", callback_data="taskassignee:done")])
     rows.append([InlineKeyboardButton("👤 Без исполнителей", callback_data="taskassignee:none")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def regular_assignees_keyboard(selected_ids):
+def regular_assignees_keyboard(selected_ids, back_target=None):
     selected_ids = set(selected_ids or [])
     employees = get_employees(include_inactive=False)
     rows = [
@@ -200,11 +214,13 @@ def regular_assignees_keyboard(selected_ids):
         for employee in employees
     ]
     rows.append([InlineKeyboardButton("✅ Завершить выбор", callback_data="regassignee:done")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def task_select_keyboard(tasks, prefix):
+def task_select_keyboard(tasks, prefix, back_target=None):
     rows = []
     for task in tasks:
         task_id = str(task.get("task_id", "")).strip()
@@ -214,11 +230,13 @@ def task_select_keyboard(tasks, prefix):
         if len(description) > 45:
             description = description[:42] + "..."
         rows.append([InlineKeyboardButton(f"{icon} {description}", callback_data=f"{prefix}:{task_id}")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-def regular_task_select_keyboard(templates, prefix):
+def regular_task_select_keyboard(templates, prefix, back_target=None):
     rows = []
     for template in templates:
         template_id = str(template.get("template_id", "")).strip()
@@ -226,6 +244,8 @@ def regular_task_select_keyboard(templates, prefix):
         if len(description) > 45:
             description = description[:42] + "..."
         rows.append([InlineKeyboardButton(description, callback_data=f"{prefix}:{template_id}")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -246,6 +266,7 @@ def edit_field_keyboard(task):
     rows.extend([
         [InlineKeyboardButton("⏰ Дедлайн", callback_data="taskeditfield:deadline")],
         [InlineKeyboardButton("✅ Статус", callback_data="taskeditfield:status")],
+        [InlineKeyboardButton("⬅️ Назад к списку", callback_data="taskback:edit_select")],
         [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
     ])
     return InlineKeyboardMarkup(rows)
@@ -274,6 +295,7 @@ def regular_edit_field_keyboard(template):
         [InlineKeyboardButton("📦 Тип задачи", callback_data="regeditfield:type")],
         [InlineKeyboardButton("👥 Исполнители", callback_data="regeditfield:assignees")],
         [InlineKeyboardButton("⏰ Дедлайн", callback_data="regeditfield:deadline")],
+        [InlineKeyboardButton("⬅️ Назад к списку", callback_data="taskback:reg_edit_select")],
         [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
     ])
 
@@ -283,15 +305,19 @@ def status_keyboard():
         [InlineKeyboardButton("⬜ Невыполнено", callback_data="taskstatus:active")],
         [InlineKeyboardButton("✅ Выполнено", callback_data="taskstatus:done")],
         [InlineKeyboardButton("🚫 Отменено", callback_data="taskstatus:cancelled")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="taskback:edit_field")],
         [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
     ])
 
 
-def confirm_keyboard(prefix, item_id):
-    return InlineKeyboardMarkup([
+def confirm_keyboard(prefix, item_id, back_target=None):
+    rows = [
         [InlineKeyboardButton("✅ Да", callback_data=f"{prefix}:yes:{item_id}")],
-        [InlineKeyboardButton("Отмена", callback_data="task:cancel")],
-    ])
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
+    rows.append([InlineKeyboardButton("Отмена", callback_data="task:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def warehouse_tasks_inline_keyboard(tasks):
@@ -358,7 +384,7 @@ async def task_add_type_selected(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     context.user_data["task_type"] = query.data.replace("tasktype:", "")
-    await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskdate"))
+    await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskdate", back_target="add_type"))
     return TASK_ADD_DATE
 
 
@@ -366,19 +392,19 @@ async def task_add_date_selected(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     context.user_data["task_date"] = query.data.replace("taskdate:", "")
-    await query.edit_message_text(f"Дата: {context.user_data['task_date']}\n\nВведите описание задачи:")
+    await query.edit_message_text(f"Дата: {context.user_data['task_date']}\n\nВведите описание задачи:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:add_date")], [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")]]))
     return TASK_ADD_DESCRIPTION
 
 
 async def task_add_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     description = update.message.text.strip()
     if not description:
-        await update.message.reply_text("Описание не должно быть пустым. Введите описание задачи:")
+        await update.message.reply_text("Описание не должно быть пустым. Введите описание задачи:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:add_date")]]))
         return TASK_ADD_DESCRIPTION
     context.user_data["task_description"] = description
 
     if context.user_data.get("task_type") == TASK_TYPE_GENERAL:
-        await update.message.reply_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await update.message.reply_text("Выберите дедлайн:", reply_markup=deadline_keyboard("add_description"))
         return TASK_ADD_DEADLINE
 
     day = parse_date(context.user_data["task_date"])
@@ -387,11 +413,11 @@ async def task_add_description_received(update: Update, context: ContextTypes.DE
     if not working:
         await update.message.reply_text(
             "На эту дату пока нет сотрудников в расписании. Задачу можно создать без исполнителей.\n\nВыберите дедлайн:",
-            reply_markup=deadline_keyboard(),
+            reply_markup=deadline_keyboard("add_description"),
         )
         return TASK_ADD_DEADLINE
 
-    await update.message.reply_text("Выберите исполнителей из тех, кто работает в выбранный день:", reply_markup=assignees_keyboard(working, []))
+    await update.message.reply_text("Выберите исполнителей из тех, кто работает в выбранный день:", reply_markup=assignees_keyboard(working, [], "add_description"))
     return TASK_ADD_ASSIGNEES
 
 
@@ -412,7 +438,7 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
                 context,
                 "Исполнители очищены ✅",
             )
-        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("add_assignees"))
         return TASK_ADD_DEADLINE
 
     if value == "done":
@@ -426,13 +452,13 @@ async def task_assignee_selected(update: Update, context: ContextTypes.DEFAULT_T
                 context,
                 "Исполнители обновлены ✅",
             )
-        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("add_assignees"))
         return TASK_ADD_DEADLINE
 
     selected = set(context.user_data.get("selected_employee_ids", []))
     selected.remove(value) if value in selected else selected.add(value)
     context.user_data["selected_employee_ids"] = list(selected)
-    await query.edit_message_text("Выберите исполнителей:", reply_markup=assignees_keyboard(working, selected))
+    await query.edit_message_text("Выберите исполнителей:", reply_markup=assignees_keyboard(working, selected, "edit_field" if "edit_task_id" in context.user_data else "add_description"))
     return TASK_EDIT_ASSIGNEES if "edit_task_id" in context.user_data else TASK_ADD_ASSIGNEES
 
 
@@ -548,7 +574,7 @@ async def task_edit_date_selected(update: Update, context: ContextTypes.DEFAULT_
     if not tasks:
         await query.edit_message_text("На эту дату задач пока нет.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
-    await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit"))
+    await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date"))
     return TASK_EDIT_SELECT
 
 
@@ -571,15 +597,15 @@ async def task_edit_field_selected(update: Update, context: ContextTypes.DEFAULT
     field = query.data.replace("taskeditfield:", "")
     _, task = get_task_by_id(context.user_data["edit_task_id"])
     if field == "description":
-        await query.edit_message_text("Введите новое описание:")
+        await query.edit_message_text("Введите новое описание:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:edit_field")]]))
         return TASK_EDIT_DESCRIPTION
     if field == "deadline":
-        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("edit_field"))
         return TASK_EDIT_DEADLINE
     if field == "assignees":
         day = parse_date(task["Дата"])
         context.user_data["selected_employee_ids"] = [x.strip() for x in str(task.get("Исполнители ID", "")).split(",") if x.strip()]
-        await query.edit_message_text("Выберите исполнителей:", reply_markup=assignees_keyboard(get_working_employees_for_date(day), context.user_data["selected_employee_ids"]))
+        await query.edit_message_text("Выберите исполнителей:", reply_markup=assignees_keyboard(get_working_employees_for_date(day), context.user_data["selected_employee_ids"], "edit_field"))
         return TASK_EDIT_ASSIGNEES
     if field == "status":
         await query.edit_message_text("Выберите статус:", reply_markup=status_keyboard())
@@ -640,7 +666,7 @@ async def task_delete_date_selected(update: Update, context: ContextTypes.DEFAUL
     if not tasks:
         await query.edit_message_text("На эту дату задач пока нет.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
-    await query.edit_message_text("Выберите задачу для отмены на эту дату:", reply_markup=task_select_keyboard(tasks, "taskdel"))
+    await query.edit_message_text("Выберите задачу для отмены на эту дату:", reply_markup=task_select_keyboard(tasks, "taskdel", "delete_date"))
     return TASK_DELETE_SELECT
 
 
@@ -654,7 +680,7 @@ async def task_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     await query.edit_message_text(
         f"Отменить задачу на эту дату?\n\n{task.get('Описание', '')}",
-        reply_markup=confirm_keyboard("taskdelconfirm", task_id),
+        reply_markup=confirm_keyboard("taskdelconfirm", task_id, "delete_select"),
     )
     return TASK_DELETE_CONFIRM
 
@@ -696,7 +722,7 @@ async def regular_add_weekday_selected(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     context.user_data["regular_weekday"] = int(query.data.replace("regweekday:", ""))
-    await query.edit_message_text("Выберите тип шаблона:", reply_markup=task_type_keyboard())
+    await query.edit_message_text("Выберите тип шаблона:", reply_markup=task_type_keyboard(back_target="reg_add_weekday"))
     return REG_ADD_TYPE
 
 
@@ -704,7 +730,7 @@ async def regular_add_type_selected(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
     context.user_data["regular_task_type"] = query.data.replace("tasktype:", "")
-    await query.edit_message_text("Введите описание шаблона:")
+    await query.edit_message_text("Введите описание шаблона:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:reg_add_type")]]))
     return REG_ADD_DESCRIPTION
 
 
@@ -715,11 +741,11 @@ async def regular_add_description_received(update: Update, context: ContextTypes
         return REG_ADD_DESCRIPTION
     context.user_data["regular_description"] = description
     if context.user_data.get("regular_task_type") == TASK_TYPE_WAREHOUSE:
-        await update.message.reply_text("Выберите режим исполнителей:", reply_markup=assignee_mode_keyboard())
+        await update.message.reply_text("Выберите режим исполнителей:", reply_markup=assignee_mode_keyboard("reg_add_description"))
         return REG_ADD_ASSIGNEE_MODE
     context.user_data["regular_assignee_mode"] = ASSIGNEE_MODE_NONE
     context.user_data["selected_employee_ids"] = []
-    await update.message.reply_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+    await update.message.reply_text("Выберите дедлайн:", reply_markup=deadline_keyboard("reg_add_description"))
     return REG_ADD_DEADLINE
 
 
@@ -732,14 +758,14 @@ async def regular_assignee_mode_selected(update: Update, context: ContextTypes.D
     context.user_data["regular_assignee_mode"] = mode
     context.user_data["selected_employee_ids"] = []
     if mode == ASSIGNEE_MODE_SPECIFIC:
-        await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard([]))
+        await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard([], "reg_edit_field" if "edit_template_id" in context.user_data else "reg_add_mode"))
         return REG_EDIT_ASSIGNEES if "edit_template_id" in context.user_data else REG_ADD_ASSIGNEES
     if "edit_template_id" in context.user_data:
         set_task_template_assignees(context.user_data["edit_template_id"], mode, [])
         context.user_data.clear()
         await query.edit_message_text("Исполнители шаблона обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
         return ConversationHandler.END
-    await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+    await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("reg_add_mode"))
     return REG_ADD_DEADLINE
 
 
@@ -756,12 +782,12 @@ async def regular_assignee_selected(update: Update, context: ContextTypes.DEFAUL
             context.user_data.clear()
             await query.edit_message_text("Исполнители шаблона обновлены ✅", reply_markup=regular_tasks_menu_keyboard())
             return ConversationHandler.END
-        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("reg_add_assignees"))
         return REG_ADD_DEADLINE
 
     selected.remove(value) if value in selected else selected.add(value)
     context.user_data["selected_employee_ids"] = list(selected)
-    await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard(selected))
+    await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard(selected, "reg_edit_field" if "edit_template_id" in context.user_data else "reg_add_mode"))
     return REG_EDIT_ASSIGNEES if "edit_template_id" in context.user_data else REG_ADD_ASSIGNEES
 
 
@@ -804,7 +830,7 @@ async def regular_edit_day_selected(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     await query.edit_message_text(
         f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон:",
-        reply_markup=regular_task_select_keyboard(templates, "regedit"),
+        reply_markup=regular_task_select_keyboard(templates, "regedit", "reg_edit_day"),
     )
     return REG_EDIT_SELECT
 
@@ -827,19 +853,19 @@ async def regular_edit_field_selected(update: Update, context: ContextTypes.DEFA
     await query.answer()
     field = query.data.replace("regeditfield:", "")
     if field == "description":
-        await query.edit_message_text("Введите новое описание шаблона:")
+        await query.edit_message_text("Введите новое описание шаблона:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:reg_edit_field")]]))
         return REG_EDIT_DESCRIPTION
     if field == "weekday":
-        await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regeditweekday"))
+        await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regeditweekday", "reg_edit_field"))
         return REG_EDIT_WEEKDAY
     if field == "type":
-        await query.edit_message_text("Выберите тип задачи:", reply_markup=task_type_keyboard())
+        await query.edit_message_text("Выберите тип задачи:", reply_markup=task_type_keyboard(back_target="reg_edit_field"))
         return REG_EDIT_TYPE
     if field == "assignees":
-        await query.edit_message_text("Выберите режим исполнителей:", reply_markup=assignee_mode_keyboard())
+        await query.edit_message_text("Выберите режим исполнителей:", reply_markup=assignee_mode_keyboard("reg_edit_field"))
         return REG_EDIT_ASSIGNEE_MODE
     if field == "deadline":
-        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard())
+        await query.edit_message_text("Выберите дедлайн:", reply_markup=deadline_keyboard("reg_edit_field"))
         return REG_EDIT_DEADLINE
     return ConversationHandler.END
 
@@ -900,7 +926,7 @@ async def regular_delete_day_selected(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
     await query.edit_message_text(
         f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон для удаления:",
-        reply_markup=regular_task_select_keyboard(templates, "regdel"),
+        reply_markup=regular_task_select_keyboard(templates, "regdel", "reg_delete_day"),
     )
     return REG_DELETE_SELECT
 
@@ -915,7 +941,7 @@ async def regular_delete_selected(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     await query.edit_message_text(
         f"Удалить шаблон?\n\n{template.get('Описание', '')}",
-        reply_markup=confirm_keyboard("regdelconfirm", template_id),
+        reply_markup=confirm_keyboard("regdelconfirm", template_id, "reg_delete_select"),
     )
     return REG_DELETE_CONFIRM
 
@@ -927,6 +953,95 @@ async def regular_delete_confirmed(update: Update, context: ContextTypes.DEFAULT
     delete_task_template(template_id)
     context.user_data.clear()
     await query.edit_message_text("Регулярная задача удалена ✅", reply_markup=regular_tasks_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def tasks_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("taskback:", "", 1)
+
+    if target == "add_type":
+        await query.edit_message_text("Выберите тип разовой задачи:", reply_markup=task_type_keyboard())
+        return TASK_ADD_TYPE
+    if target == "add_date":
+        await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskdate", back_target="add_type"))
+        return TASK_ADD_DATE
+    if target == "add_description":
+        await query.edit_message_text(f"Дата: {context.user_data.get('task_date', '')}\n\nВведите описание задачи:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:add_date")], [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")]]))
+        return TASK_ADD_DESCRIPTION
+    if target == "add_assignees":
+        day = parse_date(context.user_data["task_date"])
+        selected = context.user_data.get("selected_employee_ids", [])
+        await query.edit_message_text("Выберите исполнителей:", reply_markup=assignees_keyboard(get_working_employees_for_date(day), selected, "add_description"))
+        return TASK_ADD_ASSIGNEES
+
+    if target == "edit_date":
+        context.user_data.pop("edit_task_id", None)
+        await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskeditdate"))
+        return TASK_EDIT_DATE
+    if target == "edit_select":
+        context.user_data.pop("edit_task_id", None)
+        day = parse_date(context.user_data["edit_task_date"])
+        tasks = get_tasks_by_date(day, include_cancelled=False)
+        await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date"))
+        return TASK_EDIT_SELECT
+    if target == "edit_field":
+        context.user_data.pop("selected_employee_ids", None)
+        _, task = get_task_by_id(context.user_data.get("edit_task_id"))
+        if not task:
+            await query.edit_message_text("Задача не найдена.", reply_markup=tasks_menu_keyboard())
+            return ConversationHandler.END
+        await query.edit_message_text("Что изменить?", reply_markup=edit_field_keyboard(task))
+        return TASK_EDIT_FIELD
+
+    if target == "delete_date":
+        await query.edit_message_text("Выберите дату:", reply_markup=date_keyboard("taskdeldate"))
+        return TASK_DELETE_DATE
+    if target == "delete_select":
+        day = parse_date(context.user_data["delete_task_date"])
+        tasks = get_tasks_by_date(day, include_cancelled=False)
+        await query.edit_message_text("Выберите задачу для отмены:", reply_markup=task_select_keyboard(tasks, "taskdel", "delete_date"))
+        return TASK_DELETE_SELECT
+
+    if target == "reg_add_weekday":
+        await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regweekday"))
+        return REG_ADD_WEEKDAY
+    if target == "reg_add_type":
+        await query.edit_message_text("Выберите тип шаблона:", reply_markup=task_type_keyboard(back_target="reg_add_weekday"))
+        return REG_ADD_TYPE
+    if target == "reg_add_description":
+        await query.edit_message_text("Введите описание шаблона:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="taskback:reg_add_type")]]))
+        return REG_ADD_DESCRIPTION
+    if target == "reg_add_mode":
+        await query.edit_message_text("Выберите режим исполнителей:", reply_markup=assignee_mode_keyboard("reg_add_description"))
+        return REG_ADD_ASSIGNEE_MODE
+    if target == "reg_add_assignees":
+        await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard(context.user_data.get("selected_employee_ids", []), "reg_add_mode"))
+        return REG_ADD_ASSIGNEES
+
+    if target in {"reg_edit_day", "reg_delete_day"}:
+        prefix = "regeditday" if target == "reg_edit_day" else "regdelday"
+        state = REG_EDIT_DAY if target == "reg_edit_day" else REG_DELETE_DAY
+        await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard(prefix))
+        return state
+    if target in {"reg_edit_select", "reg_delete_select"}:
+        weekday = int(context.user_data["regular_weekday_filter"])
+        templates = regular_templates_for_weekday(weekday)
+        editing = target == "reg_edit_select"
+        prefix = "regedit" if editing else "regdel"
+        back = "reg_edit_day" if editing else "reg_delete_day"
+        await query.edit_message_text(f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон:", reply_markup=regular_task_select_keyboard(templates, prefix, back))
+        return REG_EDIT_SELECT if editing else REG_DELETE_SELECT
+    if target == "reg_edit_field":
+        template = get_task_template_by_id(context.user_data.get("edit_template_id"))
+        if not template:
+            await query.edit_message_text("Шаблон не найден.", reply_markup=regular_tasks_menu_keyboard())
+            return ConversationHandler.END
+        await query.edit_message_text("Что изменить?", reply_markup=regular_edit_field_keyboard(template))
+        return REG_EDIT_FIELD
+
+    await query.edit_message_text("Действие отменено.", reply_markup=tasks_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -1082,13 +1197,13 @@ def setup_tasks_jobs(app):
     if not app.job_queue:
         logging.warning("JobQueue не включен. Установите python-telegram-bot[job-queue].")
         return
-    app.job_queue.run_daily(daily_staff_job, time=time(hour=10, minute=30, tzinfo=MSK_TZ), name="daily_staff_message")
+    app.job_queue.run_daily(daily_staff_job, time=time(hour=9, minute=30, tzinfo=MSK_TZ), name="daily_staff_message")
     app.job_queue.run_daily(
         auto_assign_template_tasks_job,
-        time=time(hour=10, minute=30, tzinfo=MSK_TZ),
+        time=time(hour=9, minute=30, tzinfo=MSK_TZ),
         name="template_task_auto_assignment",
     )
-    app.job_queue.run_daily(daily_tasks_job, time=time(hour=10, minute=35, tzinfo=MSK_TZ), name="daily_tasks_export")
+    app.job_queue.run_daily(daily_tasks_job, time=time(hour=9, minute=35, tzinfo=MSK_TZ), name="daily_tasks_export")
     app.job_queue.run_daily(
         weekly_template_job,
         time=time(hour=23, minute=0, tzinfo=MSK_TZ),
@@ -1149,7 +1264,10 @@ def get_tasks_handlers():
             REG_DELETE_SELECT: [CallbackQueryHandler(regular_delete_selected, pattern=r"^regdel:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
             REG_DELETE_CONFIRM: [CallbackQueryHandler(regular_delete_confirmed, pattern=r"^regdelconfirm:yes:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
         },
-        fallbacks=[CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
+        fallbacks=[
+            CallbackQueryHandler(tasks_back, pattern=r"^taskback:"),
+            CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$"),
+        ],
         per_message=False,
         allow_reentry=True,
     )

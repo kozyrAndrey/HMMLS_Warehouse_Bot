@@ -60,12 +60,18 @@ def ensure_manager(update: Update):
     return is_manager(current_employee(update))
 
 
-def cancel_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")]])
+def cancel_keyboard(back_target=None):
+    rows = []
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"empback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
-def roles_keyboard():
+def roles_keyboard(back_target=None):
     rows = [[InlineKeyboardButton(label, callback_data=f"emprole:{role}")] for role, label in EMPLOYEE_ROLES]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"empback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -74,6 +80,7 @@ def common_fund_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Да", callback_data="empfund:yes")],
         [InlineKeyboardButton("Нет", callback_data="empfund:no")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="empback:fixed_salary")],
         [InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")],
     ])
 
@@ -98,6 +105,7 @@ def employees_keyboard(prefix, include_inactive=False):
 def edit_fields_keyboard():
     rows = [[InlineKeyboardButton(label, callback_data=f"empeditfield:{field}")] for field, label in EDIT_FIELDS]
     rows.append([InlineKeyboardButton("✅ Готово", callback_data="empedit:done")])
+    rows.append([InlineKeyboardButton("⬅️ Назад к списку", callback_data="empback:edit_select")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -105,6 +113,7 @@ def bool_edit_keyboard(prefix):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Да", callback_data=f"{prefix}:yes")],
         [InlineKeyboardButton("Нет", callback_data=f"{prefix}:no")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="empback:edit_fields")],
         [InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")],
     ])
 
@@ -151,7 +160,7 @@ async def employee_add_name_received(update: Update, context: ContextTypes.DEFAU
     context.user_data["employee_add"]["full_name"] = full_name
     await update.message.reply_text(
         "Введите номер телефона сотрудника или «-», если пока неизвестен:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=cancel_keyboard("name"),
     )
     return EMP_ADD_PHONE
 
@@ -161,7 +170,7 @@ async def employee_add_phone_received(update: Update, context: ContextTypes.DEFA
     context.user_data["employee_add"]["phone"] = "" if value == "-" else value
     await update.message.reply_text(
         "Введите Telegram user_id сотрудника или «-», если пока неизвестен:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=cancel_keyboard("phone"),
     )
     return EMP_ADD_TG_ID
 
@@ -171,7 +180,7 @@ async def employee_add_tg_id_received(update: Update, context: ContextTypes.DEFA
     context.user_data["employee_add"]["telegram_user_id"] = "" if value == "-" else value
     await update.message.reply_text(
         "Введите Telegram username без @ или «-», если пока неизвестен:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=cancel_keyboard("tg_id"),
     )
     return EMP_ADD_USERNAME
 
@@ -179,7 +188,7 @@ async def employee_add_tg_id_received(update: Update, context: ContextTypes.DEFA
 async def employee_add_username_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = (update.message.text or "").strip()
     context.user_data["employee_add"]["telegram_username"] = "" if value == "-" else value
-    await update.message.reply_text("Выберите роль:", reply_markup=roles_keyboard())
+    await update.message.reply_text("Выберите роль:", reply_markup=roles_keyboard("username"))
     return EMP_ADD_ROLE
 
 
@@ -189,17 +198,17 @@ async def employee_add_role_selected(update: Update, context: ContextTypes.DEFAU
 
     role = query.data.replace("emprole:", "")
     if role not in {role_key for role_key, _label in EMPLOYEE_ROLES}:
-        await query.edit_message_text("Неизвестная роль.", reply_markup=roles_keyboard())
+        await query.edit_message_text("Неизвестная роль.", reply_markup=roles_keyboard("username"))
         return EMP_ADD_ROLE
 
     context.user_data["employee_add"]["role"] = role
-    await query.edit_message_text("Введите часовую ставку, например 437.5:", reply_markup=cancel_keyboard())
+    await query.edit_message_text("Введите часовую ставку, например 437.5:", reply_markup=cancel_keyboard("role"))
     return EMP_ADD_HOURLY_RATE
 
 
 async def employee_add_hourly_rate_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["employee_add"]["hourly_rate"] = safe_float(update.message.text)
-    await update.message.reply_text("Введите фиксированный оклад или 0:", reply_markup=cancel_keyboard())
+    await update.message.reply_text("Введите фиксированный оклад или 0:", reply_markup=cancel_keyboard("hourly_rate"))
     return EMP_ADD_FIXED_SALARY
 
 
@@ -266,6 +275,7 @@ async def employee_fire_selected(update: Update, context: ContextTypes.DEFAULT_T
         f"Уволить сотрудника {employee['full_name']}?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Да, уволить", callback_data="empfireconfirm:yes")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="empback:fire_select")],
             [InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")],
         ]),
     )
@@ -333,7 +343,7 @@ async def employee_edit_field_selected(update: Update, context: ContextTypes.DEF
     context.user_data["employee_edit_field"] = field
 
     if field == "role":
-        await query.edit_message_text("Выберите новую роль:", reply_markup=roles_keyboard())
+        await query.edit_message_text("Выберите новую роль:", reply_markup=roles_keyboard("edit_fields"))
         return EMP_EDIT_VALUE
 
     if field == "include_in_common_fund":
@@ -352,7 +362,7 @@ async def employee_edit_field_selected(update: Update, context: ContextTypes.DEF
         "hourly_rate": "Введите новую часовую ставку:",
         "fixed_salary": "Введите новый оклад:",
     }
-    await query.edit_message_text(prompts[field], reply_markup=cancel_keyboard())
+    await query.edit_message_text(prompts[field], reply_markup=cancel_keyboard("edit_fields"))
     return EMP_EDIT_VALUE
 
 
@@ -430,6 +440,43 @@ async def employee_edit_done(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
+async def employees_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("empback:", "", 1)
+
+    add_prompts = {
+        "name": (EMP_ADD_NAME, "Введите ФИО сотрудника:", cancel_keyboard()),
+        "phone": (EMP_ADD_PHONE, "Введите номер телефона или «-»:", cancel_keyboard("name")),
+        "tg_id": (EMP_ADD_TG_ID, "Введите Telegram user_id или «-»:", cancel_keyboard("phone")),
+        "username": (EMP_ADD_USERNAME, "Введите Telegram username без @ или «-»:", cancel_keyboard("tg_id")),
+        "role": (EMP_ADD_ROLE, "Выберите роль:", roles_keyboard("username")),
+        "hourly_rate": (EMP_ADD_HOURLY_RATE, "Введите часовую ставку:", cancel_keyboard("role")),
+        "fixed_salary": (EMP_ADD_FIXED_SALARY, "Введите фиксированный оклад или 0:", cancel_keyboard("hourly_rate")),
+    }
+    if target in add_prompts:
+        state, text, markup = add_prompts[target]
+        await query.edit_message_text(text, reply_markup=markup)
+        return state
+    if target == "fire_select":
+        context.user_data.pop("employee_fire_id", None)
+        await query.edit_message_text("Выберите сотрудника:", reply_markup=active_employees_keyboard("empfire"))
+        return EMP_FIRE_SELECT
+    if target == "edit_select":
+        context.user_data.pop("employee_edit_id", None)
+        context.user_data.pop("employee_edit_field", None)
+        await query.edit_message_text("Выберите сотрудника для редактирования:", reply_markup=employees_keyboard("empedit", True))
+        return EMP_EDIT_SELECT
+    if target == "edit_fields":
+        context.user_data.pop("employee_edit_field", None)
+        employee = get_employee_by_id(context.user_data.get("employee_edit_id"))
+        if not employee:
+            return await employees_cancel(update, context)
+        await query.edit_message_text("Что изменить?\n\n" + employee_card(employee), reply_markup=edit_fields_keyboard())
+        return EMP_EDIT_FIELD
+    return await employees_cancel(update, context)
+
+
 async def employees_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("employee_add", None)
     context.user_data.pop("employee_fire_id", None)
@@ -473,7 +520,10 @@ def get_employee_handlers():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, employee_edit_text_received),
             ],
         },
-        fallbacks=[CallbackQueryHandler(employees_cancel, pattern=r"^emp:cancel$")],
+        fallbacks=[
+            CallbackQueryHandler(employees_back, pattern=r"^empback:(name|phone|tg_id|username|role|hourly_rate|fixed_salary|fire_select|edit_select|edit_fields)$"),
+            CallbackQueryHandler(employees_cancel, pattern=r"^emp:cancel$"),
+        ],
         name="employees_management",
         persistent=False,
     )

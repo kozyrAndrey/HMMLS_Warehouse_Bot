@@ -190,11 +190,15 @@ def set_consumables_module(context, module):
     context.user_data["consumables_module"] = module
 
 
-def consumables_back_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")]])
+def consumables_back_keyboard(back_target=None):
+    rows = []
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"consback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
-def organization_keyboard(organizations=None, allow_new=True):
+def organization_keyboard(organizations=None, allow_new=True, back_target="supply_name"):
     organizations = organizations if organizations is not None else get_recent_organizations()
     rows = []
     for index, organization in enumerate(organizations):
@@ -202,6 +206,8 @@ def organization_keyboard(organizations=None, allow_new=True):
 
     if allow_new:
         rows.append([InlineKeyboardButton("➕ Новый поставщик", callback_data="consorg:new")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"consback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -251,13 +257,14 @@ def supply_edit_field_keyboard():
     )
 
 
-def confirm_keyboard(confirm_callback):
-    return InlineKeyboardMarkup(
-        [
+def confirm_keyboard(confirm_callback, back_target=None):
+    rows = [
             [InlineKeyboardButton("✅ Подтвердить", callback_data=confirm_callback)],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
-        ]
-    )
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"consback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def suppliers_keyboard(suppliers):
@@ -278,14 +285,15 @@ def supplier_records_keyboard(suppliers, prefix):
     return InlineKeyboardMarkup(rows)
 
 
-def supplier_documents_delivery_keyboard(prefix):
-    return InlineKeyboardMarkup(
-        [
+def supplier_documents_delivery_keyboard(prefix, back_target=None):
+    rows = [
             [InlineKeyboardButton("📡 По ЭДО", callback_data=f"{prefix}:edo")],
             [InlineKeyboardButton("📄 В бумажном виде", callback_data=f"{prefix}:paper")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
-        ]
-    )
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"consback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def supplier_documents_delivery_text(value):
@@ -380,6 +388,7 @@ def receipt_layout_photos_keyboard(has_photos):
     rows = []
     if has_photos:
         rows.append([InlineKeyboardButton("✅ Фото загружены", callback_data="receiptphotos:done")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="consback:receipt_quantity")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -390,6 +399,7 @@ def receipt_document_kind_keyboard():
             [InlineKeyboardButton("Нет бумажного документа", callback_data="receiptdoc:no_paper")],
             [InlineKeyboardButton("Скан-копия", callback_data="receiptdoc:scan")],
             [InlineKeyboardButton("Фото", callback_data="receiptdoc:photo")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="consback:receipt_layout")],
             [InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")],
         ]
     )
@@ -399,6 +409,7 @@ def receipt_document_files_keyboard(has_files):
     rows = []
     if has_files:
         rows.append([InlineKeyboardButton("✅ Документы загружены", callback_data="receiptdocs:done")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="consback:receipt_document_kind")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="cons:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -879,7 +890,7 @@ async def receipt_item_selected(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     await query.edit_message_text(
         f"Введите принятое количество ({item['unit']}):",
-        reply_markup=consumables_back_keyboard(),
+        reply_markup=consumables_back_keyboard("receipt_items"),
     )
     return RECEIPT_QUANTITY
 
@@ -933,7 +944,7 @@ async def receipt_document_kind_selected(update: Update, context: ContextTypes.D
     if kind == "no_paper":
         await query.edit_message_text(
             receipt_preview_text(context),
-            reply_markup=confirm_keyboard("receipt:confirm"),
+            reply_markup=confirm_keyboard("receipt:confirm", "receipt_document_kind"),
         )
         return RECEIPT_CONFIRM
     await query.edit_message_text(
@@ -978,7 +989,7 @@ async def receipt_document_files_finished(update: Update, context: ContextTypes.
         return RECEIPT_DOCUMENT_FILES
     await query.edit_message_text(
         receipt_preview_text(context),
-        reply_markup=confirm_keyboard("receipt:confirm"),
+        reply_markup=confirm_keyboard("receipt:confirm", "receipt_document_files"),
     )
     return RECEIPT_CONFIRM
 
@@ -1207,7 +1218,7 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
     data = query.data
 
     if data == "consorg:new":
-        await query.edit_message_text("Введите наименование нового поставщика:", reply_markup=consumables_back_keyboard())
+        await query.edit_message_text("Введите наименование нового поставщика:", reply_markup=consumables_back_keyboard("supply_organization"))
         return SUPPLY_ORGANIZATION_NEW
 
     try:
@@ -1221,7 +1232,7 @@ async def supply_organization_selected(update: Update, context: ContextTypes.DEF
         return SUPPLY_ORGANIZATION
 
     context.user_data["organization"] = organization
-    await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard())
+    await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard("supply_organization"))
     return SUPPLY_AMOUNT
 
 
@@ -1234,7 +1245,7 @@ async def supply_organization_new_received(update: Update, context: ContextTypes
     context.user_data["organization"] = organization
     await update.message.reply_text(
         "Как поставщик доставляет закрывающие документы?",
-        reply_markup=supplier_documents_delivery_keyboard("consorgdelivery"),
+        reply_markup=supplier_documents_delivery_keyboard("consorgdelivery", "supply_organization_new"),
     )
     return SUPPLY_ORGANIZATION_NEW_DELIVERY
 
@@ -1245,20 +1256,20 @@ async def supply_organization_new_delivery_selected(update: Update, context: Con
     delivery = query.data.replace("consorgdelivery:", "")
     supplier = create_supplier(context.user_data.get("organization"), delivery)
     context.user_data["organization"] = supplier["name"]
-    await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard())
+    await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard("supply_organization"))
     return SUPPLY_AMOUNT
 
 
 async def supply_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = parse_positive_amount(update.message.text)
     if amount is None:
-        await update.message.reply_text("Введите сумму числом больше 0:")
+        await update.message.reply_text("Введите сумму числом больше 0:", reply_markup=consumables_back_keyboard("supply_organization"))
         return SUPPLY_AMOUNT
 
     context.user_data["supply_amount"] = amount
     await update.message.reply_text(
         "Отправьте файл счета PDF, документом или фото.",
-        reply_markup=consumables_back_keyboard(),
+        reply_markup=consumables_back_keyboard("supply_amount"),
     )
     return SUPPLY_INVOICE_DOCUMENT
 
@@ -1273,7 +1284,7 @@ async def supply_invoice_document_received(update: Update, context: ContextTypes
     else:
         await update.message.reply_text(
             "Отправьте счет PDF, документом или фото.",
-            reply_markup=consumables_back_keyboard(),
+            reply_markup=consumables_back_keyboard("supply_amount"),
         )
         return SUPPLY_INVOICE_DOCUMENT
 
@@ -1312,7 +1323,7 @@ async def supply_invoice_document_received(update: Update, context: ContextTypes
 async def supply_invoice_wrong_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Отправьте счет PDF, документом или фото.",
-        reply_markup=consumables_back_keyboard(),
+        reply_markup=consumables_back_keyboard("supply_amount"),
     )
     return SUPPLY_INVOICE_DOCUMENT
 
@@ -2226,7 +2237,7 @@ async def accept_supply_selected(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["supply_id"] = supply["id"]
     await query.edit_message_text(
         "Отправьте фото разложенных расходников:",
-        reply_markup=consumables_back_keyboard(),
+        reply_markup=consumables_back_keyboard("accept_supply"),
     )
     return ACCEPT_LAYOUT_PHOTO
 
@@ -2242,7 +2253,7 @@ async def supply_item_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["supply_item_id"] = item["item_id"]
     await query.edit_message_text(
         f"Введите количество:\n\n{item['name']}\nЕдиница: {item['unit']}",
-        reply_markup=consumables_back_keyboard(),
+        reply_markup=consumables_back_keyboard("supply_items"),
     )
     return SUPPLY_ITEM_QUANTITY
 
@@ -2273,7 +2284,7 @@ async def supply_items_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("supply_items"):
         await query.edit_message_text(supply_items_text(context), reply_markup=supply_items_keyboard(context))
         return SUPPLY_ITEM_SELECT
-    await query.edit_message_text("Введите наименование счета:", reply_markup=consumables_back_keyboard())
+    await query.edit_message_text("Введите наименование счета:", reply_markup=consumables_back_keyboard("supply_items"))
     return SUPPLY_NAME
 
 
@@ -2997,6 +3008,55 @@ async def supplier_delete_confirmed(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 
+async def consumables_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("consback:", "", 1)
+
+    if target == "receipt_items":
+        await query.edit_message_text("Выберите принятый расходник:", reply_markup=consumable_items_keyboard(get_consumable_items(active_only=True), "consreceiptitem"))
+        return RECEIPT_ITEM_SELECT
+    if target == "receipt_quantity":
+        item = get_consumable_item(context.user_data.get("receipt_item_id"))
+        await query.edit_message_text(f"Введите принятое количество ({item['unit'] if item else 'шт'}):", reply_markup=consumables_back_keyboard("receipt_items"))
+        return RECEIPT_QUANTITY
+    if target == "receipt_layout":
+        await query.edit_message_text("Отправьте фото принятого расходника, разложенного на складе.", reply_markup=receipt_layout_photos_keyboard(bool(context.user_data.get("receipt_layout_photo_file_ids"))))
+        return RECEIPT_LAYOUT_PHOTOS
+    if target == "receipt_document_kind":
+        await query.edit_message_text("Выберите тип закрывающего документа:", reply_markup=receipt_document_kind_keyboard())
+        return RECEIPT_DOCUMENT_KIND
+    if target == "receipt_document_files":
+        await query.edit_message_text("Отправьте закрывающий документ. Можно добавить несколько файлов или фото.", reply_markup=receipt_document_files_keyboard(bool(context.user_data.get("receipt_document_file_ids"))))
+        return RECEIPT_DOCUMENT_FILES
+
+    if target == "supply_items":
+        context.user_data.pop("supply_item_id", None)
+        await query.edit_message_text(supply_items_text(context), reply_markup=supply_items_keyboard(context))
+        return SUPPLY_ITEM_SELECT
+    if target == "supply_name":
+        await query.edit_message_text("Введите наименование счета:", reply_markup=consumables_back_keyboard("supply_items"))
+        return SUPPLY_NAME
+    if target == "supply_organization":
+        organizations = context.user_data.get("organizations") or get_active_suppliers()
+        context.user_data["organizations"] = organizations
+        await query.edit_message_text("Выберите поставщика:", reply_markup=organization_keyboard(organizations, allow_new=True))
+        return SUPPLY_ORGANIZATION
+    if target == "supply_organization_new":
+        await query.edit_message_text("Введите наименование нового поставщика:", reply_markup=consumables_back_keyboard("supply_organization"))
+        return SUPPLY_ORGANIZATION_NEW
+    if target == "supply_amount":
+        await query.edit_message_text("Введите сумму к оплате:", reply_markup=consumables_back_keyboard("supply_organization"))
+        return SUPPLY_AMOUNT
+    if target == "accept_supply":
+        supplies = get_pending_supplies()
+        await query.edit_message_text(supplies_list_text("Выберите поставку для приемки:", supplies), reply_markup=supplies_keyboard(supplies, "conssup"))
+        return ACCEPT_SUPPLY
+
+    await query.edit_message_text("🧾 Расходники", reply_markup=consumables_main_keyboard(update))
+    return ConversationHandler.END
+
+
 def get_consumables_conversation_handler():
     return ConversationHandler(
         entry_points=[
@@ -3246,7 +3306,10 @@ def get_consumables_conversation_handler():
                 CallbackQueryHandler(consumables_cancel, pattern=r"^cons:cancel$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", consumables_cancel)],
+        fallbacks=[
+            CallbackQueryHandler(consumables_back, pattern=r"^consback:(receipt_items|receipt_quantity|receipt_layout|receipt_document_kind|receipt_document_files|supply_items|supply_name|supply_organization|supply_organization_new|supply_amount|accept_supply)$"),
+            CommandHandler("cancel", consumables_cancel),
+        ],
     )
 
 

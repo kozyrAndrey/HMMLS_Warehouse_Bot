@@ -65,7 +65,15 @@ def build_position_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
-def build_value_keyboard(prefix, values):
+def build_navigation_keyboard(back_target=None):
+    rows = []
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"recruit:back:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="recruit:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_value_keyboard(prefix, values, back_target=None):
     rows = []
     row = []
     for value in values:
@@ -75,6 +83,8 @@ def build_value_keyboard(prefix, values):
             row = []
     if row:
         rows.append(row)
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"recruit:back:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="recruit:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -83,6 +93,7 @@ def build_confirm_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("✅ Отправить", callback_data="recruit:confirm")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="recruit:back:hours")],
             [InlineKeyboardButton("❌ Отмена", callback_data="recruit:cancel")],
         ]
     )
@@ -235,56 +246,56 @@ async def position_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return POSITION
 
     context.user_data["position"] = position
-    await query.edit_message_text("Введите ФИО:")
+    await query.edit_message_text("Введите ФИО:", reply_markup=build_navigation_keyboard("position"))
     return FULL_NAME
 
 
 async def full_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = normalize_text(update.message.text)
     if not is_reasonable_full_name(full_name):
-        await update.message.reply_text("Введите ФИО полностью, минимум имя и фамилию:")
+        await update.message.reply_text("Введите ФИО полностью, минимум имя и фамилию:", reply_markup=build_navigation_keyboard("position"))
         return FULL_NAME
 
     context.user_data["full_name"] = full_name
-    await update.message.reply_text("Введите возраст числом:")
+    await update.message.reply_text("Введите возраст числом:", reply_markup=build_navigation_keyboard("full_name"))
     return AGE
 
 
 async def age_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     age = parse_age(update.message.text)
     if age is None:
-        await update.message.reply_text("Введите корректный возраст числом от 16 до 75:")
+        await update.message.reply_text("Введите корректный возраст числом от 16 до 75:", reply_markup=build_navigation_keyboard("full_name"))
         return AGE
 
     context.user_data["age"] = age
-    await update.message.reply_text("Где территориально проживаете? Укажите город, поселок или населенный пункт:")
+    await update.message.reply_text("Где территориально проживаете? Укажите город, поселок или населенный пункт:", reply_markup=build_navigation_keyboard("age"))
     return SETTLEMENT
 
 
 async def settlement_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settlement = normalize_text(update.message.text)
     if not is_reasonable_settlement(settlement):
-        await update.message.reply_text("Введите населенный пункт текстом, без ссылок и спецсимволов:")
+        await update.message.reply_text("Введите населенный пункт текстом, без ссылок и спецсимволов:", reply_markup=build_navigation_keyboard("age"))
         return SETTLEMENT
 
     context.user_data["settlement"] = settlement
-    await update.message.reply_text("Кратко опишите опыт работы:")
+    await update.message.reply_text("Кратко опишите опыт работы:", reply_markup=build_navigation_keyboard("settlement"))
     return EXPERIENCE
 
 
 async def experience_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     experience = normalize_text(update.message.text)
     if len(experience) < 10:
-        await update.message.reply_text("Добавьте чуть больше деталей об опыте, хотя бы одно-два предложения:")
+        await update.message.reply_text("Добавьте чуть больше деталей об опыте, хотя бы одно-два предложения:", reply_markup=build_navigation_keyboard("settlement"))
         return EXPERIENCE
     if len(experience) > 3000:
-        await update.message.reply_text("Слишком длинный текст. Сократите резюме до 3000 символов:")
+        await update.message.reply_text("Слишком длинный текст. Сократите резюме до 3000 символов:", reply_markup=build_navigation_keyboard("settlement"))
         return EXPERIENCE
 
     context.user_data["experience"] = experience
     await update.message.reply_text(
         "Сколько рабочих смен в неделю готовы выходить?",
-        reply_markup=build_value_keyboard("recruit:shifts", range(3, 7)),
+        reply_markup=build_value_keyboard("recruit:shifts", range(3, 7), "experience"),
     )
     return SHIFTS
 
@@ -297,7 +308,7 @@ async def shifts_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["shifts_per_week"] = shifts
     await query.edit_message_text(
         "Сколько часов за смену в среднем готовы работать?",
-        reply_markup=build_value_keyboard("recruit:hours", range(8, 13)),
+        reply_markup=build_value_keyboard("recruit:hours", range(8, 13), "shifts"),
     )
     return HOURS
 
@@ -346,6 +357,25 @@ async def application_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         "Если понадобится уточнение, с вами свяжутся в Telegram."
     )
     return ConversationHandler.END
+
+
+async def recruitment_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.rsplit(":", 1)[-1]
+
+    prompts = {
+        "position": (POSITION, "Выберите должность, на которую хотите откликнуться:", build_position_keyboard()),
+        "full_name": (FULL_NAME, "Введите ФИО:", build_navigation_keyboard("position")),
+        "age": (AGE, "Введите возраст числом:", build_navigation_keyboard("full_name")),
+        "settlement": (SETTLEMENT, "Где территориально проживаете?", build_navigation_keyboard("age")),
+        "experience": (EXPERIENCE, "Кратко опишите опыт работы:", build_navigation_keyboard("settlement")),
+        "shifts": (SHIFTS, "Сколько рабочих смен в неделю готовы выходить?", build_value_keyboard("recruit:shifts", range(3, 7), "experience")),
+        "hours": (HOURS, "Сколько часов за смену в среднем готовы работать?", build_value_keyboard("recruit:hours", range(8, 13), "shifts")),
+    }
+    state, text, markup = prompts[target]
+    await query.edit_message_text(text, reply_markup=markup)
+    return state
 
 
 async def recruitment_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,7 +431,10 @@ def get_recruitment_conversation_handler():
                 CallbackQueryHandler(recruitment_cancel, pattern=r"^recruit:cancel$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", recruitment_cancel)],
+        fallbacks=[
+            CallbackQueryHandler(recruitment_back, pattern=r"^recruit:back:(position|full_name|age|settlement|experience|shifts|hours)$"),
+            CommandHandler("cancel", recruitment_cancel),
+        ],
     )
 
 

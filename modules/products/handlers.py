@@ -26,6 +26,15 @@ def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")]])
 
 
+def navigation_keyboard(back_target):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"prodback:{back_target}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")],
+        ]
+    )
+
+
 def product_categories_keyboard():
     rows = []
     for category_id, category in sorted(CATEGORIES.items(), key=lambda item: item[1]["name"]):
@@ -47,6 +56,7 @@ def product_sizes_keyboard(selected_sizes):
     rows.extend(
         [
             [InlineKeyboardButton("➡️ Далее", callback_data="prodsize:done")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="prodback:color")],
             [InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")],
         ]
     )
@@ -58,12 +68,13 @@ def product_marking_keyboard():
         [
             [InlineKeyboardButton("🏷 Да, маркируемый", callback_data="prodmark:yes")],
             [InlineKeyboardButton("📦 Нет, немаркируемый", callback_data="prodmark:no")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="prodback:sizes")],
             [InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")],
         ]
     )
 
 
-def product_rules_keyboard(items, rules):
+def product_rules_keyboard(items, rules, is_marked=False):
     rules_by_item = {int(rule["item_id"]): rule for rule in rules}
     rows = []
     for item in items:
@@ -81,16 +92,18 @@ def product_rules_keyboard(items, rules):
         [
             [InlineKeyboardButton("➡️ Далее", callback_data="prodrule:done")],
             [InlineKeyboardButton("Пропустить нормы", callback_data="prodrule:skip")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"prodback:{'gtin' if is_marked else 'marking'}")],
             [InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")],
         ]
     )
     return InlineKeyboardMarkup(rows)
 
 
-def product_confirm_keyboard():
+def product_confirm_keyboard(has_consumables=True):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("✅ Создать товар", callback_data="prodconfirm:yes")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"prodback:{'rules' if has_consumables else 'marking'}")],
             [InlineKeyboardButton("❌ Отмена", callback_data="prodadmin:cancel")],
         ]
     )
@@ -125,12 +138,12 @@ async def prompt_product_rules(update: Update, context: ContextTypes.DEFAULT_TYP
     data = context.user_data["product_add"]
     if not items:
         if update.callback_query:
-            await update.callback_query.edit_message_text(product_preview_text(data), reply_markup=product_confirm_keyboard())
+            await update.callback_query.edit_message_text(product_preview_text(data), reply_markup=product_confirm_keyboard(False))
         else:
-            await update.message.reply_text(product_preview_text(data), reply_markup=product_confirm_keyboard())
+            await update.message.reply_text(product_preview_text(data), reply_markup=product_confirm_keyboard(False))
         return PRODUCT_ADD_CONFIRM
     text = "Выберите расходник и укажите норму на одну единицу товара. Можно выбрать несколько."
-    markup = product_rules_keyboard(items, data.get("consumable_rules", []))
+    markup = product_rules_keyboard(items, data.get("consumable_rules", []), data.get("is_marked", False))
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=markup)
     else:
@@ -167,27 +180,27 @@ async def product_add_category_selected(update: Update, context: ContextTypes.DE
     await query.answer()
     category_id = query.data.replace("prodcat:", "")
     if category_id == "new":
-        await query.edit_message_text("Введите название новой группы товара:", reply_markup=cancel_keyboard())
+        await query.edit_message_text("Введите название новой группы товара:", reply_markup=navigation_keyboard("category"))
         return PRODUCT_ADD_CATEGORY
     category = CATEGORIES.get(category_id)
     if not category:
         await query.edit_message_text("Группа не найдена. Выберите группу заново:", reply_markup=product_categories_keyboard())
         return PRODUCT_ADD_CATEGORY
     context.user_data["product_add"]["category_name"] = category["name"]
-    await query.edit_message_text("Введите название модели:", reply_markup=cancel_keyboard())
+    await query.edit_message_text("Введите название модели:", reply_markup=navigation_keyboard("category"))
     return PRODUCT_ADD_MODEL
 
 
 async def product_add_category_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     category_name = (update.message.text or "").strip()
     if not category_name:
-        await update.message.reply_text("Введите непустое название группы:", reply_markup=cancel_keyboard())
+        await update.message.reply_text("Введите непустое название группы:", reply_markup=navigation_keyboard("category"))
         return PRODUCT_ADD_CATEGORY
 
     context.user_data["product_add"]["category_name"] = category_name
     await update.message.reply_text(
         "Введите название модели:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=navigation_keyboard("category"),
     )
     return PRODUCT_ADD_MODEL
 
@@ -195,14 +208,14 @@ async def product_add_category_received(update: Update, context: ContextTypes.DE
 async def product_add_model_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model_name = (update.message.text or "").strip()
     if not model_name:
-        await update.message.reply_text("Введите непустое название модели:", reply_markup=cancel_keyboard())
+        await update.message.reply_text("Введите непустое название модели:", reply_markup=navigation_keyboard("category"))
         return PRODUCT_ADD_MODEL
 
     context.user_data["product_add"]["model_name"] = model_name
     await update.message.reply_text(
         "Введите цвет / вариант.\n\n"
         "Если цвета нет, отправьте «-».",
-        reply_markup=cancel_keyboard(),
+        reply_markup=navigation_keyboard("model"),
     )
     return PRODUCT_ADD_COLOR
 
@@ -262,7 +275,7 @@ async def product_add_marking_selected(update: Update, context: ContextTypes.DEF
         return await prompt_product_rules(update, context)
     await query.edit_message_text(
         "Введите базовое название Честного Знака без размера. Бот добавит размер к названию автоматически:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=navigation_keyboard("marking"),
     )
     return PRODUCT_ADD_CHZ_NAME
 
@@ -270,14 +283,14 @@ async def product_add_marking_selected(update: Update, context: ContextTypes.DEF
 async def product_add_chz_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = (update.message.text or "").strip()
     if not name:
-        await update.message.reply_text("Введите непустое базовое название Честного Знака:", reply_markup=cancel_keyboard())
+        await update.message.reply_text("Введите непустое базовое название Честного Знака:", reply_markup=navigation_keyboard("marking"))
         return PRODUCT_ADD_CHZ_NAME
     data = context.user_data["product_add"]
     data["chz_base_name"] = name
     data["marking_index"] = 0
     await update.message.reply_text(
         f"Введите GTIN для размера {data['sizes'][0]}:",
-        reply_markup=cancel_keyboard(),
+        reply_markup=navigation_keyboard("chz_name"),
     )
     return PRODUCT_ADD_GTIN
 
@@ -289,10 +302,10 @@ async def product_add_gtin_received(update: Update, context: ContextTypes.DEFAUL
     try:
         gtin = normalize_gtin(update.message.text)
     except ValueError as error:
-        await update.message.reply_text(f"{error} Введите GTIN для размера {size}:")
+        await update.message.reply_text(f"{error} Введите GTIN для размера {size}:", reply_markup=navigation_keyboard("gtin"))
         return PRODUCT_ADD_GTIN
     if gtin in {item["gtin"] for item in data["marking"]} or get_honest_sign_product(gtin):
-        await update.message.reply_text(f"GTIN {gtin} уже есть в справочнике. Введите другой GTIN:")
+        await update.message.reply_text(f"GTIN {gtin} уже есть в справочнике. Введите другой GTIN:", reply_markup=navigation_keyboard("gtin"))
         return PRODUCT_ADD_GTIN
     data["marking"].append(
         {
@@ -304,7 +317,7 @@ async def product_add_gtin_received(update: Update, context: ContextTypes.DEFAUL
     index += 1
     data["marking_index"] = index
     if index < len(data["sizes"]):
-        await update.message.reply_text(f"Введите GTIN для размера {data['sizes'][index]}:", reply_markup=cancel_keyboard())
+        await update.message.reply_text(f"Введите GTIN для размера {data['sizes'][index]}:", reply_markup=navigation_keyboard("gtin"))
         return PRODUCT_ADD_GTIN
     data.pop("marking_index", None)
     return await prompt_product_rules(update, context)
@@ -330,7 +343,7 @@ async def product_add_rule_selected(update: Update, context: ContextTypes.DEFAUL
     data["pending_rule_item"] = item
     await query.edit_message_text(
         f"Введите норму «{item['name']}» на одну единицу товара ({item['unit']}):",
-        reply_markup=cancel_keyboard(),
+        reply_markup=navigation_keyboard("rules"),
     )
     return PRODUCT_ADD_RULE_QUANTITY
 
@@ -341,7 +354,7 @@ async def product_add_rule_quantity_received(update: Update, context: ContextTyp
     except ValueError:
         quantity = 0
     if quantity <= 0:
-        await update.message.reply_text("Введите норму числом больше нуля:", reply_markup=cancel_keyboard())
+        await update.message.reply_text("Введите норму числом больше нуля:", reply_markup=navigation_keyboard("rules"))
         return PRODUCT_ADD_RULE_QUANTITY
     data = context.user_data["product_add"]
     item = data.pop("pending_rule_item")
@@ -400,6 +413,49 @@ async def product_add_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
+async def product_add_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("prodback:", "", 1)
+    data = context.user_data.get("product_add") or {}
+
+    if target == "category":
+        await query.edit_message_text("Выберите группу товара или добавьте новую:", reply_markup=product_categories_keyboard())
+        return PRODUCT_ADD_CATEGORY
+    if target == "model":
+        await query.edit_message_text("Введите название модели:", reply_markup=navigation_keyboard("category"))
+        return PRODUCT_ADD_MODEL
+    if target == "color":
+        await query.edit_message_text("Введите цвет / вариант. Если цвета нет, отправьте «-».", reply_markup=navigation_keyboard("model"))
+        return PRODUCT_ADD_COLOR
+    if target == "sizes":
+        await query.edit_message_text("Выберите размеры новой позиции:", reply_markup=product_sizes_keyboard(data.get("sizes", [])))
+        return PRODUCT_ADD_SIZES
+    if target == "marking":
+        data["marking"] = []
+        data.pop("marking_index", None)
+        await query.edit_message_text("Товар маркируемый?", reply_markup=product_marking_keyboard())
+        return PRODUCT_ADD_MARKED
+    if target == "chz_name":
+        data["marking"] = []
+        data.pop("marking_index", None)
+        await query.edit_message_text("Введите базовое название Честного Знака без размера:", reply_markup=navigation_keyboard("marking"))
+        return PRODUCT_ADD_CHZ_NAME
+    if target == "gtin":
+        marking = data.setdefault("marking", [])
+        if marking:
+            marking.pop()
+        index = len(marking)
+        data["marking_index"] = index
+        await query.edit_message_text(f"Введите GTIN для размера {data['sizes'][index]}:", reply_markup=navigation_keyboard("gtin" if index else "chz_name"))
+        return PRODUCT_ADD_GTIN
+    if target == "rules":
+        data.pop("pending_rule_item", None)
+        return await prompt_product_rules(update, context)
+
+    return await products_cancel(update, context)
+
+
 async def products_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("product_add", None)
     query = update.callback_query
@@ -429,7 +485,10 @@ def get_product_handlers():
             PRODUCT_ADD_RULE_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, product_add_rule_quantity_received)],
             PRODUCT_ADD_CONFIRM: [CallbackQueryHandler(product_add_confirmed, pattern=r"^prodconfirm:yes$")],
         },
-        fallbacks=[CallbackQueryHandler(products_cancel, pattern=r"^prodadmin:cancel$")],
+        fallbacks=[
+            CallbackQueryHandler(product_add_back, pattern=r"^prodback:(category|model|color|sizes|marking|chz_name|gtin|rules)$"),
+            CallbackQueryHandler(products_cancel, pattern=r"^prodadmin:cancel$"),
+        ],
         name="products_management",
         persistent=False,
     )

@@ -117,6 +117,6 @@ def setup_ai_agent_jobs(app):
 
     app.job_queue.run_daily(
         weather_check_job,
-        time=time(hour=10, minute=40, tzinfo=MSK_TZ),
+        time=time(hour=9, minute=40, tzinfo=MSK_TZ),
         name="ai_weather_agent_moscow",
     )

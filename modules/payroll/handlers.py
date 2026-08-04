@@ -168,10 +168,12 @@ def payroll_main_keyboard(manager=False):
     return InlineKeyboardMarkup(rows)
 
 
-def payroll_back_keyboard():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")]]
-    )
+def payroll_back_keyboard(back_target=None):
+    rows = []
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"payback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def expenses_keyboard():
@@ -248,18 +250,19 @@ def vacation_delete_confirm_keyboard(vacation_id):
     )
 
 
-def date_keyboard(prefix):
+def date_keyboard(prefix, back_target=None):
     today = datetime.now()
     yesterday = today - timedelta(days=1)
     today_text = today.strftime("%d.%m.%Y")
     yesterday_text = yesterday.strftime("%d.%m.%Y")
-    return InlineKeyboardMarkup(
-        [
+    rows = [
             [InlineKeyboardButton(today_text, callback_data=f"{prefix}:{today_text}")],
             [InlineKeyboardButton(yesterday_text, callback_data=f"{prefix}:{yesterday_text}")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
-        ]
-    )
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"payback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def employees_keyboard(prefix, include_cancel=True):
@@ -283,13 +286,15 @@ def payroll_periods_keyboard(periods):
     return InlineKeyboardMarkup(rows)
 
 
-def kpi_keyboard(prefix):
+def kpi_keyboard(prefix, back_target=None):
     rows = []
     for item in get_kpi_items():
         rows.append(
             [InlineKeyboardButton(item["name"], callback_data=f"{prefix}:{item['kpi_id']}")]
         )
     rows.append([InlineKeyboardButton("✅ Завершить KPI", callback_data=f"{prefix}:done")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"payback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -317,9 +322,8 @@ def edit_field_keyboard_for_context(context):
     return edit_field_keyboard(period.get("payment_mode") == PAYMENT_MODE_SHIFT)
 
 
-def shift_type_keyboard(prefix):
-    return InlineKeyboardMarkup(
-        [
+def shift_type_keyboard(prefix, back_target=None):
+    rows = [
             [
                 InlineKeyboardButton(
                     "10:00 — полная смена",
@@ -332,9 +336,11 @@ def shift_type_keyboard(prefix):
                     callback_data=f"{prefix}:{SHIFT_TYPE_HALF}",
                 )
             ],
-            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
-        ]
-    )
+    ]
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"payback:{back_target}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def edit_mode_keyboard(prefix):
@@ -1066,7 +1072,7 @@ async def create_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["employee_id"] = employee["employee_id"]
     await query.edit_message_text(
         f"Сотрудник: {employee['full_name']}\n\nВыберите дату отчета:",
-        reply_markup=date_keyboard("crdate"),
+        reply_markup=date_keyboard("crdate", "create_employee"),
     )
     return CREATE_DATE
 
@@ -1083,7 +1089,7 @@ async def create_employee_selected(update: Update, context: ContextTypes.DEFAULT
     context.user_data["employee_id"] = employee_id
     await query.edit_message_text(
         f"Сотрудник: {employee['full_name']}\n\nВыберите дату отчета:",
-        reply_markup=date_keyboard("crdate"),
+        reply_markup=date_keyboard("crdate", "create_employee"),
     )
     return CREATE_DATE
 
@@ -1122,14 +1128,14 @@ async def create_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             f"Сотрудник: {employee['full_name']}\nДата: {report_date}\n\n"
             "Выберите тип смены:",
-            reply_markup=shift_type_keyboard("crshift"),
+            reply_markup=shift_type_keyboard("crshift", "create_date"),
         )
         return CREATE_SHIFT_TYPE
 
     await query.edit_message_text(
         f"Сотрудник: {employee['full_name']}\nДата: {report_date}\n\n"
         "Введите рабочий временной промежуток, например: 10:00-19:00",
-        reply_markup=payroll_back_keyboard(),
+        reply_markup=payroll_back_keyboard("create_date"),
     )
     return CREATE_INTERVAL
 
@@ -1141,14 +1147,14 @@ async def create_shift_type_selected(update: Update, context: ContextTypes.DEFAU
     if not shift_type:
         await query.edit_message_text(
             "Выберите тип смены:",
-            reply_markup=shift_type_keyboard("crshift"),
+            reply_markup=shift_type_keyboard("crshift", "create_date"),
         )
         return CREATE_SHIFT_TYPE
     context.user_data["shift_type"] = shift_type
     await query.edit_message_text(
         f"Тип смены: {shift_type_label(shift_type)}\n\n"
         "Введите фактический рабочий временной промежуток, например: 10:00-19:00",
-        reply_markup=payroll_back_keyboard(),
+        reply_markup=payroll_back_keyboard("create_shift_type"),
     )
     return CREATE_INTERVAL
 
@@ -1156,13 +1162,14 @@ async def create_shift_type_selected(update: Update, context: ContextTypes.DEFAU
 async def create_interval_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     interval = update.message.text.strip()
     if not interval:
-        await update.message.reply_text("Введите рабочий временной промежуток:", reply_markup=payroll_back_keyboard())
+        back_target = "create_shift_type" if (context.user_data.get("report_period") or {}).get("payment_mode") == PAYMENT_MODE_SHIFT else "create_date"
+        await update.message.reply_text("Введите рабочий временной промежуток:", reply_markup=payroll_back_keyboard(back_target))
         return CREATE_INTERVAL
 
     context.user_data["interval"] = interval
     await update.message.reply_text(
         "Введите количество отработанных часов. Можно кратно 0.5, например 8 или 7.5:",
-        reply_markup=payroll_back_keyboard(),
+        reply_markup=payroll_back_keyboard("create_interval"),
     )
     return CREATE_HOURS
 
@@ -1170,7 +1177,7 @@ async def create_interval_received(update: Update, context: ContextTypes.DEFAULT
 async def create_hours_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hours = parse_hours(update.message.text)
     if hours is None:
-        await update.message.reply_text("Введите часы числом, кратным 0.5. Например: 8 или 7.5")
+        await update.message.reply_text("Введите часы числом, кратным 0.5. Например: 8 или 7.5", reply_markup=payroll_back_keyboard("create_interval"))
         return CREATE_HOURS
 
     context.user_data["hours"] = hours
@@ -1186,7 +1193,7 @@ async def create_hours_received(update: Update, context: ContextTypes.DEFAULT_TY
             )
     await update.message.reply_text(
         warning + "Опишите выполненные за день задачи:",
-        reply_markup=payroll_back_keyboard(),
+        reply_markup=payroll_back_keyboard("create_hours"),
     )
     return CREATE_TASKS
 
@@ -1194,14 +1201,14 @@ async def create_hours_received(update: Update, context: ContextTypes.DEFAULT_TY
 async def create_tasks_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tasks = update.message.text.strip()
     if not tasks:
-        await update.message.reply_text("Описание задач не должно быть пустым. Введите задачи:")
+        await update.message.reply_text("Описание задач не должно быть пустым. Введите задачи:", reply_markup=payroll_back_keyboard("create_hours"))
         return CREATE_TASKS
 
     context.user_data["tasks"] = tasks
     context.user_data["kpi_items"] = []
     await update.message.reply_text(
         "Выберите категорию KPI или нажмите «Завершить KPI»:",
-        reply_markup=kpi_keyboard("crkpi"),
+        reply_markup=kpi_keyboard("crkpi", "create_tasks"),
     )
     return CREATE_KPI_SELECT
 
@@ -1220,13 +1227,13 @@ async def create_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
     kpi_items = get_kpi_items()
     selected = next((item for item in kpi_items if item["kpi_id"] == kpi_id), None)
     if not selected:
-        await query.edit_message_text("KPI не найден. Выберите заново:", reply_markup=kpi_keyboard("crkpi"))
+        await query.edit_message_text("KPI не найден. Выберите заново:", reply_markup=kpi_keyboard("crkpi", "create_tasks"))
         return CREATE_KPI_SELECT
 
     context.user_data["selected_kpi"] = selected
     await query.edit_message_text(
         f"KPI: {selected['name']}\n\nВведите количество:",
-        reply_markup=payroll_back_keyboard(),
+        reply_markup=payroll_back_keyboard("create_kpi"),
     )
     return CREATE_KPI_QTY
 
@@ -1234,12 +1241,12 @@ async def create_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def create_kpi_qty_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qty = parse_positive_amount(update.message.text)
     if qty is None:
-        await update.message.reply_text("Введите количество числом больше 0:")
+        await update.message.reply_text("Введите количество числом больше 0:", reply_markup=payroll_back_keyboard("create_kpi"))
         return CREATE_KPI_QTY
 
     selected = context.user_data.get("selected_kpi")
     if not selected:
-        await update.message.reply_text("KPI потерялся. Выберите категорию заново:", reply_markup=kpi_keyboard("crkpi"))
+        await update.message.reply_text("KPI потерялся. Выберите категорию заново:", reply_markup=kpi_keyboard("crkpi", "create_tasks"))
         return CREATE_KPI_SELECT
 
     context.user_data.setdefault("kpi_items", []).append(
@@ -1255,9 +1262,54 @@ async def create_kpi_qty_received(update: Update, context: ContextTypes.DEFAULT_
 
     await update.message.reply_text(
         "KPI добавлен. Выберите еще один KPI или нажмите «Завершить KPI»:",
-        reply_markup=kpi_keyboard("crkpi"),
+        reply_markup=kpi_keyboard("crkpi", "create_tasks"),
     )
     return CREATE_KPI_SELECT
+
+
+async def payroll_create_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("payback:", "", 1)
+    employee = get_employee_by_id(context.user_data.get("employee_id"))
+
+    if target == "create_employee":
+        current = current_employee_or_none(update)
+        if not is_manager(current):
+            context.user_data.clear()
+            await query.edit_message_text("💰 Расчет ЗП", reply_markup=payroll_main_keyboard(manager=False))
+            return ConversationHandler.END
+        context.user_data.pop("employee_id", None)
+        await query.edit_message_text("Выберите сотрудника для ежедневного отчета:", reply_markup=employees_keyboard("cremp"))
+        return CREATE_EMPLOYEE
+    if target == "create_date":
+        await query.edit_message_text(
+            f"Сотрудник: {employee['full_name'] if employee else '—'}\n\nВыберите дату отчета:",
+            reply_markup=date_keyboard("crdate", "create_employee"),
+        )
+        return CREATE_DATE
+    if target == "create_shift_type":
+        await query.edit_message_text("Выберите тип смены:", reply_markup=shift_type_keyboard("crshift", "create_date"))
+        return CREATE_SHIFT_TYPE
+    if target == "create_interval":
+        period = context.user_data.get("report_period") or {}
+        back_target = "create_shift_type" if period.get("payment_mode") == PAYMENT_MODE_SHIFT else "create_date"
+        await query.edit_message_text("Введите рабочий временной промежуток:", reply_markup=payroll_back_keyboard(back_target))
+        return CREATE_INTERVAL
+    if target == "create_hours":
+        await query.edit_message_text("Введите количество отработанных часов:", reply_markup=payroll_back_keyboard("create_interval"))
+        return CREATE_HOURS
+    if target == "create_tasks":
+        await query.edit_message_text("Опишите выполненные за день задачи:", reply_markup=payroll_back_keyboard("create_hours"))
+        return CREATE_TASKS
+    if target == "create_kpi":
+        context.user_data.pop("selected_kpi", None)
+        await query.edit_message_text("Выберите категорию KPI или нажмите «Завершить KPI»:", reply_markup=kpi_keyboard("crkpi", "create_tasks"))
+        return CREATE_KPI_SELECT
+
+    context.user_data.clear()
+    await query.edit_message_text("💰 Расчет ЗП", reply_markup=payroll_main_keyboard(manager=is_manager(current_employee_or_none(update))))
+    return ConversationHandler.END
 
 
 async def send_manager_wizard_prompt(target, context: ContextTypes.DEFAULT_TYPE, text=None, reply_markup=None):
@@ -3739,7 +3791,10 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", payroll_cancel)],
+        fallbacks=[
+            CallbackQueryHandler(payroll_create_back, pattern=r"^payback:create_(employee|date|shift_type|interval|hours|tasks|kpi)$"),
+            CommandHandler("cancel", payroll_cancel),
+        ],
     )
 
 

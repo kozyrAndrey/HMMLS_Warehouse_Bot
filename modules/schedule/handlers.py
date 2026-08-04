@@ -112,11 +112,12 @@ def day_selection_keyboard(selected_dates, week_start):
     return InlineKeyboardMarkup(rows)
 
 
-def shift_time_keyboard(date_str):
+def shift_time_keyboard(date_str, back_target="time"):
     rows = []
     for time_value in SHIFT_TIMES:
         compact = time_value.replace(":", "")
         rows.append([InlineKeyboardButton(time_value, callback_data=f"schtime:{date_str}:{compact}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"sch:back:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -125,17 +126,20 @@ def confirm_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("✅ Подтвердить", callback_data="sch:confirm")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="sch:back:confirm")],
             [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
         ]
     )
 
 
-def employees_keyboard(prefix="schemp"):
+def employees_keyboard(prefix="schemp", back_target=None):
     from modules.schedule.config import get_schedule_employees
 
     rows = []
     for employee in get_schedule_employees():
         rows.append([InlineKeyboardButton(employee["full_name"], callback_data=f"{prefix}:{employee['employee_id']}")])
+    if back_target:
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"sch:back:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -145,6 +149,7 @@ def edit_day_keyboard(week_start):
     for day in week_dates(week_start):
         date_str = date_to_str(day)
         rows.append([InlineKeyboardButton(day_label(day), callback_data=f"scheditday:{date_str}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="sch:back:edit_employee")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -154,6 +159,7 @@ def edit_action_keyboard():
         [
             [InlineKeyboardButton("🕒 Изменить время", callback_data="schedit:set")],
             [InlineKeyboardButton("🗑 Убрать смену", callback_data="schedit:clear")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="sch:back:edit_day")],
             [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
         ]
     )
@@ -227,6 +233,7 @@ def duty_days_keyboard(week_start, pending_duties):
         [
             [InlineKeyboardButton("🔄 Предложить автоматически", callback_data="schduty:auto")],
             [InlineKeyboardButton("✅ Завершить и обновить выгрузку", callback_data="schduty:confirm")],
+            [InlineKeyboardButton("⬅️ Назад к выбору недели", callback_data="sch:back:manager_week")],
             [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
         ]
     )
@@ -604,7 +611,7 @@ async def schedule_manager_week_selected(update: Update, context: ContextTypes.D
         await query.edit_message_text(
             f"Изменение расписания на {format_week_range_full(week_start)}\n\n"
             "Выберите сотрудника:",
-            reply_markup=employees_keyboard("schemp"),
+            reply_markup=employees_keyboard("schemp", "manager_week"),
         )
         return SCHEDULE_EDIT_EMPLOYEE
 
@@ -676,7 +683,7 @@ async def schedule_edit_action_selected(update: Update, context: ContextTypes.DE
     date_str = context.user_data["edit_date"]
     await query.edit_message_text(
         f"Выберите новое время для {day_label(date_str)}:",
-        reply_markup=shift_time_keyboard(date_str),
+        reply_markup=shift_time_keyboard(date_str, "edit_action"),
     )
     return SCHEDULE_EDIT_TIME
 
@@ -737,7 +744,7 @@ async def schedule_edit_again(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.edit_message_text(
         "Выберите сотрудника для следующего изменения:",
-        reply_markup=employees_keyboard("schemp"),
+        reply_markup=employees_keyboard("schemp", "manager_week"),
     )
     return SCHEDULE_EDIT_EMPLOYEE
 
@@ -931,6 +938,64 @@ async def schedule_duties_confirm(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
+async def schedule_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target = query.data.replace("sch:back:", "", 1)
+
+    if target in {"time", "confirm"}:
+        selected = context.user_data.get("schedule_selected_dates", [])
+        if not selected:
+            week_start = parse_date(context.user_data["schedule_week_start"])
+            await query.edit_message_text(
+                f"Составить расписание на {format_week_range(week_start)}.\n\nВыберите рабочие дни.",
+                reply_markup=day_selection_keyboard(selected, week_start),
+            )
+            return SCHEDULE_SELECT_DAYS
+        current_index = int(context.user_data.get("schedule_current_time_index", 0))
+        index = len(selected) - 1 if target == "confirm" else current_index - 1
+        if index < 0:
+            week_start = parse_date(context.user_data["schedule_week_start"])
+            await query.edit_message_text(
+                f"Составить расписание на {format_week_range(week_start)}.\n\nВыберите рабочие дни.",
+                reply_markup=day_selection_keyboard(selected, week_start),
+            )
+            return SCHEDULE_SELECT_DAYS
+        date_str = selected[index]
+        context.user_data["schedule_current_time_index"] = index
+        context.user_data.setdefault("schedule_shifts", {}).pop(date_str, None)
+        await query.edit_message_text(
+            f"Выберите время выхода на смену для {day_label(date_str)}:",
+            reply_markup=shift_time_keyboard(date_str),
+        )
+        return SCHEDULE_SELECT_TIME
+
+    if target == "manager_week":
+        action = context.user_data.get("schedule_manager_action", "edit")
+        labels = {
+            "edit": "Какую неделю нужно изменить?",
+            "duties": "Для какой недели назначить дежурных?",
+        }
+        context.user_data.pop("pending_duties", None)
+        await query.edit_message_text(labels.get(action, "Выберите неделю:"), reply_markup=manager_week_keyboard(action))
+        return SCHEDULE_MANAGER_WEEK
+    if target == "edit_employee":
+        context.user_data.pop("edit_employee_id", None)
+        await query.edit_message_text("Выберите сотрудника:", reply_markup=employees_keyboard("schemp", "manager_week"))
+        return SCHEDULE_EDIT_EMPLOYEE
+    if target == "edit_day":
+        week_start = parse_date(context.user_data["schedule_week_start"])
+        employee = get_schedule_employee_by_id(context.user_data.get("edit_employee_id"))
+        await query.edit_message_text(f"Сотрудник: {employee['full_name']}\nВыберите день:", reply_markup=edit_day_keyboard(week_start))
+        return SCHEDULE_EDIT_DAY
+    if target == "edit_action":
+        date_str = context.user_data["edit_date"]
+        await query.edit_message_text(f"День: {day_label(date_str)}\nЧто сделать?", reply_markup=edit_action_keyboard())
+        return SCHEDULE_EDIT_ACTION
+
+    return await schedule_cancel(update, context)
+
+
 # ============================================================
 # ПЯТНИЧНОЕ НАПОМИНАНИЕ
 # ============================================================
@@ -1002,9 +1067,9 @@ async def schedule_missing_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
     week_start = next_week_start(current)
 
-    # В 10:00 готовим визуальный лист под следующую неделю.
+    # В 09:00 готовим визуальный лист под следующую неделю.
     current_time = datetime.now(MSK_TZ).time()
-    if current_time.hour == 10:
+    if current_time.hour == 9:
         try:
             rebuild_current_schedule_sheet(week_start)
         except Exception:
@@ -1061,7 +1126,7 @@ def setup_schedule_jobs(app):
         )
         return
 
-    for hour in (10, 12, 14, 16, 18):
+    for hour in (9, 11, 13, 15, 17):
         app.job_queue.run_daily(
             schedule_missing_reminder_job,
             time=time(hour=hour, minute=0, tzinfo=MSK_TZ),
@@ -1142,7 +1207,7 @@ def get_schedule_conversation_handler():
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
         },
-        fallbacks=[],
+        fallbacks=[CallbackQueryHandler(schedule_back, pattern=r"^sch:back:(time|confirm|manager_week|edit_employee|edit_day|edit_action)$")],
     )
 
 
