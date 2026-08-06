@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from modules.storage.google_archive import DatabaseWorksheet
+from modules.payroll.additional_pay import ADDITIONAL_PAY_HEADERS, ADDITIONAL_PAY_SHEET
 from modules.payroll.config import (
     KPI_DAILY_COLUMN_BY_KPI_ID,
     KPI_DAILY_COLUMNS,
@@ -269,6 +270,7 @@ def get_worksheet(title, rows=1000, cols=30):
         KPI_SHEET: KPI_HEADERS,
         PERIODS_SHEET: PERIOD_HEADERS,
         KPI_DAILY_SHEET: KPI_DAILY_HEADERS,
+        ADDITIONAL_PAY_SHEET: ADDITIONAL_PAY_HEADERS,
     }
     headers = headers_by_title.get(title)
     if not headers:
@@ -438,6 +440,7 @@ def init_payroll_sheet():
     kpi_ws = get_worksheet(KPI_SHEET, rows=100, cols=6)
     periods_ws = get_worksheet(PERIODS_SHEET, rows=200, cols=10)
     kpi_daily_ws = get_worksheet(KPI_DAILY_SHEET, rows=3000, cols=20)
+    additional_pay_ws = get_worksheet(ADDITIONAL_PAY_SHEET, rows=1000, cols=22)
 
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
@@ -447,6 +450,7 @@ def init_payroll_sheet():
     ensure_headers(kpi_ws, KPI_HEADERS)
     ensure_headers(periods_ws, PERIOD_HEADERS)
     ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
+    ensure_headers(additional_pay_ws, ADDITIONAL_PAY_HEADERS)
 
     # Сотрудники по-прежнему синхронизируются с конфигом. KPI из конфига служат
     # только стартовым наполнением: существующие позиции управляются через бот.
@@ -1226,6 +1230,7 @@ def cleanup_old_operational_data(days=365):
         (EXPENSES_SHEET, "Дата"),
         (PENALTIES_SHEET, "Дата"),
         (BONUSES_SHEET, "Дата"),
+        (ADDITIONAL_PAY_SHEET, "Дата начисления"),
     ]:
         ws = get_worksheet(title)
         values = ws.get_all_values()

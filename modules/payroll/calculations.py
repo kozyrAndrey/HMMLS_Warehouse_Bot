@@ -18,6 +18,7 @@ from modules.payroll.google_sheets import (
     SHIFT_TYPE_HALF,
 )
 from modules.payroll.vacations import get_vacations_in_period, vacation_amount_for_period
+from modules.payroll.additional_pay import get_additional_payments_in_period
 
 
 def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
@@ -27,6 +28,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
     expenses = get_expenses_in_period(start_date, end_date)
     penalties = get_penalties_in_period(start_date, end_date)
     bonuses = get_bonuses_in_period(start_date, end_date)
+    additional_payments = get_additional_payments_in_period(start_date, end_date)
     vacations = get_vacations_in_period(start_date, end_date)
 
     totals = {}
@@ -49,6 +51,8 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             "expenses": 0.0,
             "penalties": 0.0,
             "bonuses": 0.0,
+            "additional_payments": [],
+            "additional_pay_total": 0.0,
             "vacation_days": 0,
             "vacation_pay": 0.0,
             "vacations": [],
@@ -94,6 +98,12 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
         if employee_id in totals:
             totals[employee_id]["bonuses"] += bonus["amount"]
 
+    for payment in additional_payments:
+        employee_id = payment["employee_id"]
+        if employee_id in totals:
+            totals[employee_id]["additional_payments"].append(payment)
+            totals[employee_id]["additional_pay_total"] += payment["total_amount"]
+
     for vacation in vacations:
         employee_id = vacation["employee_id"]
         if employee_id not in totals:
@@ -121,6 +131,7 @@ def calculate_payroll_for_period(start_date, end_date, payment_mode="hourly"):
             + item["fixed_half"]
             + item["penalty_bonus"]
             + item["bonuses"]
+            + item["additional_pay_total"]
             + item["vacation_pay"]
             - item["penalties"]
         )
@@ -204,6 +215,10 @@ def format_employee_salary_block(item):
     if item["bonuses"]:
         lines.append(f"Премиальные: {money(item['bonuses'])}")
 
+    if item["additional_payments"]:
+        lines.append(f"Доп. начисления: {money(item['additional_pay_total'])}")
+        lines.extend(format_additional_pay_details(item["additional_payments"]))
+
     if item["vacation_pay"]:
         lines.append(f"Отпускные ({item['vacation_days']} дн.): {money(item['vacation_pay'])}")
         lines.extend(format_vacation_details(item["vacations"]))
@@ -262,6 +277,10 @@ def build_personal_salary_text(employee, period=None, show_bonus_details=False):
     if show_bonus_details and item["bonuses"]:
         lines.append(f"Премиальные: {money(item['bonuses'])}")
 
+    if item["additional_payments"]:
+        lines.append(f"Доп. начисления: {money(item['additional_pay_total'])}")
+        lines.extend(format_additional_pay_details(item["additional_payments"]))
+
     if item["vacation_pay"]:
         lines.append(f"Отпускные ({item['vacation_days']} дн.): {money(item['vacation_pay'])}")
         lines.extend(format_vacation_details(item["vacations"]))
@@ -283,6 +302,19 @@ def format_fixed_parts(parts):
         amount = float(part.get("amount", 0) or 0)
         if amount:
             result.append(f"{money_pretty(amount)} ({part['label']})")
+    return result
+
+
+def format_additional_pay_details(payments):
+    result = []
+    for payment in payments:
+        details = (
+            f"{payment['position_name']}: {payment['quantity']} поставк., "
+            f"{short_date(payment['week_start'])}–{short_date(payment['week_end'])}"
+        )
+        if payment.get("error_penalty"):
+            details += f", штраф {money(payment['error_penalty'])}"
+        result.append(f"Доп. начисление — {details}: {money(payment['total_amount'])}")
     return result
 
 
@@ -308,6 +340,15 @@ def format_payroll_statement_line(item):
     bonuses = item.get("bonuses", 0)
     if bonuses:
         parts.append(f"{money_pretty(bonuses)} (премиальные)")
+
+    for payment in item.get("additional_payments", []):
+        label = (
+            f"{payment['position_name']}: {payment['quantity']} поставк., "
+            f"{short_date(payment['week_start'])}–{short_date(payment['week_end'])}"
+        )
+        if payment.get("error_penalty"):
+            label += f", штраф {money_pretty(payment['error_penalty'])}"
+        parts.append(f"{money_pretty(payment['total_amount'])} ({label})")
 
     vacation_pay = item.get("vacation_pay", 0)
     if vacation_pay:

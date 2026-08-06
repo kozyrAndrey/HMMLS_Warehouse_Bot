@@ -92,7 +92,7 @@ PAYROLL_EMPLOYEES = [
         "hourly_rate": 0,
         "fixed_salary": 0,
         "include_in_common_fund": False,
-        "is_active": False,
+        "is_active": True,
     },
 ]
 

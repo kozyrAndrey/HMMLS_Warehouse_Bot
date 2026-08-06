@@ -20,6 +20,7 @@ from config import (
     PAYROLL_GOOGLE_SHEET_ID,
 )
 from modules.payroll.google_sheets import (
+    ADDITIONAL_PAY_SHEET,
     BONUSES_SHEET,
     EMPLOYEES_SHEET,
     EXPENSES_SHEET,
@@ -291,6 +292,7 @@ def migrate_payroll(gc):
         KPI_SHEET,
         PERIODS_SHEET,
         KPI_DAILY_SHEET,
+        ADDITIONAL_PAY_SHEET,
     ):
         archive_sheet("payroll", PAYROLL_GOOGLE_SHEET_ID, spreadsheet, sheet_name)
 

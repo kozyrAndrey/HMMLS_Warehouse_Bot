@@ -41,6 +41,7 @@ class VacationCalculationTests(unittest.TestCase):
             patch("modules.payroll.calculations.get_expenses_in_period", return_value=[]),
             patch("modules.payroll.calculations.get_penalties_in_period", return_value=[]),
             patch("modules.payroll.calculations.get_bonuses_in_period", return_value=[]),
+            patch("modules.payroll.calculations.get_additional_payments_in_period", return_value=[]),
             patch("modules.payroll.calculations.get_vacations_in_period", return_value=[vacation]),
             patch("modules.payroll.calculations.SALARY_FIXED_PARTS", {}),
         ):
