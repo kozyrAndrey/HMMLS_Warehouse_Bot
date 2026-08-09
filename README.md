@@ -247,6 +247,10 @@ GROUP_CHAT_ID
 RETURNS_TOPIC_ID
 RECEIVING_REPORT_TOPIC_ID
 DATABASE_URL
+LAMODA_CLIENT_ID
+LAMODA_CLIENT_SECRET
+LAMODA_SELLER_ID
+LAMODA_RETURNS_TOPIC_ID
 ```
 
 ### `products.py`
@@ -432,6 +436,29 @@ RECEIVING_REPORT_TOPIC_ID=4
 
 GOOGLE_CREDENTIALS_PATH=google_credentials.json
 ```
+
+### Lamoda FBS
+
+Раздел `🛍 Lamoda FBS` работает через Seller API v2. Он создаёт отдельный
+`pack` для каждого товара, выдаёт товарные и паковые этикетки, сохраняет КИЗ
+локально, формирует грузовые места и одну общую отгрузку. DataMatrix в Lamoda
+не передаётся.
+
+Для включения модуля задайте:
+
+```env
+LAMODA_CLIENT_ID=
+LAMODA_CLIENT_SECRET=
+LAMODA_SELLER_ID=120528732
+LAMODA_API_BASE_URL=https://public-api-seller.lamoda.ru/api
+LAMODA_SYNC_INTERVAL_MINUTES=10
+LAMODA_REMINDER_TIME=10:00
+LAMODA_RETURNS_TOPIC_ID=
+```
+
+`LAMODA_RETURNS_TOPIC_ID` — ID темы «Возвраты Lamoda» в существующем
+`GROUP_CHAT_ID`. Если данные API или тема не заполнены, остальные разделы бота
+продолжают работать, а Lamoda показывает понятную ошибку конфигурации.
 
 ---
 

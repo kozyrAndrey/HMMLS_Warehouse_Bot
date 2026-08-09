@@ -53,6 +53,9 @@ from modules.marking.storage import init_marking_storage
 from modules.reference.handlers import get_reference_handlers
 from modules.employees.handlers import get_employee_handlers
 from modules.products.handlers import get_product_handlers
+from modules.lamoda_fbs.handlers import get_lamoda_handlers, show_lamoda_menu
+from modules.lamoda_fbs.jobs import setup_lamoda_jobs
+from modules.lamoda_fbs.storage import init_lamoda_storage
 
 
 def setup_logging():
@@ -96,6 +99,11 @@ def main():
     init_recruitment_storage()
     init_returns_storage()
     init_marking_storage()
+
+    try:
+        init_lamoda_storage()
+    except Exception:
+        logging.exception("Не удалось инициализировать модуль Lamoda FBS")
 
     try:
         init_payroll_sheet()
@@ -222,10 +230,15 @@ def main():
     for handler in get_product_handlers():
         app.add_handler(handler)
 
+    # Lamoda FBS.
+    for handler in get_lamoda_handlers():
+        app.add_handler(handler)
+
     setup_schedule_jobs(app)
     setup_tasks_jobs(app)
     setup_ai_agent_jobs(app)
     setup_additional_pay_jobs(app)
+    setup_lamoda_jobs(app)
 
     # Кнопки меню.
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
@@ -234,6 +247,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_marking_menu, pattern=r"^section:marking$"))
     app.add_handler(CallbackQueryHandler(show_employees_menu, pattern=r"^section:employees$"))
     app.add_handler(CallbackQueryHandler(show_products_menu, pattern=r"^section:products$"))
+    app.add_handler(CallbackQueryHandler(show_lamoda_menu, pattern=r"^section:lamoda$"))
     app.add_handler(CallbackQueryHandler(menu_last_records, pattern=r"^menu:last$"))
 
     print("Bot started...")

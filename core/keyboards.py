@@ -25,6 +25,7 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False):
         [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
         [InlineKeyboardButton("🏷 Маркировка", callback_data="section:marking")],
+        [InlineKeyboardButton("🛒 Lamoda FBS", callback_data="section:lamoda")],
     ]
 
     if manager:

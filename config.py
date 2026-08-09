@@ -10,6 +10,13 @@ except ModuleNotFoundError:
 load_dotenv()
 
 
+def env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -121,3 +128,19 @@ MARKING_ONE_C_RETAIL_PRICE_TYPE = (
 )
 MARKING_ONE_C_DEFAULT_GENDER = os.getenv("MARKING_ONE_C_DEFAULT_GENDER", "") or "Unisex"
 MARKING_ONE_C_CONSIGNOR = os.getenv("MARKING_ONE_C_CONSIGNOR", "")
+
+
+# ============================================================
+# LAMODA FBS
+# ============================================================
+
+LAMODA_CLIENT_ID = os.getenv("LAMODA_CLIENT_ID", "")
+LAMODA_CLIENT_SECRET = os.getenv("LAMODA_CLIENT_SECRET", "")
+LAMODA_SELLER_ID = os.getenv("LAMODA_SELLER_ID", "120528732")
+LAMODA_API_BASE_URL = os.getenv(
+    "LAMODA_API_BASE_URL",
+    "https://public-api-seller.lamoda.ru/api",
+).rstrip("/")
+LAMODA_SYNC_INTERVAL_MINUTES = env_int("LAMODA_SYNC_INTERVAL_MINUTES", 10)
+LAMODA_REMINDER_TIME = os.getenv("LAMODA_REMINDER_TIME", "10:00")
+LAMODA_RETURNS_TOPIC_ID = os.getenv("LAMODA_RETURNS_TOPIC_ID", "")
