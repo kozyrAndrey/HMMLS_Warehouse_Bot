@@ -6,6 +6,7 @@ from sqlalchemy import Date, DateTime, Index, Integer, String, Text, UniqueConst
 from sqlalchemy.orm import Mapped, mapped_column
 
 from modules.payroll.google_sheets import get_employees
+from modules.employees.roles import has_any_role, has_role
 from modules.schedule.config import date_to_str, parse_date
 from modules.schedule.google_sheets import get_schedule_matrix
 from modules.storage.postgres import Base, get_engine, session_scope
@@ -628,19 +629,19 @@ def get_task_export(day, export_type):
 def get_warehouse_managers():
     return [
         employee for employee in get_employees(include_inactive=False)
-        if employee.get("role") == WAREHOUSE_MANAGER_ROLE and str(employee.get("telegram_user_id", "")).strip()
+        if has_role(employee, WAREHOUSE_MANAGER_ROLE) and str(employee.get("telegram_user_id", "")).strip()
     ]
 
 
 def can_user_complete_task(user, task_record, employee):
     if not employee:
         return False
-    if employee.get("role") in {"warehouse_manager", "brand_manager"}:
+    if has_any_role(employee, {"warehouse_manager", "brand_manager", "admin"}):
         return True
     if str(task_record.get("Тип задачи", "")).strip() != TASK_TYPE_WAREHOUSE:
         return False
 
     assignee_ids = {item.strip() for item in str(task_record.get("Исполнители ID", "")).split(",") if item.strip()}
     if not assignee_ids:
-        return employee.get("role") == "warehouse_employee"
+        return has_role(employee, "warehouse_employee")
     return str(employee.get("employee_id", "")).strip() in assignee_ids

@@ -20,6 +20,7 @@ POWER_OF_ATTORNEY_GLOB = "power_of_attorney.*"
 
 ROLE_LABELS = {
     "warehouse_employee": "Сотрудник склада",
+    "operations": "Операционщик",
     "warehouse_manager": "Руководитель склада",
     "brand_manager": "Руководитель бренда",
     "admin": "Администратор",
@@ -133,12 +134,13 @@ async def send_power_of_attorney(update: Update, context: ContextTypes.DEFAULT_T
 
 def build_employee_phones_text():
     from modules.payroll.google_sheets import get_employees
+    from modules.employees.roles import format_role_labels
 
     lines = ["Телефоны сотрудников", ""]
     for employee in get_employees(include_inactive=False):
         username = str(employee.get("telegram_username", "")).strip()
         username_text = f"@{username}" if username else "—"
-        role = ROLE_LABELS.get(employee.get("role"), employee.get("role") or "—")
+        role = format_role_labels(employee)
         phone = str(employee.get("phone", "")).strip() or "—"
         lines.append(f"{employee['full_name']}, {role}, {phone}, {username_text}")
 

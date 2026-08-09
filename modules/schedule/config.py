@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from modules.payroll.config import MANAGER_ROLES
 from modules.payroll.google_sheets import get_employees
+from modules.employees.roles import has_any_role
 
 MSK_TZ = ZoneInfo("Europe/Moscow")
 
@@ -76,14 +77,14 @@ def format_week_range_full(week_start):
 
 
 def is_schedule_manager(employee):
-    return bool(employee and employee.get("role") in MANAGER_ROLES)
+    return has_any_role(employee, MANAGER_ROLES)
 
 
 def can_employee_submit_schedule(employee):
     return bool(
         employee
         and employee.get("is_active")
-        and employee.get("role") not in SCHEDULE_EXCLUDED_ROLES
+        and not has_any_role(employee, SCHEDULE_EXCLUDED_ROLES)
     )
 
 

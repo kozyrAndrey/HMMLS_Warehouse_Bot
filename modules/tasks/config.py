@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+from modules.employees.roles import has_any_role
+
 
 TASK_TYPE_WAREHOUSE = "warehouse"
 TASK_TYPE_GENERAL = "general"
@@ -66,7 +68,7 @@ DEFAULT_WEEKLY_TASK_TEMPLATES = [
 
 
 def is_tasks_manager(employee):
-    return bool(employee and employee.get("role") in TASK_MANAGER_ROLES)
+    return has_any_role(employee, TASK_MANAGER_ROLES)
 
 
 def get_week_start_for_date(value):

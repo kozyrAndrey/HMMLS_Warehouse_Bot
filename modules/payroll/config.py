@@ -12,6 +12,7 @@ PAYROLL_EMPLOYEES = [
         "telegram_user_id": "413489632",
         "telegram_username": "opulent_shooter",
         "role": "warehouse_manager",
+        "roles": ["warehouse_manager", "admin"],
         "hourly_rate": 437.5,
         "fixed_salary": 70000,
         "include_in_common_fund": False,
@@ -23,6 +24,7 @@ PAYROLL_EMPLOYEES = [
         "telegram_user_id": "927075259",
         "telegram_username": "adafagahajakal",
         "role": "warehouse_employee",
+        "roles": ["warehouse_employee", "operations"],
         "hourly_rate": 437.5,
         "fixed_salary": 40000,
         "include_in_common_fund": True,
@@ -448,7 +450,7 @@ def find_penalty_category_by_type_name(type_name):
 
 
 MANAGER_ROLES = {"warehouse_manager", "brand_manager", "admin"}
-EMPLOYEE_ROLES = {"warehouse_employee", "warehouse_manager", "brand_manager", "admin"}
+EMPLOYEE_ROLES = {"warehouse_employee", "operations", "warehouse_manager", "brand_manager", "admin"}
 
 
 def normalize_username(username):

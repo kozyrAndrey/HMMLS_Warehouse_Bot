@@ -10,6 +10,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from modules.employees.roles import has_role
 
 from modules.payroll.additional_pay import (
     AdditionalPayValidationError,
@@ -57,7 +58,7 @@ def get_warehouse_manager():
     managers = [
         employee
         for employee in get_employees(include_inactive=False)
-        if employee.get("role") == "warehouse_manager"
+        if has_role(employee, "warehouse_manager")
     ]
     return managers[0] if len(managers) == 1 else None
 

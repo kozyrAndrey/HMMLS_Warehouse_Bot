@@ -1,5 +1,6 @@
 import logging
 import os
+from copy import deepcopy
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
@@ -26,6 +27,7 @@ from modules.payroll.config import (
 )
 from modules.payroll.calculations import build_full_payroll_text, build_personal_salary_text
 from modules.payroll.google_sheets import (
+    append_manager_report,
     append_daily_report,
     append_bonus,
     append_expense,
@@ -35,6 +37,7 @@ from modules.payroll.google_sheets import (
     delete_bonus,
     delete_expense,
     find_employee_for_telegram_user,
+    find_manager_report_row,
     find_report_row,
     get_active_period,
     list_bonuses_in_period,
@@ -65,6 +68,7 @@ from modules.payroll.google_sheets import (
     validate_date,
     now_str,
 )
+from modules.employees.roles import format_role_labels, has_role
 from modules.payroll.pdf_reports import create_payroll_pdf
 from modules.payroll.additional_pay import can_manage_additional_pay
 from modules.payroll.vacations import (
@@ -77,6 +81,7 @@ from modules.payroll.vacations import (
 )
 from modules.tasks.config import TASK_TYPE_GENERAL, TASK_TYPE_WAREHOUSE
 from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_date
+from modules.schedule.google_sheets import get_schedule_matrix
 
 
 (
@@ -138,19 +143,27 @@ from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_d
     EDIT_SHIFT_TYPE,
 ) = range(300, 356)
 
+CREATE_MANAGER_DATE = 356
+
 
 # ============================================================
 # ОБЩИЕ КЛАВИАТУРЫ
 # ============================================================
 
 
-def payroll_main_keyboard(manager=False, additional_pay_manager=False):
+def payroll_main_keyboard(manager=False, additional_pay_manager=False, warehouse_manager=False):
     rows = [
         [InlineKeyboardButton("📝 Создать ежедневный отчет", callback_data="pay:create_report")],
         [InlineKeyboardButton("✏️ Изменить отчет", callback_data="pay:edit_report")],
         [InlineKeyboardButton("💰 Проверить свою ЗП", callback_data="pay:check_salary")],
         [InlineKeyboardButton("💸 Расходы", callback_data="pay:expenses")],
     ]
+
+    if warehouse_manager:
+        rows.insert(
+            1,
+            [InlineKeyboardButton("🧭 Руководительский отчет", callback_data="pay:manager_report")],
+        )
 
     if manager:
         rows.extend(
@@ -456,6 +469,7 @@ def penalty_photos_keyboard(has_photos=False):
 
 
 def manager_wizard_choice_keyboard(rows):
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgrwiz:back")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -504,13 +518,14 @@ async def show_payroll_menu_message(target, employee):
     text = "💰 Расчет ЗП"
     if employee:
         text += f"\n\nСотрудник: {employee['full_name']}"
-        text += f"\nРоль: {employee['role']}"
+        text += f"\nДолжности: {format_role_labels(employee)}"
     if hasattr(target, "edit_message_text"):
         await target.edit_message_text(
             text,
             reply_markup=payroll_main_keyboard(
                 manager=manager,
                 additional_pay_manager=can_manage_additional_pay(employee),
+                warehouse_manager=is_warehouse_manager(employee),
             ),
         )
     else:
@@ -519,6 +534,7 @@ async def show_payroll_menu_message(target, employee):
             reply_markup=payroll_main_keyboard(
                 manager=manager,
                 additional_pay_manager=can_manage_additional_pay(employee),
+                warehouse_manager=is_warehouse_manager(employee),
             ),
         )
 
@@ -570,7 +586,7 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             f"\n\nСотрудник: {employee['full_name']}\n"
             f"employee_id: {employee['employee_id']}\n"
-            f"role: {employee['role']}"
+            f"roles: {', '.join(employee.get('roles') or [employee['role']])}"
         )
     else:
         text += "\n\nВ листе «Сотрудники» вы пока не найдены."
@@ -592,13 +608,13 @@ def format_kpi_lines(kpi_items):
 
 
 def is_warehouse_manager(employee):
-    return bool(employee and employee.get("role") == "warehouse_manager")
+    return has_role(employee, "warehouse_manager")
 
 
 def get_brand_managers():
     return [
-        employee for employee in get_employees(include_inactive=True)
-        if employee.get("role") == "brand_manager" and str(employee.get("telegram_user_id", "")).strip()
+        employee for employee in get_employees(include_inactive=False)
+        if has_role(employee, "brand_manager") and str(employee.get("telegram_user_id", "")).strip()
     ]
 
 
@@ -780,6 +796,18 @@ def manager_report_block(report_model):
     )
 
 
+def format_manager_report_text(employee, report_date, manager_report):
+    return "\n".join(
+        [
+            "🧭 Руководительский отчет",
+            "",
+            f"Руководитель: {employee['full_name']}",
+            f"Дата: {report_date}",
+            manager_report_block({"manager_report": manager_report}),
+        ]
+    )
+
+
 def format_daily_report_text(report_model):
     employee = report_model["employee"]
     title = "📝 Личный отчет" if report_model.get("manager_report") else "📝 Ежедневный отчет"
@@ -844,6 +872,82 @@ async def send_daily_report_to_private_target(target, report_model, reply_markup
         "thread_id": "",
         "message_id": message_id,
     }
+
+
+async def send_manager_report_to_recipients(
+    context,
+    employee,
+    report_date,
+    manager_report,
+    own_target=None,
+    own_reply_markup=None,
+):
+    text = format_manager_report_text(employee, report_date, manager_report)
+    chunks = split_long_message(text)
+    messages = []
+    employee_user_id = str(employee.get("telegram_user_id", "")).strip()
+    if not employee_user_id:
+        raise RuntimeError("У руководителя склада не указан telegram_user_id.")
+
+    brand_managers = [
+        manager
+        for manager in get_brand_managers()
+        if str(manager.get("telegram_user_id", "")).strip() != employee_user_id
+    ]
+    if not brand_managers:
+        raise RuntimeError("Не найден активный руководитель бренда с telegram_user_id.")
+
+    if own_target is not None:
+        if hasattr(own_target, "edit_message_text"):
+            result = await own_target.edit_message_text(chunks[0], reply_markup=own_reply_markup)
+            message = result if hasattr(result, "message_id") else getattr(own_target, "message", None)
+        else:
+            message = await own_target.reply_text(chunks[0], reply_markup=own_reply_markup)
+        if message and getattr(message, "message_id", None):
+            messages.append(
+                {
+                    "recipient": "warehouse_manager",
+                    "chat_id": int(getattr(message, "chat_id", 0) or employee_user_id),
+                    "message_id": message.message_id,
+                }
+            )
+        for chunk in chunks[1:]:
+            message = await context.bot.send_message(chat_id=int(employee_user_id), text=chunk)
+            messages.append(
+                {
+                    "recipient": "warehouse_manager",
+                    "chat_id": int(employee_user_id),
+                    "message_id": message.message_id,
+                }
+            )
+    else:
+        for chunk in chunks:
+            message = await context.bot.send_message(chat_id=int(employee_user_id), text=chunk)
+            messages.append(
+                {
+                    "recipient": "warehouse_manager",
+                    "chat_id": int(employee_user_id),
+                    "message_id": message.message_id,
+                }
+            )
+
+    delivered_brand_manager_ids = set()
+    for brand_manager in brand_managers:
+        recipient_id = str(brand_manager.get("telegram_user_id", "")).strip()
+        if not recipient_id or recipient_id == employee_user_id or recipient_id in delivered_brand_manager_ids:
+            continue
+        delivered_brand_manager_ids.add(recipient_id)
+        for chunk in chunks:
+            message = await context.bot.send_message(chat_id=int(recipient_id), text=chunk)
+            messages.append(
+                {
+                    "recipient": "brand_manager",
+                    "chat_id": int(recipient_id),
+                    "message_id": message.message_id,
+                }
+            )
+
+    return messages
 
 
 async def send_daily_report_to_topic(
@@ -1069,6 +1173,70 @@ async def delete_old_report_message(context: ContextTypes.DEFAULT_TYPE, report_m
 # ============================================================
 
 
+def employee_has_scheduled_shift(employee_id, report_date):
+    try:
+        report_day = datetime.strptime(report_date, "%d.%m.%Y").date()
+        week_start = report_day - timedelta(days=report_day.weekday())
+        _, _, schedule, _ = get_schedule_matrix(week_start)
+        return bool(schedule.get(str(employee_id), {}).get(report_date))
+    except Exception:
+        logging.exception("Не удалось проверить смену для руководительского отчета")
+        return False
+
+
+async def manager_only_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    employee = current_employee_or_none(update)
+    if not is_warehouse_manager(employee):
+        await query.edit_message_text("Руководительский отчет доступен только руководителю склада.")
+        return ConversationHandler.END
+
+    context.user_data["employee_id"] = employee["employee_id"]
+    context.user_data["manager_report_only"] = True
+    await query.edit_message_text(
+        "За какую дату сформировать руководительский отчет?",
+        reply_markup=date_keyboard("mgrdate"),
+    )
+    return CREATE_MANAGER_DATE
+
+
+async def manager_only_report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    report_date = query.data.replace("mgrdate:", "", 1)
+    employee = get_employee_by_id(context.user_data.get("employee_id"))
+    if not employee or not is_warehouse_manager(employee):
+        await query.edit_message_text("Руководитель склада не найден.")
+        return ConversationHandler.END
+    if find_manager_report_row(employee["employee_id"], report_date)[0] is not None:
+        await query.edit_message_text(
+            f"Руководительский отчет за {report_date} уже существует.",
+            reply_markup=payroll_main_keyboard(
+                manager=is_manager(employee),
+                warehouse_manager=True,
+            ),
+        )
+        return ConversationHandler.END
+
+    if employee_has_scheduled_shift(employee["employee_id"], report_date):
+        daily_report_exists = find_report_row(employee["employee_id"], report_date)[0] is not None
+        if not daily_report_exists:
+            await query.edit_message_text(
+                "На эту дату у вас запланирована складская смена. "
+                "Создайте ежедневный отчет — после складской части бот автоматически откроет руководительскую.",
+                reply_markup=payroll_main_keyboard(
+                    manager=is_manager(employee),
+                    warehouse_manager=True,
+                ),
+            )
+            return ConversationHandler.END
+
+    context.user_data["report_date"] = report_date
+    return await start_manager_report_wizard(query, context)
+
+
 async def create_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1239,7 +1407,11 @@ async def create_kpi_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if kpi_id == "done":
         employee = get_employee_by_id(context.user_data.get("employee_id"))
-        if is_warehouse_manager(employee):
+        manager_report_exists = (
+            employee
+            and find_manager_report_row(employee["employee_id"], context.user_data.get("report_date"))[0] is not None
+        )
+        if is_warehouse_manager(employee) and not manager_report_exists:
             return await start_manager_report_wizard(query, context)
         return await finish_create_report(query, context, update.effective_user)
 
@@ -1331,9 +1503,55 @@ async def payroll_create_back(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+MANAGER_WIZARD_STATE_KEYS = {
+    "manager_wizard_values",
+    "manager_speed_entries",
+    "manager_problem_entries",
+    "manager_personal_extra",
+    "manager_warehouse_extra",
+    "manager_wizard_step",
+    "manager_wizard_screen",
+    "manager_current_speed",
+    "manager_current_problem",
+    "manager_personal_plan",
+    "manager_warehouse_plan",
+    "auto_personal_plan",
+    "auto_warehouse_plan",
+}
+
+
+def manager_wizard_nav_keyboard(context):
+    rows = []
+    if context.user_data.get("manager_wizard_history"):
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgrwiz:back")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def remember_manager_wizard_state(context):
+    snapshot = {
+        key: deepcopy(context.user_data[key])
+        for key in MANAGER_WIZARD_STATE_KEYS
+        if key in context.user_data
+    }
+    context.user_data.setdefault("manager_wizard_history", []).append(snapshot)
+
+
+def restore_manager_wizard_state(context):
+    history = context.user_data.get("manager_wizard_history") or []
+    if not history:
+        return False
+    snapshot = history.pop()
+    for key in MANAGER_WIZARD_STATE_KEYS:
+        context.user_data.pop(key, None)
+    context.user_data.update(snapshot)
+    context.user_data["manager_wizard_history"] = history
+    return True
+
+
 async def send_manager_wizard_prompt(target, context: ContextTypes.DEFAULT_TYPE, text=None, reply_markup=None):
     text = text or manager_step_prompt(context.user_data.get("manager_wizard_step"))
-    reply_markup = reply_markup or payroll_back_keyboard()
+    reply_markup = reply_markup or manager_wizard_nav_keyboard(context)
     if hasattr(target, "edit_message_text"):
         await target.edit_message_text(text, reply_markup=reply_markup)
     else:
@@ -1346,7 +1564,9 @@ async def start_manager_report_wizard(target, context: ContextTypes.DEFAULT_TYPE
     context.user_data["manager_problem_entries"] = []
     context.user_data["manager_personal_extra"] = []
     context.user_data["manager_warehouse_extra"] = []
+    context.user_data["manager_wizard_history"] = []
     context.user_data["manager_wizard_step"] = MANAGER_VOLUME_STEPS[0][0]
+    context.user_data["manager_wizard_screen"] = "prompt"
     await send_manager_wizard_prompt(
         target,
         context,
@@ -1356,6 +1576,7 @@ async def start_manager_report_wizard(target, context: ContextTypes.DEFAULT_TYPE
 
 
 async def ask_next_manager_step(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "prompt"
     step = context.user_data.get("manager_wizard_step")
     prefix = ""
     if step in {item[0] for item in MANAGER_VOLUME_STEPS}:
@@ -1375,6 +1596,7 @@ def next_step_after_linear(current_step, steps):
 
 
 async def ask_speed_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "speed_continue"
     count = len(context.user_data.get("manager_speed_entries") or [])
     await send_manager_wizard_prompt(
         target,
@@ -1391,6 +1613,7 @@ async def ask_speed_continue(target, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_problem_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "problem_continue"
     count = len(context.user_data.get("manager_problem_entries") or [])
     await send_manager_wizard_prompt(
         target,
@@ -1407,6 +1630,7 @@ async def ask_problem_continue(target, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_personal_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "personal_choice"
     plan = format_plan_tasks_for_report(tasks_for_report_plan(context.user_data["report_date"], TASK_TYPE_GENERAL))
     context.user_data["auto_personal_plan"] = plan
     await send_manager_wizard_prompt(
@@ -1429,6 +1653,7 @@ async def ask_personal_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_personal_plan_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "personal_continue"
     count = len(context.user_data.get("manager_personal_extra") or [])
     await send_manager_wizard_prompt(
         target,
@@ -1445,6 +1670,7 @@ async def ask_personal_plan_continue(target, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def ask_warehouse_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "warehouse_choice"
     plan = format_plan_tasks_for_report(tasks_for_report_plan(context.user_data["report_date"], TASK_TYPE_WAREHOUSE))
     context.user_data["auto_warehouse_plan"] = plan
     await send_manager_wizard_prompt(
@@ -1466,6 +1692,7 @@ async def ask_warehouse_plan_choice(target, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_warehouse_plan_continue(target, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["manager_wizard_screen"] = "warehouse_continue"
     count = len(context.user_data.get("manager_warehouse_extra") or [])
     await send_manager_wizard_prompt(
         target,
@@ -1481,6 +1708,37 @@ async def ask_warehouse_plan_continue(target, context: ContextTypes.DEFAULT_TYPE
     return CREATE_MANAGER_VOLUMES
 
 
+async def render_manager_wizard_state(target, context):
+    screen = context.user_data.get("manager_wizard_screen") or "prompt"
+    renderers = {
+        "speed_continue": ask_speed_continue,
+        "problem_continue": ask_problem_continue,
+        "personal_choice": ask_personal_plan_choice,
+        "personal_continue": ask_personal_plan_continue,
+        "warehouse_choice": ask_warehouse_plan_choice,
+        "warehouse_continue": ask_warehouse_plan_continue,
+    }
+    renderer = renderers.get(screen)
+    if renderer:
+        return await renderer(target, context)
+    return await ask_next_manager_step(target, context)
+
+
+def validate_manager_wizard_value(step, value):
+    if len(value) > 1500:
+        return None, "Ответ слишком длинный. Ограничение — 1500 символов."
+    numeric_volume_steps = {item[0] for item in MANAGER_VOLUME_STEPS[:-1]}
+    if step in numeric_volume_steps:
+        if not value.isdigit():
+            return None, "Введите целое число 0 или больше."
+        return str(int(value)), None
+    if step == "day_score":
+        if not value.isdigit() or not 1 <= int(value) <= 10:
+            return None, "Введите оценку целым числом от 1 до 10."
+        return str(int(value)), None
+    return value, None
+
+
 async def manager_report_wizard_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = update.message.text.strip()
     if not value:
@@ -1488,6 +1746,12 @@ async def manager_report_wizard_text_received(update: Update, context: ContextTy
         return CREATE_MANAGER_VOLUMES
 
     step = context.user_data.get("manager_wizard_step")
+    value, validation_error = validate_manager_wizard_value(step, value)
+    if validation_error:
+        await update.message.reply_text(validation_error, reply_markup=manager_wizard_nav_keyboard(context))
+        return CREATE_MANAGER_VOLUMES
+
+    remember_manager_wizard_state(context)
     values = context.user_data.setdefault("manager_wizard_values", {})
 
     volume_keys = [item[0] for item in MANAGER_VOLUME_STEPS]
@@ -1559,6 +1823,8 @@ async def manager_report_wizard_text_received(update: Update, context: ContextTy
             context.user_data["manager_wizard_step"] = next_step
             return await ask_next_manager_step(update.message, context)
         context.user_data["manager_report"] = build_manager_report_from_wizard(context)
+        if context.user_data.get("manager_report_only"):
+            return await finish_manager_only_report(update.message, context, update.effective_user)
         return await finish_create_report(update.message, context, update.effective_user)
 
     await update.message.reply_text("Я потерял текущий шаг отчета. Начните создание отчета заново.")
@@ -1569,6 +1835,17 @@ async def manager_report_wizard_callback(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
     action = query.data.replace("mgrwiz:", "")
+
+    if action == "back":
+        if not restore_manager_wizard_state(context):
+            await query.edit_message_text(
+                "Это первый шаг отчета. Введите ответ или отмените создание.",
+                reply_markup=manager_wizard_nav_keyboard(context),
+            )
+            return CREATE_MANAGER_VOLUMES
+        return await render_manager_wizard_state(query, context)
+
+    remember_manager_wizard_state(context)
 
     if action == "speed:add":
         context.user_data["manager_wizard_step"] = "speed_task"
@@ -1618,6 +1895,41 @@ async def manager_report_wizard_callback(update: Update, context: ContextTypes.D
     return CREATE_MANAGER_VOLUMES
 
 
+async def finish_manager_only_report(target, context, telegram_user):
+    employee = get_employee_by_id(context.user_data.get("employee_id"))
+    manager_report = context.user_data.get("manager_report") or build_manager_report_from_wizard(context)
+    report_date = context.user_data.get("report_date")
+    if not employee or not is_warehouse_manager(employee) or not report_date:
+        await target.reply_text("Не удалось определить руководителя или дату отчета.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    menu = payroll_main_keyboard(
+        manager=is_manager(employee),
+        additional_pay_manager=can_manage_additional_pay(employee),
+        warehouse_manager=True,
+    )
+    try:
+        telegram_messages = await send_manager_report_to_recipients(
+            context,
+            employee,
+            report_date,
+            manager_report,
+            own_target=target,
+            own_reply_markup=menu,
+        )
+        append_manager_report(employee, report_date, manager_report, telegram_messages)
+    except Exception as error:
+        logging.exception("Ошибка создания отдельного руководительского отчета")
+        message = f"Руководительский отчет не удалось сохранить/отправить ⚠️\nОшибка: {error}"
+        if hasattr(target, "edit_message_text"):
+            await target.edit_message_text(message, reply_markup=menu)
+        else:
+            await target.reply_text(message, reply_markup=menu)
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, telegram_user):
     employee = get_employee_by_id(context.user_data.get("employee_id"))
     if not employee:
@@ -1650,6 +1962,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
     tasks = context.user_data["tasks"]
     kpi_items = context.user_data.get("kpi_items", [])
 
+    manager_report = context.user_data.get("manager_report") or None
     report_model = {
         "date": report_date,
         "employee": employee,
@@ -1662,7 +1975,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         "tasks": tasks,
         "kpi_items": kpi_items,
         "kpi_sum": calculate_kpi_sum(kpi_items),
-        "manager_report": context.user_data.get("manager_report") or None,
+        "manager_report": None,
         "telegram_chat_id": "",
         "telegram_message_id": "",
     }
@@ -1673,6 +1986,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         and report_belongs_to_telegram_user(report_model, telegram_user)
     )
 
+    report_saved = False
     try:
         telegram_data = await send_daily_report_to_topic(
             context,
@@ -1694,13 +2008,32 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
             telegram_data,
             shift_type=shift_type,
         )
+        report_saved = True
         if is_warehouse_manager(employee):
-            status = "Отчет сохранен и отправлен руководителю склада в личные сообщения ✅"
+            status = "Складской отчет сохранен и отправлен в личные сообщения ✅"
         else:
             status = "Отчет сохранен и отправлен в тему ✅"
     except Exception as error:
         logging.exception("Ошибка создания ежедневного отчета")
         status = f"Отчет не удалось сохранить/отправить ⚠️\nОшибка: {error}"
+
+    if report_saved and is_warehouse_manager(employee) and manager_report:
+        try:
+            telegram_messages = await send_manager_report_to_recipients(
+                context,
+                employee,
+                report_date,
+                manager_report,
+            )
+            append_manager_report(employee, report_date, manager_report, telegram_messages)
+            status = "Складской и руководительский отчеты сохранены и отправлены отдельными сообщениями ✅"
+        except Exception as error:
+            logging.exception("Складской отчет сохранен, но руководительский отчет не отправлен")
+            warning = f"Складской отчет сохранен, но руководительский отчет не отправлен ⚠️\nОшибка: {error}"
+            try:
+                await context.bot.send_message(chat_id=int(employee["telegram_user_id"]), text=warning)
+            except Exception:
+                logging.exception("Не удалось отправить предупреждение руководителю склада")
 
     if delivered_to_private_target and not status.startswith("Отчет не удалось"):
         context.user_data.clear()
@@ -3571,6 +3904,7 @@ def get_payroll_conversation_handler():
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(create_report_start, pattern=r"^pay:create_report$"),
+            CallbackQueryHandler(manager_only_report_start, pattern=r"^pay:manager_report$"),
             CallbackQueryHandler(edit_report_start, pattern=r"^pay:edit_report$"),
             CallbackQueryHandler(check_salary_start, pattern=r"^pay:check_salary$"),
             CallbackQueryHandler(expenses_menu_start, pattern=r"^pay:expenses$"),
@@ -3595,6 +3929,10 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(cleanup_start, pattern=r"^pay:cleanup$"),
         ],
         states={
+            CREATE_MANAGER_DATE: [
+                CallbackQueryHandler(manager_only_report_date_selected, pattern=r"^mgrdate:"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
             CREATE_EMPLOYEE: [
                 CallbackQueryHandler(create_employee_selected, pattern=r"^cremp:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),

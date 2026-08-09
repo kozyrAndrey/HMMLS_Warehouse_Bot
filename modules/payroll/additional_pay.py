@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime, timedelta
 
+from modules.employees.roles import has_any_role
 from modules.storage.google_archive import DatabaseWorksheet
 
 
@@ -82,7 +83,7 @@ def safe_bool(value):
 
 
 def can_manage_additional_pay(employee):
-    return bool(employee and employee.get("role") in ADDITIONAL_PAY_MANAGER_ROLES)
+    return has_any_role(employee, ADDITIONAL_PAY_MANAGER_ROLES)
 
 
 def previous_completed_week(base_date=None):

@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from config import GROUP_CHAT_ID, RECRUITMENT_TOPIC_ID
 from core.access import find_registered_employee, is_registered_bot_user
+from modules.employees.roles import has_role
 from modules.recruitment.excel import create_applications_xlsx
 from modules.recruitment.storage import create_job_application
 from modules.recruitment.storage import get_all_applications
@@ -45,7 +46,7 @@ def is_recruitment_tester(user):
     employee = find_registered_employee(user)
     if not employee:
         return False
-    return str(employee.get("role", "")).strip() == "warehouse_manager"
+    return has_role(employee, "warehouse_manager")
 
 
 def build_candidate_start_keyboard():

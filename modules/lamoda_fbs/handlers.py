@@ -59,9 +59,9 @@ from modules.lamoda_fbs.storage import (
     set_cargo_status,
     set_session_labels_ready,
 )
-from modules.payroll.google_sheets import find_employee_for_telegram_user
+from modules.employees.roles import has_any_role
+from modules.payroll.google_sheets import find_employee_for_telegram_user, get_employees
 from modules.storage.postgres import session_scope
-from modules.tasks.storage import get_warehouse_managers
 
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def _employee_name(user):
 
 
 def _is_lamoda_manager(user):
-    return _employee(user).get("role") in MANAGER_ROLES
+    return has_any_role(_employee(user), MANAGER_ROLES)
 
 
 async def _answer_error(update, error):
@@ -563,20 +563,28 @@ async def return_defect_done(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await _save_return(update, context)
 
 
-def _manager_mentions():
+def _mentions_for_roles(required_roles):
     mentions = []
     try:
-        managers = get_warehouse_managers()
+        employees = get_employees(include_inactive=False)
     except Exception:
-        logger.exception("Could not load warehouse managers for Lamoda return mention")
-        managers = []
-    for manager in managers:
-        username = str(manager.get("telegram_username") or "").strip().lstrip("@")
-        name = html.escape(manager.get("full_name") or "Руководитель")
+        logger.exception("Could not load employees for Lamoda return mention")
+        employees = []
+    seen = set()
+    for employee in employees:
+        if not has_any_role(employee, required_roles):
+            continue
+        identity = str(employee.get("employee_id") or employee.get("telegram_user_id") or "").strip()
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        username = str(employee.get("telegram_username") or "").strip().lstrip("@")
+        name = html.escape(employee.get("full_name") or "Сотрудник")
         if username:
             mentions.append(f"@{html.escape(username)}")
-        elif manager.get("telegram_user_id"):
-            mentions.append(f'<a href="tg://user?id={manager["telegram_user_id"]}">{name}</a>')
+        elif employee.get("telegram_user_id"):
+            mentions.append(f'<a href="tg://user?id={employee["telegram_user_id"]}">{name}</a>')
     return " ".join(mentions)
 
 
@@ -641,7 +649,14 @@ async def _send_return_report(context, data, receipt_id):
         + f"Дата: {datetime.now():%d.%m.%Y %H:%M}"
     )
     if attention:
-        caption += "\n\n" + _manager_mentions()
+        mention_roles = (
+            {"brand_manager", "warehouse_manager", "operations"}
+            if defect
+            else {"warehouse_manager"}
+        )
+        mentions = _mentions_for_roles(mention_roles)
+        if mentions:
+            caption += "\n\n" + mentions
     chat_id = int(GROUP_CHAT_ID)
     thread_id = int(LAMODA_RETURNS_TOPIC_ID)
     photos = [data["label_photo"]] + data.get("defect_photos", [])

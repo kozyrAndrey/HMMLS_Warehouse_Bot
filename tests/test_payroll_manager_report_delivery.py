@@ -7,7 +7,11 @@ from telegram.ext import ConversationHandler
 from modules.payroll.handlers import (
     finish_create_report,
     finish_edit_report,
+    payroll_main_keyboard,
+    remember_manager_wizard_state,
+    restore_manager_wizard_state,
     send_daily_report_to_private_target,
+    validate_manager_wizard_value,
 )
 
 
@@ -34,6 +38,32 @@ def report_model():
 
 
 class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_manager_menu_has_separate_management_report_button(self):
+        keyboard = payroll_main_keyboard(manager=True, warehouse_manager=True)
+        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+        self.assertIn("pay:manager_report", callbacks)
+
+    def test_manager_report_validates_numbers_and_day_score(self):
+        self.assertEqual(validate_manager_wizard_value("sent_orders", "12"), ("12", None))
+        self.assertIsNotNone(validate_manager_wizard_value("sent_orders", "много")[1])
+        self.assertEqual(validate_manager_wizard_value("day_score", "10"), ("10", None))
+        self.assertIsNotNone(validate_manager_wizard_value("day_score", "11")[1])
+
+    def test_manager_wizard_can_restore_previous_step(self):
+        context = SimpleNamespace(
+            user_data={
+                "manager_wizard_step": "sent_orders",
+                "manager_wizard_values": {},
+                "manager_wizard_history": [],
+            }
+        )
+        remember_manager_wizard_state(context)
+        context.user_data["manager_wizard_step"] = "accepted_goods"
+        context.user_data["manager_wizard_values"]["sent_orders"] = "5"
+        self.assertTrue(restore_manager_wizard_state(context))
+        self.assertEqual(context.user_data["manager_wizard_step"], "sent_orders")
+        self.assertEqual(context.user_data["manager_wizard_values"], {})
+
     async def test_private_callback_message_is_reused_for_report(self):
         edited_message = SimpleNamespace(chat_id=42, message_id=101)
         query = SimpleNamespace(
@@ -87,6 +117,66 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
             telegram_data,
             {"chat_id": 42, "thread_id": "", "message_id": 202},
         )
+
+    async def test_working_manager_gets_two_separate_reports_and_brand_manager_copy(self):
+        sent_message = SimpleNamespace(chat_id=42, message_id=202)
+        target = SimpleNamespace(reply_text=AsyncMock(return_value=sent_message))
+        manager_data = {
+            "volumes": "объемы",
+            "speed": "скорость",
+            "errors": "ошибки",
+            "problems": "проблемы",
+            "personal_plan": "личный план",
+            "warehouse_plan": "складской план",
+            "completion": "оценка",
+        }
+        context = SimpleNamespace(
+            user_data={
+                "employee_id": "emp_manager",
+                "report_date": "16.07.2026",
+                "interval": "10:00-19:00",
+                "hours": 8,
+                "report_period": {"payment_mode": "hourly"},
+                "tasks": "Складские задачи",
+                "kpi_items": [],
+                "manager_report": manager_data,
+            },
+            bot=SimpleNamespace(
+                send_message=AsyncMock(
+                    side_effect=[
+                        SimpleNamespace(message_id=301),
+                        SimpleNamespace(message_id=302),
+                    ]
+                )
+            ),
+        )
+        telegram_user = SimpleNamespace(id=42)
+        brand_manager = {
+            "employee_id": "brand",
+            "full_name": "Руководитель бренда",
+            "telegram_user_id": "77",
+            "role": "brand_manager",
+        }
+
+        with (
+            patch("modules.payroll.handlers.get_employee_by_id", return_value=warehouse_manager()),
+            patch("modules.payroll.handlers.find_employee_for_telegram_user", return_value=warehouse_manager()),
+            patch("modules.payroll.handlers.get_brand_managers", return_value=[brand_manager]),
+            patch("modules.payroll.handlers.append_daily_report"),
+            patch("modules.payroll.handlers.append_manager_report") as append_manager,
+        ):
+            state = await finish_create_report(target, context, telegram_user)
+
+        self.assertEqual(state, ConversationHandler.END)
+        warehouse_text = target.reply_text.await_args.args[0]
+        self.assertIn("Складские задачи", warehouse_text)
+        self.assertNotIn("Руководительский отчет", warehouse_text)
+        self.assertEqual(context.bot.send_message.await_count, 2)
+        manager_call, brand_call = context.bot.send_message.await_args_list
+        self.assertEqual(manager_call.kwargs["chat_id"], 42)
+        self.assertEqual(brand_call.kwargs["chat_id"], 77)
+        self.assertIn("Руководительский отчет", manager_call.kwargs["text"])
+        append_manager.assert_called_once()
 
     async def test_own_edited_report_reuses_current_bot_message(self):
         edited_message = SimpleNamespace(chat_id=42, message_id=303)

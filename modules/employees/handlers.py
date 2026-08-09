@@ -2,6 +2,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from core.keyboards import build_employees_menu_keyboard
+from modules.employees.roles import (
+    ROLE_LABELS,
+    ROLE_ORDER,
+    employee_roles,
+    format_role_labels,
+    primary_role,
+)
 from modules.payroll.google_sheets import (
     append_employee,
     get_employee_by_id,
@@ -32,19 +39,14 @@ from modules.payroll.google_sheets import (
 ) = range(1500, 1513)
 
 
-EMPLOYEE_ROLES = [
-    ("warehouse_employee", "Сотрудник склада"),
-    ("warehouse_manager", "Руководитель склада"),
-    ("brand_manager", "Руководитель бренда"),
-    ("admin", "Администратор"),
-]
+EMPLOYEE_ROLES = [(role, ROLE_LABELS[role]) for role in ROLE_ORDER]
 
 EDIT_FIELDS = [
     ("full_name", "ФИО"),
     ("phone", "Телефон"),
     ("telegram_user_id", "Telegram user_id"),
     ("telegram_username", "Telegram username"),
-    ("role", "Роль"),
+    ("role", "Должности"),
     ("hourly_rate", "Часовая ставка"),
     ("fixed_salary", "Оклад"),
     ("include_in_common_fund", "Участие в общем фонде"),
@@ -68,8 +70,18 @@ def cancel_keyboard(back_target=None):
     return InlineKeyboardMarkup(rows)
 
 
-def roles_keyboard(back_target=None):
-    rows = [[InlineKeyboardButton(label, callback_data=f"emprole:{role}")] for role, label in EMPLOYEE_ROLES]
+def roles_keyboard(selected_roles=None, back_target=None):
+    selected_roles = set(selected_roles or [])
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{'✅' if role in selected_roles else '⬜️'} {label}",
+                callback_data=f"emprole:toggle:{role}",
+            )
+        ]
+        for role, label in EMPLOYEE_ROLES
+    ]
+    rows.append([InlineKeyboardButton("✅ Сохранить должности", callback_data="emprole:done")])
     if back_target:
         rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"empback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="emp:cancel")])
@@ -130,7 +142,7 @@ def employee_card(employee):
         f"Телефон: {employee.get('phone') or '—'}\n"
         f"Telegram user_id: {employee.get('telegram_user_id') or '—'}\n"
         f"Telegram username: {username}\n"
-        f"Роль: {employee.get('role') or '—'}\n"
+        f"Должности: {format_role_labels(employee)}\n"
         f"Часовая ставка: {money(employee.get('hourly_rate', 0))}\n"
         f"Оклад: {money(employee.get('fixed_salary', 0))}\n"
         f"Общий фонд: {'да' if employee.get('include_in_common_fund') else 'нет'}\n"
@@ -188,22 +200,40 @@ async def employee_add_tg_id_received(update: Update, context: ContextTypes.DEFA
 async def employee_add_username_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = (update.message.text or "").strip()
     context.user_data["employee_add"]["telegram_username"] = "" if value == "-" else value
-    await update.message.reply_text("Выберите роль:", reply_markup=roles_keyboard("username"))
+    context.user_data["employee_add"]["roles"] = []
+    await update.message.reply_text(
+        "Выберите одну или несколько должностей:",
+        reply_markup=roles_keyboard([], "username"),
+    )
     return EMP_ADD_ROLE
 
 
 async def employee_add_role_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    action = query.data.replace("emprole:", "", 1)
+    selected = context.user_data.setdefault("employee_add", {}).setdefault("roles", [])
 
-    role = query.data.replace("emprole:", "")
+    if action == "done":
+        if not selected:
+            await query.answer("Выберите хотя бы одну должность.", show_alert=True)
+            return EMP_ADD_ROLE
+        await query.answer()
+        context.user_data["employee_add"]["role"] = primary_role(selected)
+        await query.edit_message_text("Введите часовую ставку, например 437.5:", reply_markup=cancel_keyboard("role"))
+        return EMP_ADD_HOURLY_RATE
+
+    role = action.replace("toggle:", "", 1)
     if role not in {role_key for role_key, _label in EMPLOYEE_ROLES}:
-        await query.edit_message_text("Неизвестная роль.", reply_markup=roles_keyboard("username"))
+        await query.answer("Неизвестная должность.", show_alert=True)
         return EMP_ADD_ROLE
 
-    context.user_data["employee_add"]["role"] = role
-    await query.edit_message_text("Введите часовую ставку, например 437.5:", reply_markup=cancel_keyboard("role"))
-    return EMP_ADD_HOURLY_RATE
+    await query.answer()
+    if role in selected:
+        selected.remove(role)
+    else:
+        selected.append(role)
+    await query.edit_message_reply_markup(reply_markup=roles_keyboard(selected, "username"))
+    return EMP_ADD_ROLE
 
 
 async def employee_add_hourly_rate_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,6 +260,7 @@ async def employee_add_common_fund_selected(update: Update, context: ContextType
         telegram_user_id=data.get("telegram_user_id", ""),
         telegram_username=data.get("telegram_username", ""),
         role=data.get("role", "warehouse_employee"),
+        roles=data.get("roles"),
         hourly_rate=data.get("hourly_rate", 0),
         fixed_salary=data.get("fixed_salary", 0),
         include_in_common_fund=include_in_common_fund,
@@ -240,7 +271,7 @@ async def employee_add_common_fund_selected(update: Update, context: ContextType
         "Сотрудник добавлен ✅\n\n"
         f"ФИО: {employee['full_name']}\n"
         f"Телефон: {employee.get('phone') or '—'}\n"
-        f"Роль: {employee['role']}\n"
+        f"Должности: {format_role_labels(employee)}\n"
         f"Часовая ставка: {money(employee['hourly_rate'])}\n"
         f"Оклад: {money(employee['fixed_salary'])}",
         reply_markup=build_employees_menu_keyboard(),
@@ -343,7 +374,13 @@ async def employee_edit_field_selected(update: Update, context: ContextTypes.DEF
     context.user_data["employee_edit_field"] = field
 
     if field == "role":
-        await query.edit_message_text("Выберите новую роль:", reply_markup=roles_keyboard("edit_fields"))
+        employee = get_employee_by_id(context.user_data.get("employee_edit_id"))
+        selected = employee_roles(employee)
+        context.user_data["employee_edit_roles"] = list(selected)
+        await query.edit_message_text(
+            "Выберите одну или несколько должностей:",
+            reply_markup=roles_keyboard(selected, "edit_fields"),
+        )
         return EMP_EDIT_VALUE
 
     if field == "include_in_common_fund":
@@ -393,16 +430,35 @@ async def employee_edit_text_received(update: Update, context: ContextTypes.DEFA
 
 async def employee_edit_role_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
     employee_id = context.user_data.get("employee_edit_id")
-    role = query.data.replace("emprole:", "")
-    employee = update_employee_fields(employee_id, role=role)
+    action = query.data.replace("emprole:", "", 1)
+    selected = context.user_data.setdefault("employee_edit_roles", [])
+
+    if action != "done":
+        role = action.replace("toggle:", "", 1)
+        if role not in {role_key for role_key, _label in EMPLOYEE_ROLES}:
+            await query.answer("Неизвестная должность.", show_alert=True)
+            return EMP_EDIT_VALUE
+        await query.answer()
+        if role in selected:
+            selected.remove(role)
+        else:
+            selected.append(role)
+        await query.edit_message_reply_markup(reply_markup=roles_keyboard(selected, "edit_fields"))
+        return EMP_EDIT_VALUE
+
+    if not selected:
+        await query.answer("Выберите хотя бы одну должность.", show_alert=True)
+        return EMP_EDIT_VALUE
+
+    await query.answer()
+    employee = update_employee_fields(employee_id, roles=selected)
     if not employee:
         await query.edit_message_text("Сотрудник не найден.", reply_markup=build_employees_menu_keyboard())
         return ConversationHandler.END
 
     context.user_data.pop("employee_edit_field", None)
+    context.user_data.pop("employee_edit_roles", None)
     await query.edit_message_text(
         "Сохранено ✅\n\nЧто изменить дальше?\n\n" + employee_card(employee),
         reply_markup=edit_fields_keyboard(),
@@ -450,7 +506,11 @@ async def employees_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "phone": (EMP_ADD_PHONE, "Введите номер телефона или «-»:", cancel_keyboard("name")),
         "tg_id": (EMP_ADD_TG_ID, "Введите Telegram user_id или «-»:", cancel_keyboard("phone")),
         "username": (EMP_ADD_USERNAME, "Введите Telegram username без @ или «-»:", cancel_keyboard("tg_id")),
-        "role": (EMP_ADD_ROLE, "Выберите роль:", roles_keyboard("username")),
+        "role": (
+            EMP_ADD_ROLE,
+            "Выберите одну или несколько должностей:",
+            roles_keyboard((context.user_data.get("employee_add") or {}).get("roles"), "username"),
+        ),
         "hourly_rate": (EMP_ADD_HOURLY_RATE, "Введите часовую ставку:", cancel_keyboard("role")),
         "fixed_salary": (EMP_ADD_FIXED_SALARY, "Введите фиксированный оклад или 0:", cancel_keyboard("hourly_rate")),
     }
@@ -465,6 +525,7 @@ async def employees_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target == "edit_select":
         context.user_data.pop("employee_edit_id", None)
         context.user_data.pop("employee_edit_field", None)
+        context.user_data.pop("employee_edit_roles", None)
         await query.edit_message_text("Выберите сотрудника для редактирования:", reply_markup=employees_keyboard("empedit", True))
         return EMP_EDIT_SELECT
     if target == "edit_fields":
@@ -482,6 +543,7 @@ async def employees_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("employee_fire_id", None)
     context.user_data.pop("employee_edit_id", None)
     context.user_data.pop("employee_edit_field", None)
+    context.user_data.pop("employee_edit_roles", None)
     query = update.callback_query
     if query:
         await query.answer()

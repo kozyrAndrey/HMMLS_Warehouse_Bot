@@ -12,6 +12,7 @@ from telegram.ext import (
 from config import GROUP_CHAT_ID, SCHEDULE_EXPORT_TOPIC_ID, SCHEDULE_REMINDER_TOPIC_ID
 from core.keyboards import build_main_menu_keyboard
 from modules.payroll.google_sheets import find_employee_for_telegram_user, get_employee_by_id, get_employees
+from modules.employees.roles import has_role
 from modules.schedule.config import (
     MSK_TZ,
     SHIFT_TIMES,
@@ -152,6 +153,45 @@ def edit_day_keyboard(week_start):
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="sch:back:edit_employee")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+def bulk_edit_keyboard(week_start, shifts, preferred_times=None):
+    preferred_times = preferred_times or {}
+    rows = []
+    for day in week_dates(week_start):
+        date_str = date_to_str(day)
+        shift_time = str((shifts or {}).get(date_str) or "").strip()
+        preferred_time = preferred_times.get(date_str) or shift_time or SHIFT_TIMES[0]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{'✅' if shift_time else '⬜️'} {day_label(day)}",
+                    callback_data=f"scheditbulk:toggle:{date_str}",
+                ),
+                InlineKeyboardButton(
+                    shift_time or preferred_time,
+                    callback_data=f"scheditbulk:time:{date_str}",
+                ),
+            ]
+        )
+    rows.extend(
+        [
+            [InlineKeyboardButton("✅ Сохранить все изменения", callback_data="scheditbulk:save")],
+            [InlineKeyboardButton("⬅️ Назад к сотрудникам", callback_data="sch:back:edit_employee")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="sch:cancel")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def bulk_edit_text(employee, week_start):
+    return (
+        f"Сотрудник: {employee['full_name']}\n"
+        f"Неделя: {format_week_range_full(week_start)}\n\n"
+        "Нажимайте на день, чтобы добавить или убрать смену. "
+        "Кнопка времени справа переключает время выхода 10:00/15:00.\n\n"
+        "Все изменения применятся одновременно после нажатия «Сохранить все изменения»."
+    )
 
 
 def edit_action_keyboard():
@@ -655,11 +695,99 @@ async def schedule_edit_employee_selected(update: Update, context: ContextTypes.
 
     context.user_data["edit_employee_id"] = employee_id
     week_start = parse_date(context.user_data["schedule_week_start"])
+    _, dates, schedule, _ = get_schedule_matrix(week_start)
+    current_shifts = {
+        date_to_str(day): schedule.get(employee_id, {}).get(date_to_str(day), "")
+        for day in dates
+    }
+    context.user_data["edit_original_shifts"] = dict(current_shifts)
+    context.user_data["edit_pending_shifts"] = dict(current_shifts)
+    context.user_data["edit_preferred_times"] = {
+        date_str: shift_time or SHIFT_TIMES[0]
+        for date_str, shift_time in current_shifts.items()
+    }
     await query.edit_message_text(
-        f"Сотрудник: {employee['full_name']}\nВыберите день:",
-        reply_markup=edit_day_keyboard(week_start),
+        bulk_edit_text(employee, week_start),
+        reply_markup=bulk_edit_keyboard(
+            week_start,
+            current_shifts,
+            context.user_data["edit_preferred_times"],
+        ),
     )
     return SCHEDULE_EDIT_DAY
+
+
+async def schedule_bulk_edit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data.replace("scheditbulk:", "", 1)
+    employee = get_schedule_employee_by_id(context.user_data.get("edit_employee_id"))
+    week_start = parse_date(context.user_data["schedule_week_start"])
+    if not employee:
+        await query.edit_message_text("Сотрудник не найден.", reply_markup=employees_keyboard("schemp"))
+        return SCHEDULE_EDIT_EMPLOYEE
+
+    pending = context.user_data.setdefault("edit_pending_shifts", {})
+    preferred = context.user_data.setdefault("edit_preferred_times", {})
+
+    if action.startswith("toggle:"):
+        date_str = action.replace("toggle:", "", 1)
+        pending[date_str] = "" if pending.get(date_str) else preferred.get(date_str, SHIFT_TIMES[0])
+    elif action.startswith("time:"):
+        date_str = action.replace("time:", "", 1)
+        current = preferred.get(date_str) or pending.get(date_str) or SHIFT_TIMES[0]
+        next_time = SHIFT_TIMES[(SHIFT_TIMES.index(current) + 1) % len(SHIFT_TIMES)] if current in SHIFT_TIMES else SHIFT_TIMES[0]
+        preferred[date_str] = next_time
+        if pending.get(date_str):
+            pending[date_str] = next_time
+    elif action == "save":
+        return await schedule_bulk_edit_save(query, context, employee, week_start)
+    else:
+        await query.answer("Неизвестное действие.", show_alert=True)
+
+    await query.edit_message_reply_markup(
+        reply_markup=bulk_edit_keyboard(week_start, pending, preferred),
+    )
+    return SCHEDULE_EDIT_DAY
+
+
+async def schedule_bulk_edit_save(query, context, employee, week_start):
+    manager_employee = find_employee_for_telegram_user(query.from_user)
+    updated_by = manager_employee["full_name"] if manager_employee else "manager"
+    original = context.user_data.get("edit_original_shifts") or {}
+    pending = context.user_data.get("edit_pending_shifts") or {}
+
+    upsert_employee_week_schedule(employee, week_start, pending, updated_by)
+
+    _, _, _, duty_by_date = get_schedule_matrix(week_start)
+    removed_duties = []
+    for day in week_dates(week_start):
+        date_str = date_to_str(day)
+        if original.get(date_str) and not pending.get(date_str) and duty_by_date.get(date_str) == employee["employee_id"]:
+            set_duty_for_day(week_start, day, None, updated_by)
+            removed_duties.append(day_label(day))
+    if removed_duties:
+        rebuild_current_schedule_sheet(week_start)
+
+    changed = [
+        day_label(day)
+        for day in week_dates(week_start)
+        if original.get(date_to_str(day), "") != pending.get(date_to_str(day), "")
+    ]
+    duty_text = (
+        "\nСняты дежурства: " + ", ".join(removed_duties) + "."
+        if removed_duties
+        else ""
+    )
+    await query.edit_message_text(
+        "Расписание сотрудника сохранено ✅\n\n"
+        f"Сотрудник: {employee['full_name']}\n"
+        f"Изменено дней: {len(changed)}"
+        f"{duty_text}\n\n"
+        "Можно изменить другого сотрудника или завершить и обновить выгрузку.",
+        reply_markup=edit_next_keyboard(),
+    )
+    return SCHEDULE_EDIT_NEXT
 
 
 async def schedule_edit_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1105,7 +1233,7 @@ async def schedule_manager_overdue_job(context: ContextTypes.DEFAULT_TYPE):
     )
 
     for employee in get_employees(include_inactive=False):
-        if employee.get("role") != "warehouse_manager":
+        if not has_role(employee, "warehouse_manager"):
             continue
 
         telegram_user_id = str(employee.get("telegram_user_id", "")).strip()
@@ -1177,6 +1305,7 @@ def get_schedule_conversation_handler():
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],
             SCHEDULE_EDIT_DAY: [
+                CallbackQueryHandler(schedule_bulk_edit_selected, pattern=r"^scheditbulk:"),
                 CallbackQueryHandler(schedule_edit_day_selected, pattern=r"^scheditday:"),
                 CallbackQueryHandler(schedule_cancel, pattern=r"^sch:cancel$"),
             ],

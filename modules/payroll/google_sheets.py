@@ -14,10 +14,18 @@ from modules.payroll.config import (
     find_penalty_category_by_type_name,
     normalize_username,
 )
+from modules.employees.roles import (
+    employee_roles,
+    has_any_role,
+    normalize_roles,
+    primary_role,
+    roles_to_storage,
+)
 
 
 EMPLOYEES_SHEET = "Сотрудники"
 REPORTS_SHEET = "Ежедневные отчеты"
+MANAGER_REPORTS_SHEET = "Отчеты руководителя склада"
 EXPENSES_SHEET = "Расходы"
 PENALTIES_SHEET = "Штрафы"
 BONUSES_SHEET = "Премиальные"
@@ -44,6 +52,7 @@ EMPLOYEE_HEADERS = [
     "telegram_user_id",
     "telegram_username",
     "role",
+    "roles",
     "hourly_rate",
     "fixed_salary",
     "include_in_common_fund",
@@ -65,6 +74,18 @@ REPORT_HEADERS = [
     "telegram_chat_id",
     "telegram_thread_id",
     "telegram_message_id",
+    "Создано",
+    "Обновлено",
+]
+
+MANAGER_REPORT_HEADERS = [
+    "manager_report_id",
+    "Дата",
+    "employee_id",
+    "ФИО",
+    "telegram_user_id",
+    "Данные отчета",
+    "Сообщения Telegram",
     "Создано",
     "Обновлено",
 ]
@@ -264,6 +285,7 @@ def get_worksheet(title, rows=1000, cols=30):
     headers_by_title = {
         EMPLOYEES_SHEET: EMPLOYEE_HEADERS,
         REPORTS_SHEET: REPORT_HEADERS,
+        MANAGER_REPORTS_SHEET: MANAGER_REPORT_HEADERS,
         EXPENSES_SHEET: EXPENSE_HEADERS,
         PENALTIES_SHEET: PENALTY_HEADERS,
         BONUSES_SHEET: BONUS_HEADERS,
@@ -382,6 +404,7 @@ def sync_employees_sheet(worksheet):
             str(employee.get("telegram_user_id", "")),
             employee.get("telegram_username", ""),
             employee["role"],
+            roles_to_storage(employee.get("roles"), employee["role"]),
             str(employee["hourly_rate"]).replace(".", ","),
             employee["fixed_salary"],
             str(employee["include_in_common_fund"]).upper(),
@@ -392,8 +415,13 @@ def sync_employees_sheet(worksheet):
         if found:
             row_index = found["row_index"]
             row[2] = str(found["row_data"].get("Телефон", "")).strip()
+            existing_roles = found["row_data"].get("roles")
+            if str(existing_roles or "").strip():
+                existing_role = str(found["row_data"].get("role") or row[5]).strip()
+                row[6] = roles_to_storage(existing_roles, existing_role)
+                row[5] = primary_role(existing_roles, existing_role)
             existing_active = found["row_data"].get("is_active")
-            row[9] = str(safe_bool(existing_active) if str(existing_active).strip() else employee["is_active"]).upper()
+            row[10] = str(safe_bool(existing_active) if str(existing_active).strip() else employee["is_active"]).upper()
             worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
         else:
             rows_to_append.append(row)
@@ -434,6 +462,7 @@ def init_payroll_sheet():
     init_structured_sheet_tables()
     employees_ws = get_worksheet(EMPLOYEES_SHEET, rows=200, cols=12)
     reports_ws = get_worksheet(REPORTS_SHEET, rows=3000, cols=20)
+    manager_reports_ws = get_worksheet(MANAGER_REPORTS_SHEET, rows=1000, cols=12)
     expenses_ws = get_worksheet(EXPENSES_SHEET, rows=1000, cols=12)
     penalties_ws = get_worksheet(PENALTIES_SHEET, rows=1000, cols=12)
     bonuses_ws = get_worksheet(BONUSES_SHEET, rows=1000, cols=12)
@@ -444,6 +473,7 @@ def init_payroll_sheet():
 
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
+    ensure_headers(manager_reports_ws, MANAGER_REPORT_HEADERS)
     ensure_headers(expenses_ws, EXPENSE_HEADERS)
     ensure_penalty_headers(penalties_ws)
     ensure_headers(bonuses_ws, BONUS_HEADERS)
@@ -474,6 +504,7 @@ def get_employees(include_inactive=False):
             "telegram_user_id": str(record.get("telegram_user_id", "")).strip(),
             "telegram_username": normalize_username(record.get("telegram_username", "")),
             "role": str(record.get("role", "warehouse_employee")).strip(),
+            "roles": normalize_roles(record.get("roles"), record.get("role", "warehouse_employee")),
             "hourly_rate": safe_hourly_rate(record.get("hourly_rate")),
             "fixed_salary": safe_float(record.get("fixed_salary")),
             "include_in_common_fund": safe_bool(record.get("include_in_common_fund")),
@@ -497,6 +528,7 @@ def append_employee(
     telegram_user_id="",
     telegram_username="",
     role="warehouse_employee",
+    roles=None,
     hourly_rate=0,
     fixed_salary=0,
     include_in_common_fund=True,
@@ -509,7 +541,8 @@ def append_employee(
         str(phone or "").strip(),
         str(telegram_user_id or "").strip(),
         normalize_username(telegram_username),
-        str(role or "warehouse_employee").strip(),
+        primary_role(roles, str(role or "warehouse_employee").strip()),
+        roles_to_storage(roles, role),
         str(hourly_rate or 0).replace(".", ","),
         str(fixed_salary or 0).replace(".", ","),
         str(bool(include_in_common_fund)).upper(),
@@ -551,6 +584,7 @@ def update_employee_fields(employee_id, **fields):
         "telegram_user_id": "telegram_user_id",
         "telegram_username": "telegram_username",
         "role": "role",
+        "roles": "roles",
         "hourly_rate": "hourly_rate",
         "fixed_salary": "fixed_salary",
         "include_in_common_fund": "include_in_common_fund",
@@ -567,6 +601,8 @@ def update_employee_fields(employee_id, **fields):
 
         if field_name == "telegram_username":
             value = normalize_username(value)
+        elif field_name == "roles":
+            value = roles_to_storage(value, data.get("role"))
         elif field_name in {"hourly_rate", "fixed_salary"}:
             value = str(safe_float(value)).replace(".", ",")
         elif field_name in {"include_in_common_fund", "is_active"}:
@@ -575,6 +611,11 @@ def update_employee_fields(employee_id, **fields):
             value = str(value or "").strip()
 
         data[header] = value
+
+    if "roles" in fields:
+        data["role"] = primary_role(fields["roles"], data.get("role") or "warehouse_employee")
+    elif "role" in fields:
+        data["roles"] = roles_to_storage([fields["role"]], fields["role"])
 
     row = [data.get(header, "") for header in EMPLOYEE_HEADERS]
     end_col = column_letter(len(EMPLOYEE_HEADERS))
@@ -600,7 +641,7 @@ def find_employee_for_telegram_user(user):
 
 
 def is_manager(employee):
-    return bool(employee and employee.get("role") in MANAGER_ROLES)
+    return has_any_role(employee, MANAGER_ROLES)
 
 
 def get_kpi_items(active_only=True):
@@ -711,6 +752,41 @@ def find_report_row(employee_id, report_date):
 def report_exists(employee_id, report_date):
     row_index, _ = find_report_row(employee_id, report_date)
     return row_index is not None
+
+
+def find_manager_report_row(employee_id, report_date):
+    ws = get_worksheet(MANAGER_REPORTS_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None, None
+    headers = values[0]
+    for index, row in enumerate(values[1:], start=2):
+        row_data = dict(zip(headers, row))
+        if row_data.get("employee_id") == str(employee_id) and row_data.get("Дата") == str(report_date):
+            return index, row_data
+    return None, None
+
+
+def append_manager_report(employee, report_date, manager_report, telegram_messages=None):
+    if find_manager_report_row(employee["employee_id"], report_date)[0] is not None:
+        raise ValueError("Руководительский отчет за эту дату уже существует.")
+    ws = get_worksheet(MANAGER_REPORTS_SHEET)
+    created_at = now_str()
+    report_id = generate_id("manager_report")
+    ws.append_row(
+        [
+            report_id,
+            report_date,
+            employee["employee_id"],
+            employee["full_name"],
+            employee.get("telegram_user_id", ""),
+            json.dumps(manager_report or {}, ensure_ascii=False),
+            json.dumps(telegram_messages or [], ensure_ascii=False),
+            created_at,
+            created_at,
+        ]
+    )
+    return report_id
 
 
 def kpi_to_json(kpi_items):

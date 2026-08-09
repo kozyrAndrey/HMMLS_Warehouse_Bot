@@ -46,7 +46,7 @@ class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("modules.lamoda_fbs.handlers.GROUP_CHAT_ID", "-100123"),
             patch("modules.lamoda_fbs.handlers.LAMODA_RETURNS_TOPIC_ID", "77"),
-            patch("modules.lamoda_fbs.handlers._manager_mentions", return_value="@boss"),
+            patch("modules.lamoda_fbs.handlers._mentions_for_roles", return_value="@boss"),
         ):
             await _send_return_report(context, data, 1)
         kwargs = bot.send_photo.await_args.kwargs
@@ -54,7 +54,7 @@ class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["message_thread_id"], 77)
         self.assertNotIn("@boss", kwargs["caption"])
 
-    async def test_defect_return_mentions_manager(self):
+    async def test_defect_return_mentions_brand_warehouse_and_operations(self):
         bot = SimpleNamespace(send_photo=AsyncMock(), send_media_group=AsyncMock())
         context = SimpleNamespace(bot=bot)
         data = self._return_data(condition="DEFECT", problematic=False)
@@ -62,10 +62,22 @@ class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("modules.lamoda_fbs.handlers.GROUP_CHAT_ID", "-100123"),
             patch("modules.lamoda_fbs.handlers.LAMODA_RETURNS_TOPIC_ID", "77"),
-            patch("modules.lamoda_fbs.handlers._manager_mentions", return_value="@boss"),
+            patch(
+                "modules.lamoda_fbs.handlers.get_employees",
+                return_value=[
+                    {"employee_id": "brand", "roles": ["brand_manager"], "telegram_username": "brand_boss"},
+                    {"employee_id": "warehouse", "roles": ["warehouse_manager", "admin"], "telegram_username": "warehouse_boss"},
+                    {"employee_id": "operator", "roles": ["warehouse_employee", "operations"], "telegram_username": "operator"},
+                    {"employee_id": "worker", "roles": ["warehouse_employee"], "telegram_username": "worker"},
+                ],
+            ),
         ):
             await _send_return_report(context, data, 2)
-        self.assertIn("@boss", bot.send_photo.await_args.kwargs["caption"])
+        caption = bot.send_photo.await_args.kwargs["caption"]
+        self.assertIn("@brand_boss", caption)
+        self.assertIn("@warehouse_boss", caption)
+        self.assertIn("@operator", caption)
+        self.assertNotIn("@worker", caption)
 
     @staticmethod
     def _return_data(condition, problematic):

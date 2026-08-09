@@ -1,5 +1,7 @@
 import logging
 
+from modules.employees.roles import employee_roles
+
 # ============================================================
 # ДОСТУПЫ
 # ============================================================
@@ -78,10 +80,10 @@ def is_registered_bot_user(user):
     if not employee:
         return False
 
-    role = str(employee.get("role", "")).strip()
+    roles = set(employee_roles(employee))
     is_active = safe_bool(employee.get("is_active", True))
 
-    return is_active and role in ALLOWED_BOT_ROLES
+    return is_active and bool(roles & ALLOWED_BOT_ROLES)
 
 
 def is_recruitment_update(update, context):
