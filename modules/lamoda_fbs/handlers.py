@@ -43,6 +43,7 @@ from modules.lamoda_fbs.storage import (
     cancel_marking_batch,
     cargo_manifest,
     code_fingerprint,
+    complete_pack_without_marking,
     confirm_marking_batch,
     create_cargo_place,
     get_active_session,
@@ -234,12 +235,12 @@ async def _send_next_pack(update, context):
     pack = get_next_unscanned_pack(session_id)
     if not pack:
         await update.effective_message.reply_text(
-            "✅ Все КИЗ отсканированы. Переходите к созданию грузовых мест.",
+            "✅ Все товары собраны. Переходите к созданию грузовых мест.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚚 Грузовые места", callback_data="lamoda:cargo:menu")]]),
         )
         return ConversationHandler.END
     packs = get_session_packs(session_id)
-    completed = sum(1 for row in packs if row["kiz_scanned"])
+    completed = sum(1 for row in packs if row["packed"])
     context.user_data["lamoda_expected_pack"] = pack
     await update.effective_message.reply_text(_pack_prompt(pack, completed + 1, len(packs)))
     return SCAN_PACK
@@ -271,8 +272,31 @@ async def scan_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as error:
         await update.message.reply_text(f"⚠️ {error}\nПовторите сканирование packNumber.")
         return SCAN_PACK
-    await update.message.reply_text("2. Отсканируйте полный КИЗ товара.")
+    await update.message.reply_text(
+        "2. Отсканируйте полный КИЗ товара или укажите, что товар немаркируемый.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "📦 Без КИЗ — товар немаркируемый",
+            callback_data=f"lamoda:kiz:skip:{expected['pack_number']}",
+        )]]),
+    )
     return SCAN_KIZ
+
+
+async def scan_kiz_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    expected = context.user_data.get("lamoda_expected_pack") or {}
+    pack_number = query.data.removeprefix("lamoda:kiz:skip:")
+    if pack_number != expected.get("pack_number"):
+        await query.answer("Это кнопка от другого товара.", show_alert=True)
+        return SCAN_KIZ
+    await query.answer()
+    try:
+        complete_pack_without_marking(pack_number, update.effective_user.id)
+    except Exception as error:
+        await query.message.reply_text(f"⚠️ {error}")
+        return SCAN_KIZ
+    await query.edit_message_text("✅ Немаркируемый товар собран без КИЗ.")
+    return await _send_next_pack(update, context)
 
 
 async def scan_kiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -852,7 +876,10 @@ def get_lamoda_handlers():
         ],
         states={
             SCAN_PACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, scan_pack)],
-            SCAN_KIZ: [MessageHandler(filters.TEXT & ~filters.COMMAND, scan_kiz)],
+            SCAN_KIZ: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, scan_kiz),
+                CallbackQueryHandler(scan_kiz_skip, pattern=r"^lamoda:kiz:skip:.+$"),
+            ],
             CARGO_SCAN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cargo_scan),
                 CallbackQueryHandler(cargo_close, pattern=r"^lamoda:cargo:close:\d+$"),

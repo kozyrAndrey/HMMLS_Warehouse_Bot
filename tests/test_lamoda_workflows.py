@@ -30,12 +30,14 @@ from modules.lamoda_fbs.storage import (
     cargo_manifest,
     code_fingerprint,
     confirm_marking_batch,
+    complete_pack_without_marking,
     create_assembly_session,
     create_cargo_place,
     create_marking_batch,
     get_next_unscanned_pack,
     get_session_packs,
     mark_pack_barcode_scanned,
+    marking_batch_rows,
     persist_order,
     record_return_receipt,
     save_shipment,
@@ -333,6 +335,44 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         add_pack_to_cargo(cargo2.id, "PACK-002", "7")
         set_cargo_status(cargo2.id, "CLOSED", "7")
         self.assertEqual(len(validate_cargo_complete(session_id)), 2)
+
+    async def test_unmarked_product_can_be_packed_without_kiz_and_skips_withdrawal(self):
+        client = FakeLamodaClient()
+        result = await prepare_orders([self.order(count=2)], "7", "Сотрудник", client)
+        session_id = result["session_id"]
+        marked, unmarked = get_session_packs(session_id)
+
+        parsed = parse_marking_code("010460123456789021SERIAL-1\x1d91AB\x1d92CD")
+        mark_pack_barcode_scanned(marked["pack_number"], marked["pack_number"])
+        assign_marking_code(
+            marked["pack_number"], parsed.raw, parsed.uit, parsed.gtin, parsed.serial, "7",
+        )
+        mark_pack_barcode_scanned(unmarked["pack_number"], unmarked["pack_number"])
+        complete_pack_without_marking(unmarked["pack_number"], "7")
+
+        rows = get_session_packs(session_id)
+        self.assertTrue(rows[0]["requires_marking"])
+        self.assertTrue(rows[0]["kiz_scanned"])
+        self.assertFalse(rows[1]["requires_marking"])
+        self.assertTrue(rows[1]["packed"])
+        self.assertFalse(rows[1]["kiz_scanned"])
+
+        cargo = create_cargo_place(session_id, "7")
+        for pack in rows:
+            add_pack_to_cargo(cargo.id, pack["pack_number"], "7")
+        set_cargo_status(cargo.id, "CLOSED", "7")
+        save_shipment(
+            session_id, "SHIP-MIXED", __import__("datetime").datetime.now(), {},
+            {cargo.id: "PALLET-MIXED"},
+        )
+
+        self.assertEqual(self._pack(marked["pack_number"]).marking_state, PackState.WAITING_WITHDRAWAL)
+        self.assertEqual(self._pack(unmarked["pack_number"]).marking_state, PackState.PACKED)
+        batch = create_marking_batch("WITHDRAWAL", "42")
+        self.assertEqual(
+            [row["pack_number"] for row in marking_batch_rows(batch)],
+            [marked["pack_number"]],
+        )
 
     def test_pallets_are_matched_by_pack_set_not_array_order(self):
         manifest = [

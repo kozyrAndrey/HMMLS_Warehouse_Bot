@@ -13,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -112,7 +113,9 @@ class LamodaPack(Base):
     return_status: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     return_date: Mapped[datetime | None] = mapped_column(DateTime)
     pack_scanned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    packed_at: Mapped[datetime | None] = mapped_column(DateTime)
     kiz_scanned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    requires_marking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime)
     return_received_at: Mapped[datetime | None] = mapped_column(DateTime)
     reintroduced_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -255,6 +258,24 @@ LAMODA_TABLES = [
 
 def init_lamoda_storage():
     Base.metadata.create_all(get_engine(), tables=LAMODA_TABLES)
+    ensure_lamoda_storage_schema()
+
+
+def ensure_lamoda_storage_schema():
+    statements = [
+        "alter table lamoda_packs add column if not exists packed_at timestamp",
+        (
+            "alter table lamoda_packs add column if not exists "
+            "requires_marking boolean not null default true"
+        ),
+        (
+            "update lamoda_packs set packed_at = kiz_scanned_at "
+            "where packed_at is null and kiz_scanned_at is not null"
+        ),
+    ]
+    with get_engine().begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def json_dumps(value):
@@ -450,7 +471,9 @@ def pack_view(pack, item=None):
         "gtin": pack.scanned_gtin,
         "serial": pack.scanned_serial,
         "pack_scanned": bool(pack.pack_scanned_at),
+        "packed": bool(pack.packed_at),
         "kiz_scanned": bool(pack.kiz_scanned_at),
+        "requires_marking": bool(pack.requires_marking),
         "sku": item.sku if item else "",
         "external_sku": item.external_sku if item else "",
         "product_name": item.product_name if item else "",
@@ -463,7 +486,7 @@ def get_next_unscanned_pack(session_id):
         row = session.execute(
             select(LamodaPack, LamodaOrderItem)
             .join(LamodaOrderItem, LamodaOrderItem.item_id == LamodaPack.item_id)
-            .where(LamodaPack.session_id == int(session_id), LamodaPack.kiz_scanned_at.is_(None))
+            .where(LamodaPack.session_id == int(session_id), LamodaPack.packed_at.is_(None))
             .order_by(LamodaPack.id)
         ).first()
         return pack_view(*row) if row else None
@@ -489,6 +512,8 @@ def assign_marking_code(pack_number, raw_code, uit, gtin, serial, user_id):
         ).scalar_one()
         if not pack.pack_scanned_at:
             raise RuntimeError("Сначала отсканируйте паковую этикетку.")
+        if pack.packed_at and not pack.kiz_scanned_at:
+            raise RuntimeError("Товар уже собран как немаркируемый.")
         if pack.kiz_scanned_at:
             if pack.kiz_fingerprint == fingerprint:
                 return pack.id
@@ -515,10 +540,39 @@ def assign_marking_code(pack_number, raw_code, uit, gtin, serial, user_id):
         pack.kiz_fingerprint = fingerprint
         pack.scanned_gtin = gtin
         pack.scanned_serial = serial
-        pack.kiz_scanned_at = utcnow()
+        completed_at = utcnow()
+        pack.kiz_scanned_at = completed_at
+        pack.packed_at = completed_at
+        pack.requires_marking = True
         pack.marking_state = PackState.PACKED
         pack.updated_at = utcnow()
         log_operation(session, "KIZ_SCANNED", "pack", pack.pack_number, user_id, {"fingerprint": fingerprint})
+        return pack.id
+
+
+def complete_pack_without_marking(pack_number, user_id):
+    with session_scope() as session:
+        pack = session.execute(
+            select(LamodaPack).where(
+                LamodaPack.pack_number == str(pack_number)
+            ).with_for_update()
+        ).scalar_one()
+        if not pack.pack_scanned_at:
+            raise RuntimeError("Сначала отсканируйте паковую этикетку.")
+        if pack.kiz_scanned_at:
+            raise RuntimeError("Для товара уже отсканирован КИЗ.")
+        if pack.packed_at:
+            if not pack.requires_marking:
+                return pack.id
+            raise RuntimeError("Товар уже собран.")
+        pack.requires_marking = False
+        pack.packed_at = utcnow()
+        pack.marking_state = PackState.PACKED
+        pack.updated_at = utcnow()
+        log_operation(
+            session, "KIZ_SKIPPED", "pack", pack.pack_number, user_id,
+            {"reason": "UNMARKED_PRODUCT"},
+        )
         return pack.id
 
 
@@ -526,7 +580,7 @@ def all_packs_scanned(session_id):
     with session_scope() as session:
         total = session.scalar(select(func.count()).select_from(LamodaPack).where(LamodaPack.session_id == int(session_id))) or 0
         scanned = session.scalar(select(func.count()).select_from(LamodaPack).where(
-            LamodaPack.session_id == int(session_id), LamodaPack.kiz_scanned_at.is_not(None)
+            LamodaPack.session_id == int(session_id), LamodaPack.packed_at.is_not(None)
         )) or 0
         return total > 0 and total == scanned
 
@@ -563,7 +617,7 @@ def add_pack_to_cargo(cargo_id, pack_number, user_id):
         if cargo.status != "OPEN":
             raise RuntimeError("Грузовое место закрыто.")
         pack = session.execute(select(LamodaPack).where(LamodaPack.pack_number == str(pack_number))).scalar_one_or_none()
-        if not pack or pack.session_id != cargo.session_id or not pack.kiz_scanned_at:
+        if not pack or pack.session_id != cargo.session_id or not pack.packed_at:
             raise RuntimeError("Упаковка не относится к этой сборке или ещё не собрана.")
         exists = session.execute(select(CargoPlacePack).where(CargoPlacePack.pack_number == pack.pack_number)).scalar_one_or_none()
         if exists:
@@ -636,7 +690,8 @@ def save_shipment(session_id, shipment_id, ship_at, payload, pallet_mapping):
             cargo.status = "SHIPPED"
         packs = session.execute(select(LamodaPack).where(LamodaPack.session_id == int(session_id))).scalars().all()
         for pack in packs:
-            pack.marking_state = PackState.WAITING_WITHDRAWAL
+            if pack.requires_marking:
+                pack.marking_state = PackState.WAITING_WITHDRAWAL
             pack.updated_at = utcnow()
         assembly = session.get(AssemblySession, int(session_id))
         assembly.status = "SHIPPED"
@@ -783,7 +838,10 @@ def create_marking_batch(batch_type, user_id, user_name=""):
     with session_scope() as session:
         packs = session.execute(
             select(LamodaPack)
-            .where(LamodaPack.marking_state == source_state)
+            .where(
+                LamodaPack.marking_state == source_state,
+                LamodaPack.requires_marking.is_(True),
+            )
             .order_by(LamodaPack.id)
             .with_for_update()
         ).scalars().all()
