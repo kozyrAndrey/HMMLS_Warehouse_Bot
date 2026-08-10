@@ -12,6 +12,7 @@ from modules.lamoda_fbs.constants import CodeState, PackState
 from modules.lamoda_fbs.marking import parse_marking_code
 from modules.lamoda_fbs.services import (
     assembly_label_documents,
+    assembly_picking_document,
     create_lamoda_shipment,
     discover_orders,
     match_pallets,
@@ -198,6 +199,22 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
             [(row["item_id"], row["pack_number"]) for row in packs],
             [(f"ITEM-{index:03d}", f"PACK-{index:03d}") for index in range(1, 6)],
         )
+
+    async def test_moysklad_name_is_used_and_picking_pdf_is_created(self):
+        client = FakeLamodaClient()
+        order = self.order(count=1)
+        order["items"][0].update({
+            "externalSku": "HBM-BAG",
+            "_moysklad_name": "HOMME BIRKIN MESSENGER (19x25x10, черная, HBM-BAG)",
+        })
+
+        result = await prepare_orders([order], "7", "Сотрудник", client)
+        pack = get_session_packs(result["session_id"])[0]
+
+        self.assertEqual(pack["lamoda_product_name"], "Футболка")
+        self.assertEqual(pack["product_name"], order["items"][0]["_moysklad_name"])
+        self.assertEqual(pack["external_sku"], "HBM-BAG")
+        self.assertGreater(len(PdfReader(BytesIO(assembly_picking_document(result["session_id"]))).pages), 0)
 
     async def test_v2_resource_and_item_ids_are_used_for_mutations(self):
         client = FakeLamodaClient()

@@ -1,5 +1,6 @@
 from io import BytesIO
 from pathlib import Path
+from textwrap import wrap
 
 from openpyxl import Workbook
 from pypdf import PdfReader, PdfWriter
@@ -71,6 +72,41 @@ def create_manifest_pdf(manifest, shipment_id=""):
                 f"{pack.get('product_name') or 'без названия'} · {pack.get('size') or '—'} · {pack.get('sku') or '—'}"
             )
     _draw_lines(pdf, lines, title="Состав грузовых мест Lamoda FBS")
+    pdf.save()
+    return output.getvalue()
+
+
+def create_picking_list_pdf(packs, session_id=None):
+    grouped = {}
+    for pack in packs:
+        key = (
+            str(pack.get("external_sku") or pack.get("sku") or "").strip(),
+            str(pack.get("product_name") or "Без названия").strip(),
+            str(pack.get("size") or "").strip(),
+        )
+        grouped.setdefault(key, []).append(str(pack.get("order_id") or "—"))
+
+    lines = [
+        f"Сборка №{session_id or '—'} · заказов: {len({str(row.get('order_id')) for row in packs})} "
+        f"· товаров: {len(packs)}",
+        "",
+    ]
+    for index, ((article, name, size), order_ids) in enumerate(
+        sorted(grouped.items(), key=lambda row: (row[0][0].casefold(), row[0][1].casefold(), row[0][2].casefold())),
+        1,
+    ):
+        name_lines = wrap(f"{index}. {name}", width=105, break_long_words=False) or [f"{index}. {name}"]
+        lines.extend(name_lines)
+        lines.append(
+            f"   Артикул: {article or '—'} · Размер: {size or '—'} · Количество: {len(order_ids)}"
+        )
+        order_text = "   Заказы: " + ", ".join(order_ids)
+        lines.extend(wrap(order_text, width=115, subsequent_indent="            ", break_long_words=False))
+        lines.append("")
+
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=A4)
+    _draw_lines(pdf, lines, title="Лист подбора товаров Lamoda FBS")
     pdf.save()
     return output.getvalue()
 

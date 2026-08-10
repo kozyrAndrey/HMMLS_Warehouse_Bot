@@ -24,8 +24,10 @@ from modules.lamoda_fbs.keyboards import (
     returns_menu,
 )
 from modules.lamoda_fbs.marking import MarkingValidationError, parse_marking_code, short_kiz, validate_against_catalog
+from modules.lamoda_fbs.moysklad_names import enrich_order_product_names
 from modules.lamoda_fbs.services import (
     assembly_label_documents,
+    assembly_picking_document,
     create_lamoda_shipment,
     create_marking_documents,
     discover_orders,
@@ -133,6 +135,7 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = get_client()
         order_ids = context.user_data.get("lamoda_order_ids") or []
         orders = [await client.get_order(order_id) for order_id in order_ids]
+        name_lookup = await enrich_order_product_names(orders)
         result = await prepare_orders(orders, update.effective_user.id, _employee_name(update.effective_user), client)
         if not get_session_packs(result["session_id"]):
             error_text = "; ".join(f"{row['order_id']}: {row['error']}" for row in result["errors"])
@@ -144,6 +147,18 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
             return
+        picking_error = ""
+        try:
+            await query.message.reply_document(
+                InputFile(
+                    BytesIO(assembly_picking_document(result["session_id"])),
+                    filename=f"lamoda_picking_list_{result['session_id']}.pdf",
+                ),
+                caption="📋 Лист подбора товаров · можно заранее подготовить товары к сканированию",
+            )
+        except Exception as error:
+            logger.exception("Could not send Lamoda picking list")
+            picking_error = str(error)
         try:
             documents = await assembly_label_documents(result["session_id"], client)
         except Exception as error:
@@ -159,6 +174,18 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         labels_ready = not documents["excluded_items"] and not documents["excluded_packs"]
         set_session_labels_ready(result["session_id"], labels_ready)
         warnings = []
+        if name_lookup["error"]:
+            warnings.append(
+                "Не удалось получить названия из МойСклад; использованы названия Lamoda: "
+                + name_lookup["error"]
+            )
+        elif name_lookup["missing"]:
+            warnings.append(
+                "В МойСклад не найдены артикулы (использованы названия Lamoda): "
+                + ", ".join(name_lookup["missing"])
+            )
+        if picking_error:
+            warnings.append("Не удалось сформировать лист подбора: " + picking_error)
         if result["errors"]:
             warnings.append("Ошибки: " + "; ".join(f"{row['order_id']}: {row['error']}" for row in result["errors"]))
         if documents["excluded_items"]:
@@ -218,12 +245,16 @@ async def assembly_labels_retry(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 def _pack_prompt(pack, position, total):
+    article = pack.get("external_sku") or pack.get("sku") or "—"
+    lamoda_sku = pack.get("sku") or "—"
+    sku_line = f"SKU Lamoda: {lamoda_sku}\n" if lamoda_sku != article else ""
     return (
         f"📦 Товар {position} из {total}\n\n"
         f"Заказ: {pack['order_id']}\n"
         f"Название: {pack['product_name'] or '—'}\n"
         f"Размер: {pack['size'] or '—'}\n"
-        f"Артикул: {pack['sku'] or '—'}\n"
+        f"Артикул: {article}\n"
+        f"{sku_line}"
         f"Товарная этикетка / itemId: {pack['item_id']}\n"
         f"Паковая этикетка / packNumber: {pack['pack_number']}\n\n"
         "1. Отсканируйте паковую этикетку."

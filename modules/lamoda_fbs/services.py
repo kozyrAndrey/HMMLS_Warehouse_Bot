@@ -15,6 +15,7 @@ from modules.lamoda_fbs.pdf_reports import (
     create_manifest_pdf,
     create_marking_pdf,
     create_marking_xlsx,
+    create_picking_list_pdf,
     merge_pdfs,
 )
 from modules.lamoda_fbs.storage import (
@@ -282,6 +283,13 @@ async def assembly_label_documents(session_id, client=None):
         "item_pdf": merge_pdfs(item_parts), "pack_pdf": merge_pdfs(pack_parts),
         "excluded_items": excluded_items, "excluded_packs": excluded_packs,
     }
+
+
+def assembly_picking_document(session_id):
+    packs = get_session_packs(session_id)
+    if not packs:
+        raise RuntimeError("В сборке нет товаров для листа подбора.")
+    return create_picking_list_pdf(packs, session_id)
 
 
 def shipment_request(session_id):

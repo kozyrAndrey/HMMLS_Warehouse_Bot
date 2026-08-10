@@ -53,6 +53,7 @@ class LamodaOrderItem(Base):
     sku: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     external_sku: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     product_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    moysklad_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     size: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -263,6 +264,10 @@ def init_lamoda_storage():
 
 def ensure_lamoda_storage_schema():
     statements = [
+        (
+            "alter table lamoda_order_items add column if not exists "
+            "moysklad_name text not null default ''"
+        ),
         "alter table lamoda_packs add column if not exists packed_at timestamp",
         (
             "alter table lamoda_packs add column if not exists "
@@ -384,6 +389,8 @@ def persist_order(order, items):
             item.product_name = str(
                 data.get("name") or data.get("productName") or data.get("title") or data.get("description") or ""
             )
+            if "_moysklad_name" in data:
+                item.moysklad_name = str(data.get("_moysklad_name") or "")
             item.size = str(data.get("size") or data.get("sizeName") or "")
             item.status = str(data.get("status") or "")
             item.raw_json = json_dumps(data)
@@ -453,6 +460,7 @@ def get_session_packs(session_id):
 
 
 def pack_view(pack, item=None):
+    product_name = (item.moysklad_name or item.product_name) if item else ""
     return {
         "id": pack.id,
         "pack_number": pack.pack_number,
@@ -476,7 +484,9 @@ def pack_view(pack, item=None):
         "requires_marking": bool(pack.requires_marking),
         "sku": item.sku if item else "",
         "external_sku": item.external_sku if item else "",
-        "product_name": item.product_name if item else "",
+        "product_name": product_name,
+        "lamoda_product_name": item.product_name if item else "",
+        "moysklad_product_name": item.moysklad_name if item else "",
         "size": item.size if item else "",
     }
 
@@ -883,7 +893,8 @@ def marking_batch_rows(batch_id):
                 "result": batch_item.result, "shipment_id": shipment.shipment_id if shipment else "",
                 "date": shipment.ship_at if shipment else pack.created_at,
                 "order_id": pack.order_id, "item_id": pack.item_id, "pack_number": pack.pack_number,
-                "product_name": item.product_name, "size": item.size, "sku": item.sku,
+                "product_name": item.moysklad_name or item.product_name,
+                "size": item.size, "sku": item.sku,
                 "gtin": pack.scanned_gtin or code.gtin,
                 "raw_code": pack.scanned_raw_code or code.raw_code,
                 "withdrawn_at": pack.withdrawn_at, "return_received_at": pack.return_received_at,

@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from modules.lamoda_fbs.handlers import _send_return_report, marking_open, show_lamoda_menu
+from modules.lamoda_fbs.handlers import _pack_prompt, _send_return_report, marking_open, show_lamoda_menu
 from modules.lamoda_fbs.jobs import lamoda_marking_reminder_job, setup_lamoda_jobs
 
 
@@ -20,6 +20,21 @@ def callback_update(user_id=7):
 
 
 class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_pack_prompt_uses_seller_article_and_full_name(self):
+        text = _pack_prompt({
+            "order_id": "RU-1",
+            "product_name": "HOMME BIRKIN MESSENGER (19x25x10, черная, HBM-BAG)",
+            "size": "19x25x10",
+            "external_sku": "HBM-BAG",
+            "sku": "XD001XU01OYXNS00",
+            "item_id": "ITEM-1",
+            "pack_number": "PACK-1",
+        }, 1, 1)
+
+        self.assertIn("Название: HOMME BIRKIN MESSENGER", text)
+        self.assertIn("Артикул: HBM-BAG", text)
+        self.assertIn("SKU Lamoda: XD001XU01OYXNS00", text)
+
     async def test_opening_section_clears_temporary_state(self):
         update = callback_update()
         context = SimpleNamespace(user_data={"old": "value"})
