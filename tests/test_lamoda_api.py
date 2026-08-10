@@ -1,12 +1,83 @@
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from modules.lamoda_fbs.client import LamodaClient, LamodaTemporaryError
+from modules.lamoda_fbs.client import LamodaClient, LamodaTemporaryError, LamodaValidationError
 
 
 class LamodaClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_v2_fbs_request_shapes_match_contract(self):
+        requests = []
+
+        async def handler(request):
+            if request.url.path.endswith("/auth-token"):
+                return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+            requests.append(request)
+            if request.url.path.endswith("/packs"):
+                return httpx.Response(200, json={"data": [{"packNumber": "PACK-1"}]})
+            return httpx.Response(200, json={"data": {"fileUrl": "https://files.test/labels.pdf"}})
+
+        client = LamodaClient("id", "secret", "seller-1", "https://lamoda.test/api", transport=httpx.MockTransport(handler))
+        try:
+            await client.create_packs("order-1", 2)
+            await client.order_item_labels(["item-1"], "S")
+            await client.order_pack_labels(["pack-1"], "M")
+        finally:
+            await client.aclose()
+
+        self.assertEqual(requests[0].url.params["sellerId"], "seller-1")
+        self.assertEqual(json.loads(requests[0].content), {"count": 2})
+        self.assertEqual(json.loads(requests[1].content), {
+            "sellerId": "seller-1", "items": ["item-1"], "labelFormat": "S",
+        })
+        self.assertEqual(json.loads(requests[2].content), {
+            "sellerId": "seller-1", "packs": ["pack-1"], "labelFormat": "M",
+        })
+
+    async def test_validation_error_includes_api_details(self):
+        async def handler(request):
+            if request.url.path.endswith("/auth-token"):
+                return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+            return httpx.Response(400, json={
+                "error": {
+                    "code": "VALIDATION_FAILED",
+                    "message": "Проверьте переданные данные",
+                    "details": [{"field": "count", "issue": "must be greater than 0"}],
+                },
+            })
+
+        client = LamodaClient("id", "secret", "seller", "https://lamoda.test/api", transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaises(LamodaValidationError) as caught:
+                await client.create_packs("order-1", 0)
+        finally:
+            await client.aclose()
+        self.assertIn("Проверьте переданные данные", str(caught.exception))
+        self.assertIn("count: must be greater than 0", str(caught.exception))
+
+    async def test_list_payload_uses_v2_meta_pagination(self):
+        pages = []
+
+        async def handler(request):
+            if request.url.path.endswith("/auth-token"):
+                return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+            page = int(request.url.params["page"])
+            pages.append(page)
+            return httpx.Response(200, json={
+                "data": [{"id": f"order-{page}"}],
+                "meta": {"totalPages": 2},
+            })
+
+        client = LamodaClient("id", "secret", "seller", "https://lamoda.test/api", transport=httpx.MockTransport(handler))
+        try:
+            rows = await client.list_orders()
+        finally:
+            await client.aclose()
+        self.assertEqual([row["id"] for row in rows], ["order-1", "order-2"])
+        self.assertEqual(pages, [1, 2])
+
     async def test_token_is_cached_and_orders_are_paginated(self):
         calls = {"token": 0, "orders": 0}
 

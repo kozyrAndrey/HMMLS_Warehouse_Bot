@@ -157,12 +157,51 @@ class LamodaClient:
         error_type = LamodaValidationError if response.status_code == 400 else LamodaAPIError
         if response.status_code in {429, 500, 503}:
             error_type = LamodaTemporaryError
+        message = messages.get(response.status_code, f"Ошибка Lamoda HTTP {response.status_code}.")
+        detail_message = LamodaClient._error_detail_message(details)
+        if detail_message:
+            message = f"{message} {detail_message}"
+        logger.error(
+            "Lamoda API request failed: method=%s status=%s details=%r",
+            method,
+            response.status_code,
+            details,
+        )
         raise error_type(
-            messages.get(response.status_code, f"Ошибка Lamoda HTTP {response.status_code}."),
+            message,
             status_code=response.status_code,
             details=details,
             uncertain=method != "GET" and response.status_code >= 500,
         )
+
+    @staticmethod
+    def _error_detail_message(details):
+        """Return a concise ApiError explanation suitable for an operator."""
+        if isinstance(details, str):
+            return details.strip()[:500]
+        if not isinstance(details, dict):
+            return ""
+        error = details.get("error", details)
+        if isinstance(error, str):
+            return error.strip()[:500]
+        if not isinstance(error, dict):
+            return ""
+        parts = []
+        message = error.get("message")
+        if message:
+            parts.append(str(message).strip())
+        rows = error.get("details")
+        if isinstance(rows, list):
+            for row in rows[:5]:
+                if isinstance(row, dict):
+                    field = str(row.get("field") or "").strip()
+                    issue = str(row.get("issue") or row.get("message") or "").strip()
+                    value = ": ".join(part for part in (field, issue) if part)
+                else:
+                    value = str(row).strip()
+                if value:
+                    parts.append(value)
+        return "; ".join(dict.fromkeys(parts))[:500]
 
     @staticmethod
     def data(payload):
@@ -180,12 +219,28 @@ class LamodaClient:
             data = self.data(payload)
             if isinstance(data, dict):
                 rows = data.get("items") or data.get("orders") or data.get("returnItems") or []
-                pagination = data.get("pagination") or payload.get("pagination") or {}
+                pagination = (
+                    data.get("pagination")
+                    or data.get("meta")
+                    or payload.get("pagination")
+                    or payload.get("meta")
+                    or {}
+                )
             else:
-                rows, pagination = data or [], payload.get("pagination", {}) if isinstance(payload, dict) else {}
+                rows = data or []
+                pagination = (
+                    payload.get("pagination") or payload.get("meta") or {}
+                    if isinstance(payload, dict)
+                    else {}
+                )
             for row in rows:
                 yield row
-            total_pages = int(pagination.get("totalPages") or pagination.get("pages") or 0)
+            total_pages = int(
+                pagination.get("totalPages")
+                or pagination.get("total_pages")
+                or pagination.get("pages")
+                or 0
+            )
             if not rows or (total_pages and page >= total_pages) or (not total_pages and len(rows) < page_size):
                 break
             page += 1
@@ -214,18 +269,21 @@ class LamodaClient:
         }))
 
     async def create_packs(self, order_id, count):
-        return self.data(await self.request("POST", f"/v2/orders/{order_id}/packs", json={
-            "sellerId": self.seller_id, "count": int(count),
-        }))
+        return self.data(await self.request(
+            "POST",
+            f"/v2/orders/{order_id}/packs",
+            params={"sellerId": self.seller_id},
+            json={"count": int(count)},
+        ))
 
     async def order_item_labels(self, item_ids, label_format="S"):
         return self.data(await self.request("POST", "/v2/labels/order-items", json={
-            "sellerId": self.seller_id, "itemIds": list(item_ids), "labelFormat": label_format,
+            "sellerId": self.seller_id, "items": list(item_ids), "labelFormat": label_format,
         }, safe=True))
 
     async def order_pack_labels(self, pack_numbers, label_format="M"):
         return self.data(await self.request("POST", "/v2/labels/order-packs", json={
-            "sellerId": self.seller_id, "packNumbers": list(pack_numbers), "labelFormat": label_format,
+            "sellerId": self.seller_id, "packs": list(pack_numbers), "labelFormat": label_format,
         }, safe=True))
 
     async def pallet_labels(self, pallet_barcodes, label_format="M"):

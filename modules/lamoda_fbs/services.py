@@ -70,6 +70,16 @@ def _order_id(order):
     return str(order.get("orderId") or order.get("id") or "").strip()
 
 
+def _order_resource_id(order):
+    """ID accepted in /v2/orders/{orderId} paths (the response field `id`)."""
+    return str(order.get("id") or order.get("orderId") or "").strip()
+
+
+def _item_id(item):
+    """Position ID from v2 order details, with legacy payload compatibility."""
+    return str(item.get("id") or item.get("itemId") or "").strip()
+
+
 def _order_items(order):
     return _as_list(order, "items", "orderItems")
 
@@ -107,8 +117,8 @@ async def discover_orders(client=None):
     eligible.sort(key=lambda row: (_parse_dt(_cutoff(row)), _parse_dt(row.get("createdAt"))))
     details = []
     for order in eligible:
-        detail = await client.get_order(_order_id(order))
-        item_ids = [str(item.get("itemId") or item.get("id") or "") for item in _order_items(detail)]
+        detail = await client.get_order(_order_resource_id(order))
+        item_ids = [_item_id(item) for item in _order_items(detail)]
         with session_scope() as session:
             existing = set(session.execute(select(LamodaPack.item_id).where(LamodaPack.item_id.in_(item_ids))).scalars()) if item_ids else set()
         if _assembly_allowed(detail) and any(item_id not in existing for item_id in item_ids):
@@ -143,16 +153,17 @@ async def prepare_orders(orders, user_id, user_name, client=None):
     successes, errors = [], []
     for order in orders:
         order_id = _order_id(order)
+        resource_id = _order_resource_id(order)
         items = _order_items(order)
         persist_order(order, items)
-        item_ids_all = [str(item.get("itemId") or item.get("id")) for item in items]
+        item_ids_all = [_item_id(item) for item in items]
         with session_scope() as session:
             existing = set(session.execute(select(LamodaPack.item_id).where(LamodaPack.item_id.in_(item_ids_all))).scalars())
-        pending_items = [item for item in items if str(item.get("itemId") or item.get("id")) not in existing]
+        pending_items = [item for item in items if _item_id(item) not in existing]
         if not pending_items:
             successes.append(order_id)
             continue
-        item_ids = sorted(str(item.get("itemId") or item.get("id")) for item in pending_items)
+        item_ids = sorted(_item_id(item) for item in pending_items)
         try:
             preparation = get_order_preparation(order_id)
             if preparation["state"] in {"ASSEMBLY_REQUESTED", "PACKS_REQUESTED", "NEEDS_RECONCILIATION"}:
@@ -163,7 +174,7 @@ async def prepare_orders(orders, user_id, user_name, client=None):
             if preparation["state"] not in {"ASSEMBLED", "PACKS_CREATED"}:
                 set_order_preparation(order_id, "ASSEMBLY_REQUESTED")
                 try:
-                    await client.create_assembly(order_id, [{"itemIds": [item_id]} for item_id in item_ids])
+                    await client.create_assembly(resource_id, [{"itemIds": [item_id]} for item_id in item_ids])
                 except Exception as error:
                     state = "NEEDS_RECONCILIATION" if getattr(error, "uncertain", False) else "PREPARATION_FAILED"
                     set_order_preparation(order_id, state, error=str(error))
@@ -174,7 +185,7 @@ async def prepare_orders(orders, user_id, user_name, client=None):
             else:
                 set_order_preparation(order_id, "PACKS_REQUESTED")
                 try:
-                    packs_payload = await client.create_packs(order_id, len(item_ids))
+                    packs_payload = await client.create_packs(resource_id, len(item_ids))
                 except Exception as error:
                     state = "NEEDS_RECONCILIATION" if getattr(error, "uncertain", False) else "ASSEMBLED"
                     set_order_preparation(order_id, state, error=str(error))

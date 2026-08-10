@@ -168,6 +168,28 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
             [(f"ITEM-{index:03d}", f"PACK-{index:03d}") for index in range(1, 6)],
         )
 
+    async def test_v2_resource_and_item_ids_are_used_for_mutations(self):
+        client = FakeLamodaClient()
+        order = {
+            "id": "RESOURCE-ORDER-1",
+            "orderId": "RU260810-123456",
+            "status": "NEW",
+            "items": [{
+                "id": "RESOURCE-ITEM-1",
+                "itemId": "LEGACY-ITEM-1",
+                "sku": "SKU-1",
+                "name": "Футболка",
+            }],
+        }
+        result = await prepare_orders([order], "7", "Сотрудник", client)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(client.assemblies, [
+            ("RESOURCE-ORDER-1", [{"itemIds": ["RESOURCE-ITEM-1"]}]),
+        ])
+        packs = get_session_packs(result["session_id"])
+        self.assertEqual(packs[0]["order_id"], "RU260810-123456")
+        self.assertEqual(packs[0]["item_id"], "RESOURCE-ITEM-1")
+
     async def test_label_requests_are_split_at_100_and_merged(self):
         client = FakeLamodaClient()
         result = await prepare_orders([self.order(count=101)], "7", "Сотрудник", client)

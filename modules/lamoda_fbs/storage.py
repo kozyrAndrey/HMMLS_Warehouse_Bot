@@ -350,7 +350,7 @@ def persist_order(order, items):
         row.raw_json = json_dumps(order)
         row.updated_at = utcnow()
         for data in items:
-            item_id = str(data.get("itemId") or data.get("id") or "").strip()
+            item_id = str(data.get("id") or data.get("itemId") or "").strip()
             if not item_id:
                 continue
             item = session.execute(select(LamodaOrderItem).where(LamodaOrderItem.item_id == item_id)).scalar_one_or_none()

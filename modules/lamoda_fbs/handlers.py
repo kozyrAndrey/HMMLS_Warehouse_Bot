@@ -111,7 +111,7 @@ async def assembly_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         orders = await discover_orders()
         summary = order_summary(orders)
-        context.user_data["lamoda_order_ids"] = [str(row.get("orderId") or row.get("id")) for row in orders]
+        context.user_data["lamoda_order_ids"] = [str(row.get("id") or row.get("orderId")) for row in orders]
         nearest = summary["nearest_cutoff"]
         cutoff_text = nearest.astimezone().strftime("%d.%m.%Y %H:%M") if nearest else "—"
         await query.edit_message_text(
