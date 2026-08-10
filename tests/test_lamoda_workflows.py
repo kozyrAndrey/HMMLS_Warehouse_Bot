@@ -401,6 +401,10 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shipment_id, "SHIP-ONE")
         self.assertEqual(len(client.shipment_calls), 1)
         self.assertEqual(len(client.shipment_calls[0][1]), 2)
+        self.assertEqual(client.shipment_calls[0][1], [
+            {"packs": [{"packId": "PACK-001", "items": [{"unitload": "ITEM-001"}]}]},
+            {"packs": [{"packId": "PACK-002", "items": [{"unitload": "ITEM-002"}]}]},
+        ])
         self.assertEqual([row["pallet_id"] for row in cargo_manifest(session_id)], ["PALLET-1", "PALLET-2"])
 
     async def test_uncertain_shipment_post_is_not_sent_a_second_time(self):

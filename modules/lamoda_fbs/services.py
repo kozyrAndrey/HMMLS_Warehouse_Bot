@@ -290,7 +290,10 @@ def shipment_request(session_id):
     for cargo in manifest:
         pallets.append({
             "packs": [
-                {"packId": pack["pack_number"], "unitload": pack["item_id"]}
+                {
+                    "packId": pack["pack_number"],
+                    "items": [{"unitload": pack["item_id"]}],
+                }
                 for pack in cargo["packs"]
             ]
         })
