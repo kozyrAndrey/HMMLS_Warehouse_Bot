@@ -13,6 +13,7 @@ from modules.lamoda_fbs.marking import parse_marking_code
 from modules.lamoda_fbs.services import (
     assembly_label_documents,
     create_lamoda_shipment,
+    discover_orders,
     match_pallets,
     prepare_orders,
 )
@@ -35,9 +36,11 @@ from modules.lamoda_fbs.storage import (
     get_next_unscanned_pack,
     get_session_packs,
     mark_pack_barcode_scanned,
+    persist_order,
     record_return_receipt,
     save_shipment,
     set_cargo_status,
+    set_order_preparation,
     update_pack_lamoda_status,
     validate_cargo_complete,
 )
@@ -97,6 +100,20 @@ class FakeShipmentClient(FakeLamodaClient):
                 {"palletId": "PALLET-1", "packs": [pallets[0]["packs"][0]]},
             ],
         }
+
+
+class FakeDiscoveryClient(FakeLamodaClient):
+    def __init__(self, orders):
+        super().__init__()
+        self.orders = orders
+        self.detail_requests = []
+
+    async def list_orders(self, **params):
+        return self.orders
+
+    async def get_order(self, order_id):
+        self.detail_requests.append(order_id)
+        return next(row for row in self.orders if row["id"] == order_id)
 
 
 class FakeUncertainShipmentClient(FakeLamodaClient):
@@ -189,6 +206,28 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         packs = get_session_packs(result["session_id"])
         self.assertEqual(packs[0]["order_id"], "RU260810-123456")
         self.assertEqual(packs[0]["item_id"], "RESOURCE-ITEM-1")
+
+    async def test_discovery_resumes_locally_assembled_order_awaiting_shipment(self):
+        recoverable = {
+            "id": "RU260809-591247",
+            "orderId": "RU260809-591247",
+            "status": "AWAITING_SHIPMENT",
+            "items": [{"id": "ITEM-1", "sku": "SKU-1"}],
+        }
+        unrelated = {
+            "id": "RU260804-632500",
+            "orderId": "RU260804-632500",
+            "status": "AWAITING_SHIPMENT",
+            "items": [{"id": "ITEM-2", "sku": "SKU-2"}],
+        }
+        persist_order(recoverable, recoverable["items"])
+        set_order_preparation(recoverable["orderId"], "ASSEMBLED")
+        client = FakeDiscoveryClient([recoverable, unrelated])
+
+        result = await discover_orders(client)
+
+        self.assertEqual([row["orderId"] for row in result], ["RU260809-591247"])
+        self.assertEqual(client.detail_requests, ["RU260809-591247"])
 
     async def test_label_requests_are_split_at_100_and_merged(self):
         client = FakeLamodaClient()

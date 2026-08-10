@@ -18,6 +18,7 @@ from modules.lamoda_fbs.pdf_reports import (
     merge_pdfs,
 )
 from modules.lamoda_fbs.storage import (
+    LamodaOrder,
     LamodaOrderItem,
     LamodaPack,
     Shipment,
@@ -113,7 +114,18 @@ def _assembly_allowed(order):
 async def discover_orders(client=None):
     client = client or get_client()
     orders = await client.list_orders(sellerId=client.seller_id, fulfillmentType="FBS")
-    eligible = [order for order in orders if _order_id(order) and _assembly_allowed(order)]
+    order_ids = [_order_id(order) for order in orders if _order_id(order)]
+    with session_scope() as session:
+        recoverable = set(session.execute(
+            select(LamodaOrder.order_id).where(
+                LamodaOrder.order_id.in_(order_ids),
+                LamodaOrder.preparation_state.in_({"ASSEMBLED", "PACKS_CREATED"}),
+            )
+        ).scalars()) if order_ids else set()
+    eligible = [
+        order for order in orders
+        if _order_id(order) and (_assembly_allowed(order) or _order_id(order) in recoverable)
+    ]
     eligible.sort(key=lambda row: (_parse_dt(_cutoff(row)), _parse_dt(row.get("createdAt"))))
     details = []
     for order in eligible:
@@ -121,7 +133,9 @@ async def discover_orders(client=None):
         item_ids = [_item_id(item) for item in _order_items(detail)]
         with session_scope() as session:
             existing = set(session.execute(select(LamodaPack.item_id).where(LamodaPack.item_id.in_(item_ids))).scalars()) if item_ids else set()
-        if _assembly_allowed(detail) and any(item_id not in existing for item_id in item_ids):
+        if (
+            _assembly_allowed(detail) or _order_id(detail) in recoverable
+        ) and any(item_id not in existing for item_id in item_ids):
             details.append(detail)
     return details
 
