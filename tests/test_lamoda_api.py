@@ -27,8 +27,8 @@ class LamodaClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.aclose()
 
-        self.assertEqual(requests[0].url.params["sellerId"], "seller-1")
-        self.assertEqual(json.loads(requests[0].content), {"count": 2})
+        self.assertNotIn("sellerId", requests[0].url.params)
+        self.assertEqual(json.loads(requests[0].content), {"sellerId": "seller-1", "count": 2})
         self.assertEqual(json.loads(requests[1].content), {
             "sellerId": "seller-1", "items": ["item-1"], "labelFormat": "S",
         })

@@ -272,8 +272,7 @@ class LamodaClient:
         return self.data(await self.request(
             "POST",
             f"/v2/orders/{order_id}/packs",
-            params={"sellerId": self.seller_id},
-            json={"count": int(count)},
+            json={"sellerId": self.seller_id, "count": int(count)},
         ))
 
     async def order_item_labels(self, item_ids, label_format="S"):
