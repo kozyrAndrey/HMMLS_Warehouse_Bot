@@ -1,9 +1,10 @@
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -248,12 +249,31 @@ class OperationLog(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class CancellationNotice(Base):
+    __tablename__ = "lamoda_cancellation_notices"
+    __table_args__ = (
+        UniqueConstraint("service_type", "service_date", name="uq_lamoda_cancellation_notice"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    service_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="SENDING")
+    recipient: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    message_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 LAMODA_TABLES = [
     LamodaOrder.__table__, LamodaOrderItem.__table__, AssemblySession.__table__,
     MarkingCode.__table__, LamodaPack.__table__, CargoPlace.__table__,
     CargoPlacePack.__table__, Shipment.__table__, MarkingBatch.__table__,
     MarkingBatchItem.__table__, ReturnReceipt.__table__, ReturnPhoto.__table__,
-    SyncState.__table__, OperationLog.__table__,
+    SyncState.__table__, OperationLog.__table__, CancellationNotice.__table__,
 ]
 
 
@@ -823,6 +843,46 @@ def set_sync_value(key, value):
             row = SyncState(key=str(key))
             session.add(row)
         row.value = str(value)
+        row.updated_at = utcnow()
+
+
+def claim_cancellation_notice(service_type, service_date, recipient, subject):
+    with session_scope() as session:
+        row = session.execute(
+            select(CancellationNotice).where(
+                CancellationNotice.service_type == str(service_type),
+                CancellationNotice.service_date == service_date,
+            ).with_for_update()
+        ).scalar_one_or_none()
+        if row and row.status in {"SENDING", "SENT"}:
+            return False
+        if not row:
+            row = CancellationNotice(
+                service_type=str(service_type),
+                service_date=service_date,
+            )
+            session.add(row)
+        row.status = "SENDING"
+        row.recipient = str(recipient or "")
+        row.subject = str(subject or "")
+        row.message_id = ""
+        row.error_text = ""
+        row.updated_at = utcnow()
+        return True
+
+
+def finish_cancellation_notice(service_type, service_date, status, *, message_id="", error=""):
+    with session_scope() as session:
+        row = session.execute(
+            select(CancellationNotice).where(
+                CancellationNotice.service_type == str(service_type),
+                CancellationNotice.service_date == service_date,
+            ).with_for_update()
+        ).scalar_one()
+        row.status = str(status)
+        row.message_id = str(message_id or "")
+        row.error_text = str(error or "")[:4000]
+        row.sent_at = utcnow() if status == "SENT" else None
         row.updated_at = utcnow()
 
 

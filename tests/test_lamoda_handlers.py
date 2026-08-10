@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from modules.lamoda_fbs.handlers import _pack_prompt, _send_return_report, marking_open, show_lamoda_menu
-from modules.lamoda_fbs.jobs import lamoda_marking_reminder_job, setup_lamoda_jobs
+from modules.lamoda_fbs.jobs import (
+    lamoda_cancellation_job,
+    lamoda_marking_reminder_job,
+    setup_lamoda_jobs,
+)
 
 
 def callback_update(user_id=7):
@@ -112,6 +116,59 @@ class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LamodaJobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_sends_only_missing_service_and_notifies_both_managers(self):
+        client = SimpleNamespace(
+            seller_id="seller",
+            list_orders=AsyncMock(return_value=[]),
+            list_return_items=AsyncMock(return_value=[{"status": "READY_TO_RETURN"}]),
+        )
+        bot = SimpleNamespace(send_message=AsyncMock())
+        context = SimpleNamespace(bot=bot)
+        mail_result = {
+            "message_id": "mail-1",
+            "recipients": ["recipient@example.test"],
+            "subject": "Отмена забора отгрузки",
+        }
+        managers = [
+            {"telegram_user_id": "41", "roles": ["warehouse_manager"]},
+            {"telegram_user_id": "42", "roles": ["brand_manager"]},
+        ]
+        with (
+            patch("modules.lamoda_fbs.jobs.get_client", return_value=client),
+            patch("modules.lamoda_fbs.jobs.claim_cancellation_notice", return_value=True) as claim,
+            patch("modules.lamoda_fbs.jobs.finish_cancellation_notice") as finish,
+            patch("modules.lamoda_fbs.jobs.asyncio.to_thread", new=AsyncMock(return_value=mail_result)) as send,
+            patch("modules.lamoda_fbs.jobs.get_employees", return_value=managers),
+        ):
+            await lamoda_cancellation_job(context)
+
+        self.assertEqual(claim.call_count, 1)
+        self.assertEqual(claim.call_args.args[0], "SHIPMENT")
+        self.assertEqual(send.await_args.args[1], "SHIPMENT")
+        self.assertEqual(finish.call_args.args[2], "SENT")
+        self.assertEqual(bot.send_message.await_count, 2)
+        self.assertEqual(
+            {call.kwargs["chat_id"] for call in bot.send_message.await_args_list},
+            {41, 42},
+        )
+
+    async def test_cancellation_does_not_send_when_both_services_have_work(self):
+        client = SimpleNamespace(
+            seller_id="seller",
+            list_orders=AsyncMock(return_value=[{"status": "Ready for shipment"}]),
+            list_return_items=AsyncMock(return_value=[{"status": "READY_TO_RETURN"}]),
+        )
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        with (
+            patch("modules.lamoda_fbs.jobs.get_client", return_value=client),
+            patch("modules.lamoda_fbs.jobs.claim_cancellation_notice") as claim,
+            patch("modules.lamoda_fbs.jobs.asyncio.to_thread", new=AsyncMock()) as send,
+        ):
+            await lamoda_cancellation_job(context)
+
+        claim.assert_not_called()
+        send.assert_not_awaited()
+
     async def test_reminder_is_sent_only_to_manager_rows_returned_by_storage(self):
         bot = SimpleNamespace(send_message=AsyncMock())
         context = SimpleNamespace(bot=bot)
@@ -145,6 +202,13 @@ class LamodaJobTests(unittest.IsolatedAsyncioTestCase):
         setup_lamoda_jobs(app)
         self.assertEqual(len(queue.jobs["lamoda_status_sync"]), 1)
         self.assertEqual(len(queue.jobs["lamoda_marking_reminder"]), 1)
+        self.assertEqual(len(queue.jobs["lamoda_cancellation_email"]), 1)
+        cancellation_kwargs = queue.jobs["lamoda_cancellation_email"][0][1]
+        self.assertEqual(cancellation_kwargs["days"], (0, 2, 4))
+        self.assertEqual(
+            (cancellation_kwargs["time"].hour, cancellation_kwargs["time"].minute),
+            (14, 55),
+        )
 
 
 if __name__ == "__main__":
