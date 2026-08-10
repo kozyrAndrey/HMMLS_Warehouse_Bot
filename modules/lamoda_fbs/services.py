@@ -9,7 +9,7 @@ from config import (
     LAMODA_CLIENT_SECRET,
     LAMODA_SELLER_ID,
 )
-from modules.lamoda_fbs.client import LamodaClient, LamodaDocumentError
+from modules.lamoda_fbs.client import LamodaClient, LamodaDocumentError, LamodaValidationError
 from modules.lamoda_fbs.constants import LABEL_SIZE_ITEM, LABEL_SIZE_PACK, LABEL_SIZE_PALLET, MAX_LABEL_BATCH
 from modules.lamoda_fbs.pdf_reports import (
     create_manifest_pdf,
@@ -160,6 +160,14 @@ def _pack_numbers(payload):
     return result
 
 
+async def _existing_pack_numbers(client, order_id):
+    try:
+        return sorted(await client.existing_order_pack_numbers(order_id))
+    except Exception:
+        logger.warning("Could not recover existing Lamoda packs: order_id=%s", order_id, exc_info=True)
+        return []
+
+
 async def prepare_orders(orders, user_id, user_name, client=None):
     """Create one assembly pack per item, preserving successes across order failures."""
     client = client or get_client()
@@ -197,19 +205,32 @@ async def prepare_orders(orders, user_id, user_name, client=None):
             if preparation["state"] == "PACKS_CREATED":
                 numbers = sorted(str(value) for value in preparation["data"].get("pack_numbers", []))
             else:
-                set_order_preparation(order_id, "PACKS_REQUESTED")
-                try:
-                    packs_payload = await client.create_packs(resource_id, len(item_ids))
-                except Exception as error:
-                    state = "NEEDS_RECONCILIATION" if getattr(error, "uncertain", False) else "ASSEMBLED"
-                    set_order_preparation(order_id, state, error=str(error))
-                    raise
-                numbers = sorted(_pack_numbers(packs_payload))
-                set_order_preparation(order_id, "PACKS_CREATED", data={"pack_numbers": numbers})
+                numbers = (
+                    await _existing_pack_numbers(client, order_id)
+                    if preparation["state"] == "ASSEMBLED"
+                    else []
+                )
+                if not numbers:
+                    set_order_preparation(order_id, "PACKS_REQUESTED")
+                    try:
+                        packs_payload = await client.create_packs(resource_id, len(item_ids))
+                        numbers = sorted(_pack_numbers(packs_payload))
+                    except LamodaValidationError as error:
+                        numbers = await _existing_pack_numbers(client, order_id)
+                        if not numbers:
+                            set_order_preparation(order_id, "ASSEMBLED", error=str(error))
+                            raise
+                    except Exception as error:
+                        state = "NEEDS_RECONCILIATION" if getattr(error, "uncertain", False) else "ASSEMBLED"
+                        set_order_preparation(order_id, state, error=str(error))
+                        raise
             if len(numbers) != len(item_ids):
-                raise RuntimeError(
+                error = RuntimeError(
                     f"Lamoda вернула {len(numbers)} packNumber для {len(item_ids)} товаров заказа {order_id}."
                 )
+                set_order_preparation(order_id, "ASSEMBLED", error=str(error))
+                raise error
+            set_order_preparation(order_id, "PACKS_CREATED", data={"pack_numbers": numbers})
             attach_packs(assembly_session.id, [
                 {"order_id": order_id, "item_id": item_id, "pack_number": pack_number}
                 for item_id, pack_number in zip(item_ids, numbers, strict=True)

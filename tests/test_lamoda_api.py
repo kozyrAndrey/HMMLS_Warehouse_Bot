@@ -57,6 +57,30 @@ class LamodaClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Проверьте переданные данные", str(caught.exception))
         self.assertIn("count: must be greater than 0", str(caught.exception))
 
+    async def test_existing_pack_numbers_are_read_from_legacy_order_details(self):
+        requests = []
+
+        async def handler(request):
+            if request.url.path.endswith("/auth-token"):
+                return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+            requests.append(request)
+            return httpx.Response(200, json={
+                "_embedded": {"packNumbers": ["FBS-2", "FBS-1"]},
+            })
+
+        client = LamodaClient(
+            "id", "secret", "seller", "https://lamoda.test/api",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            result = await client.existing_order_pack_numbers("RU260807-188386")
+        finally:
+            await client.aclose()
+
+        self.assertEqual(result, ["FBS-2", "FBS-1"])
+        self.assertEqual(requests[0].url.host, "api-b2b.lamoda.ru")
+        self.assertEqual(requests[0].url.path, "/api/v1/orders/RU260807-188386")
+
     async def test_list_payload_uses_v2_meta_pagination(self):
         pages = []
 

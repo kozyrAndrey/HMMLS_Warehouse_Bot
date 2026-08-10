@@ -17,7 +17,7 @@ from modules.lamoda_fbs.services import (
     match_pallets,
     prepare_orders,
 )
-from modules.lamoda_fbs.client import LamodaDocumentError, LamodaTemporaryError
+from modules.lamoda_fbs.client import LamodaDocumentError, LamodaTemporaryError, LamodaValidationError
 from modules.lamoda_fbs.storage import (
     LAMODA_TABLES,
     AssemblySession,
@@ -74,6 +74,9 @@ class FakeLamodaClient:
         self.pack_counts.append(count)
         return {"packs": [{"packNumber": f"PACK-{index:03d}"} for index in range(count, 0, -1)]}
 
+    async def existing_order_pack_numbers(self, order_id):
+        return []
+
     async def order_item_labels(self, values, label_format):
         self.item_label_batches.append((list(values), label_format))
         return {"fileUrl": f"https://files.test/item-{len(self.item_label_batches)}.pdf", "excludedItems": []}
@@ -100,6 +103,15 @@ class FakeShipmentClient(FakeLamodaClient):
                 {"palletId": "PALLET-1", "packs": [pallets[0]["packs"][0]]},
             ],
         }
+
+
+class FakeGeneratedPacksClient(FakeLamodaClient):
+    async def create_packs(self, order_id, count):
+        self.pack_counts.append(count)
+        raise LamodaValidationError("It is not possible to generate more codes")
+
+    async def existing_order_pack_numbers(self, order_id):
+        return [f"EXISTING-{index:03d}" for index in range(1, 3)]
 
 
 class FakeDiscoveryClient(FakeLamodaClient):
@@ -206,6 +218,30 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         packs = get_session_packs(result["session_id"])
         self.assertEqual(packs[0]["order_id"], "RU260810-123456")
         self.assertEqual(packs[0]["item_id"], "RESOURCE-ITEM-1")
+
+    async def test_existing_pack_numbers_are_recovered_after_generation_is_rejected(self):
+        client = FakeGeneratedPacksClient()
+
+        result = await prepare_orders([self.order(count=2)], "7", "Сотрудник", client)
+
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(client.pack_counts, [2])
+        self.assertEqual(
+            [row["pack_number"] for row in get_session_packs(result["session_id"])],
+            ["EXISTING-001", "EXISTING-002"],
+        )
+
+    async def test_locally_assembled_order_recovers_packs_without_regeneration(self):
+        client = FakeGeneratedPacksClient()
+        order = self.order(count=2)
+        persist_order(order, order["items"])
+        set_order_preparation(order["orderId"], "ASSEMBLED")
+
+        result = await prepare_orders([order], "7", "Сотрудник", client)
+
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(client.assemblies, [])
+        self.assertEqual(client.pack_counts, [])
 
     async def test_discovery_resumes_locally_assembled_order_awaiting_shipment(self):
         recoverable = {

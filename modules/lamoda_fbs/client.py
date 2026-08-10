@@ -8,6 +8,7 @@ import httpx
 
 
 logger = logging.getLogger(__name__)
+LEGACY_B2B_API_BASE_URL = "https://api-b2b.lamoda.ru/api/v1"
 
 
 class LamodaAPIError(RuntimeError):
@@ -274,6 +275,19 @@ class LamodaClient:
             f"/v2/orders/{order_id}/packs",
             json={"sellerId": self.seller_id, "count": int(count)},
         ))
+
+    async def existing_order_pack_numbers(self, order_id):
+        """Read pack numbers already assigned to an order by Lamoda's v1 API."""
+        payload = await self.request(
+            "GET",
+            f"{LEGACY_B2B_API_BASE_URL}/orders/{order_id}",
+            safe=True,
+        )
+        if not isinstance(payload, dict):
+            return []
+        embedded = payload.get("_embedded") or {}
+        values = embedded.get("packNumbers") or payload.get("packNumbers") or []
+        return [str(value) for value in values if str(value or "").strip()]
 
     async def order_item_labels(self, item_ids, label_format="S"):
         return self.data(await self.request("POST", "/v2/labels/order-items", json={
