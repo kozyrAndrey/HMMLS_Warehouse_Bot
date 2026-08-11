@@ -1,10 +1,14 @@
 import unittest
 from datetime import date
+from io import BytesIO
 
-from modules.lamoda_fbs.email_cancellations import (
+from pypdf import PdfReader
+
+from modules.lamoda_fbs.cancellation_notices import (
     RETURNS,
     SHIPMENT,
-    cancellation_email,
+    cancellation_document,
+    cancellation_notice,
     count_outbound_orders,
     count_ready_returns,
     normalize_status,
@@ -34,15 +38,31 @@ class LamodaCancellationTests(unittest.TestCase):
         ]
         self.assertEqual(count_ready_returns(rows), 1)
 
-    def test_separate_email_templates_are_clear(self):
+    def test_separate_telegram_messages_are_clear(self):
         service_date = date(2026, 8, 11)
-        shipment_subject, shipment_body = cancellation_email(SHIPMENT, service_date)
-        returns_subject, returns_body = cancellation_email(RETURNS, service_date)
+        shipment_title, shipment_text = cancellation_notice(SHIPMENT, service_date)
+        returns_title, returns_text = cancellation_notice(RETURNS, service_date)
 
-        self.assertEqual(shipment_subject, "Отмена забора отгрузки на 11.08.2026")
-        self.assertIn("отсутствием заказов", shipment_body)
-        self.assertEqual(returns_subject, "Отмена забора возвратов на 11.08.2026")
-        self.assertIn("готовых к возврату", returns_body)
+        self.assertEqual(shipment_title, "Требуется отмена отгрузочной машины Lamoda")
+        self.assertIn("нет заказов для отгрузки", shipment_text)
+        self.assertIn("11.08.2026", shipment_text)
+        self.assertEqual(returns_title, "Требуется отмена возвратной машины Lamoda")
+        self.assertIn("нет товаров, готовых к возврату", returns_text)
+        self.assertIn("11.08.2026", returns_text)
+
+    def test_separate_pdf_templates_are_created(self):
+        service_date = date(2026, 8, 11)
+        shipment_name, shipment_pdf = cancellation_document(SHIPMENT, service_date)
+        returns_name, returns_pdf = cancellation_document(RETURNS, service_date)
+
+        self.assertEqual(shipment_name, "otmena_otgruzochnoy_mashiny_2026-08-11.pdf")
+        self.assertEqual(returns_name, "otmena_vozvratnoy_mashiny_2026-08-11.pdf")
+        self.assertTrue(shipment_pdf.startswith(b"%PDF"))
+        self.assertTrue(returns_pdf.startswith(b"%PDF"))
+        shipment_text = "".join(page.extract_text() or "" for page in PdfReader(BytesIO(shipment_pdf)).pages)
+        returns_text = "".join(page.extract_text() or "" for page in PdfReader(BytesIO(returns_pdf)).pages)
+        self.assertIn("отгрузочной машины", shipment_text)
+        self.assertIn("возвратной машины", returns_text)
 
 
 if __name__ == "__main__":
