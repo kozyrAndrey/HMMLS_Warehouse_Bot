@@ -94,7 +94,11 @@ from modules.tasks.storage import (
     REG_DELETE_DAY,
     REG_DELETE_SELECT,
     REG_DELETE_CONFIRM,
-) = range(1200, 1234)
+    REG_MANAGE_ACTION,
+) = range(1200, 1235)
+
+
+WEEKDAY_SHORT_NAMES = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 
 
 def current_employee(update: Update):
@@ -124,8 +128,7 @@ def tasks_menu_keyboard():
 def regular_tasks_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить шаблон", callback_data="reg:add")],
-        [InlineKeyboardButton("✏️ Изменить шаблон", callback_data="reg:edit")],
-        [InlineKeyboardButton("🗑 Удалить шаблон", callback_data="reg:delete")],
+        [InlineKeyboardButton("⚙️ Изменить или удалить", callback_data="reg:manage")],
         [InlineKeyboardButton("👀 Просмотр шаблонов", callback_data="reg:view")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="section:tasks")],
     ])
@@ -258,9 +261,17 @@ def regular_task_select_keyboard(templates, prefix, back_target=None):
     for template in templates:
         template_id = str(template.get("template_id", "")).strip()
         description = str(template.get("Описание", "")).strip()
-        if len(description) > 45:
-            description = description[:42] + "..."
-        rows.append([InlineKeyboardButton(description, callback_data=f"{prefix}:{template_id}")])
+        weekdays = template.get("weekdays") or [template.get("weekday")]
+        day_text = ", ".join(
+            WEEKDAY_SHORT_NAMES[int(day)]
+            for day in weekdays
+            if str(day).isdigit() and 0 <= int(day) < len(WEEKDAY_SHORT_NAMES)
+        )
+        max_description = 34 if day_text else 45
+        if len(description) > max_description:
+            description = description[:max_description - 3] + "..."
+        label = f"{description} · {day_text}" if day_text else description
+        rows.append([InlineKeyboardButton(label, callback_data=f"{prefix}:{template_id}")])
     if back_target:
         rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
@@ -273,6 +284,35 @@ def regular_templates_for_weekday(weekday):
         template for template in get_task_templates(active_only=True)
         if int(template.get("weekday", -1)) == weekday
     ]
+
+
+def regular_template_series_list():
+    grouped = {}
+    for template in get_task_templates(active_only=True):
+        series_id = str(template.get("series_id") or template.get("template_id") or "").strip()
+        if not series_id:
+            continue
+        group = grouped.setdefault(series_id, {"template": dict(template), "weekdays": set()})
+        try:
+            group["weekdays"].add(int(template.get("weekday")))
+        except (TypeError, ValueError):
+            continue
+
+    result = []
+    for group in grouped.values():
+        template = group["template"]
+        template["weekdays"] = sorted(group["weekdays"])
+        template["Дни недели"] = ", ".join(
+            WEEKDAY_NAMES[weekday] for weekday in template["weekdays"]
+        )
+        result.append(template)
+    return sorted(
+        result,
+        key=lambda template: (
+            min(template["weekdays"], default=7),
+            str(template.get("Описание", "")).casefold(),
+        ),
+    )
 
 
 def edit_field_keyboard(task):
@@ -312,7 +352,16 @@ def regular_edit_field_keyboard(template):
         [InlineKeyboardButton("📦 Тип задачи", callback_data="regeditfield:type")],
         [InlineKeyboardButton("👥 Исполнители", callback_data="regeditfield:assignees")],
         [InlineKeyboardButton("⏰ Дедлайн", callback_data="regeditfield:deadline")],
-        [InlineKeyboardButton("⬅️ Назад к списку", callback_data="taskback:reg_edit_select")],
+        [InlineKeyboardButton("⬅️ Назад к шаблону", callback_data="taskback:reg_manage_selected")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
+    ])
+
+
+def regular_template_action_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Изменить", callback_data="regmanageaction:edit")],
+        [InlineKeyboardButton("🗑 Удалить", callback_data="regmanageaction:delete")],
+        [InlineKeyboardButton("⬅️ Назад к списку", callback_data="taskback:reg_manage_list")],
         [InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")],
     ])
 
@@ -849,13 +898,29 @@ async def finish_regular_task_creation(update: Update, context: ContextTypes.DEF
     return ConversationHandler.END
 
 
-async def regular_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def regular_manage_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
     context.user_data["task_section"] = "regular"
-    await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regeditday"))
-    return REG_EDIT_DAY
+    templates = regular_template_series_list()
+    if not templates:
+        await query.edit_message_text(
+            "Шаблонных задач пока нет.",
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Выберите шаблонную задачу:",
+        reply_markup=regular_task_select_keyboard(
+            templates, "regmanage", "reg_menu",
+        ),
+    )
+    return REG_EDIT_SELECT
+
+
+async def regular_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await regular_manage_start(update, context)
 
 
 async def regular_edit_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -888,6 +953,58 @@ async def regular_edit_selected(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["edit_template_id"] = template_id
     await query.edit_message_text("Что изменить?", reply_markup=regular_edit_field_keyboard(template))
     return REG_EDIT_FIELD
+
+
+async def regular_manage_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    template_id = query.data.replace("regmanage:", "", 1)
+    template = get_task_template_by_id(template_id)
+    if not template:
+        await query.edit_message_text(
+            "Регулярная задача не найдена.",
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    context.user_data["edit_template_id"] = template_id
+    await query.edit_message_text(
+        f"{template.get('Описание', '')}\n"
+        f"Дни: {template.get('Дни недели') or template.get('День недели', '')}\n\n"
+        "Выберите действие:",
+        reply_markup=regular_template_action_keyboard(),
+    )
+    return REG_MANAGE_ACTION
+
+
+async def regular_manage_action_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data.replace("regmanageaction:", "", 1)
+    template_id = context.user_data.get("edit_template_id")
+    template = get_task_template_by_id(template_id)
+    if not template:
+        await query.edit_message_text(
+            "Регулярная задача не найдена.",
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    if action == "edit":
+        await query.edit_message_text(
+            "Что изменить?",
+            reply_markup=regular_edit_field_keyboard(template),
+        )
+        return REG_EDIT_FIELD
+    if action == "delete":
+        await query.edit_message_text(
+            f"Удалить шаблон сразу из всех дней?\n\n"
+            f"{template.get('Описание', '')}\n"
+            f"Дни: {template.get('Дни недели') or template.get('День недели', '')}",
+            reply_markup=confirm_keyboard(
+                "regdelconfirm", template_id, "reg_manage_selected",
+            ),
+        )
+        return REG_DELETE_CONFIRM
+    return REG_MANAGE_ACTION
 
 
 async def regular_edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -976,12 +1093,7 @@ async def regular_edit_type_selected(update: Update, context: ContextTypes.DEFAU
 
 
 async def regular_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data.clear()
-    context.user_data["task_section"] = "regular"
-    await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard("regdelday"))
-    return REG_DELETE_DAY
+    return await regular_manage_start(update, context)
 
 
 async def regular_delete_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1102,19 +1214,46 @@ async def tasks_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Выберите сотрудников:", reply_markup=regular_assignees_keyboard(context.user_data.get("selected_employee_ids", []), "reg_add_mode"))
         return REG_ADD_ASSIGNEES
 
-    if target in {"reg_edit_day", "reg_delete_day"}:
-        prefix = "regeditday" if target == "reg_edit_day" else "regdelday"
-        state = REG_EDIT_DAY if target == "reg_edit_day" else REG_DELETE_DAY
-        await query.edit_message_text("Выберите день недели:", reply_markup=weekday_keyboard(prefix))
-        return state
-    if target in {"reg_edit_select", "reg_delete_select"}:
-        weekday = int(context.user_data["regular_weekday_filter"])
-        templates = regular_templates_for_weekday(weekday)
-        editing = target == "reg_edit_select"
-        prefix = "regedit" if editing else "regdel"
-        back = "reg_edit_day" if editing else "reg_delete_day"
-        await query.edit_message_text(f"{WEEKDAY_NAMES[weekday]}. Выберите шаблон:", reply_markup=regular_task_select_keyboard(templates, prefix, back))
-        return REG_EDIT_SELECT if editing else REG_DELETE_SELECT
+    if target == "reg_menu":
+        context.user_data.clear()
+        await query.edit_message_text(
+            "📋 Шаблоны регулярных задач:",
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    if target in {
+        "reg_manage_list", "reg_edit_day", "reg_delete_day",
+        "reg_edit_select", "reg_delete_select",
+    }:
+        context.user_data.pop("edit_template_id", None)
+        templates = regular_template_series_list()
+        if not templates:
+            await query.edit_message_text(
+                "Шаблонных задач пока нет.",
+                reply_markup=regular_tasks_menu_keyboard(),
+            )
+            return ConversationHandler.END
+        await query.edit_message_text(
+            "Выберите шаблонную задачу:",
+            reply_markup=regular_task_select_keyboard(
+                templates, "regmanage", "reg_menu",
+            ),
+        )
+        return REG_EDIT_SELECT
+    if target == "reg_manage_selected":
+        template = get_task_template_by_id(context.user_data.get("edit_template_id"))
+        if not template:
+            await query.edit_message_text(
+                "Шаблон не найден.", reply_markup=regular_tasks_menu_keyboard(),
+            )
+            return ConversationHandler.END
+        await query.edit_message_text(
+            f"{template.get('Описание', '')}\n"
+            f"Дни: {template.get('Дни недели') or template.get('День недели', '')}\n\n"
+            "Выберите действие:",
+            reply_markup=regular_template_action_keyboard(),
+        )
+        return REG_MANAGE_ACTION
     if target == "reg_edit_field":
         context.user_data.pop("edit_template_weekdays", None)
         template = get_task_template_by_id(context.user_data.get("edit_template_id"))
@@ -1308,6 +1447,7 @@ def get_tasks_handlers():
             CallbackQueryHandler(task_view_start, pattern=r"^task:view$"),
             CallbackQueryHandler(task_export_start, pattern=r"^task:export$"),
             CallbackQueryHandler(regular_add_start, pattern=r"^reg:add$"),
+            CallbackQueryHandler(regular_manage_start, pattern=r"^reg:manage$"),
             CallbackQueryHandler(regular_edit_start, pattern=r"^reg:edit$"),
             CallbackQueryHandler(regular_delete_start, pattern=r"^reg:delete$"),
         ],
@@ -1335,7 +1475,15 @@ def get_tasks_handlers():
             REG_ADD_ASSIGNEES: [CallbackQueryHandler(regular_assignee_selected, pattern=r"^regassignee:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
             REG_ADD_DEADLINE: [CallbackQueryHandler(task_deadline_selected, pattern=r"^taskdeadline:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
             REG_EDIT_DAY: [CallbackQueryHandler(regular_edit_day_selected, pattern=r"^regeditday:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
-            REG_EDIT_SELECT: [CallbackQueryHandler(regular_edit_selected, pattern=r"^regedit:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
+            REG_EDIT_SELECT: [
+                CallbackQueryHandler(regular_manage_selected, pattern=r"^regmanage:"),
+                CallbackQueryHandler(regular_edit_selected, pattern=r"^regedit:"),
+                CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$"),
+            ],
+            REG_MANAGE_ACTION: [
+                CallbackQueryHandler(regular_manage_action_selected, pattern=r"^regmanageaction:"),
+                CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$"),
+            ],
             REG_EDIT_FIELD: [CallbackQueryHandler(regular_edit_field_selected, pattern=r"^regeditfield:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
             REG_EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, regular_edit_description_received), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
             REG_EDIT_WEEKDAY: [CallbackQueryHandler(regular_edit_weekday_selected, pattern=r"^regeditweekday:"), CallbackQueryHandler(tasks_cancel, pattern=r"^task:cancel$")],
