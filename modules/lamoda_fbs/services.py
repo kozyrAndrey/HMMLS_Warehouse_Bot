@@ -24,12 +24,15 @@ from modules.lamoda_fbs.storage import (
     LamodaPack,
     Shipment,
     attach_packs,
+    cancel_session_order_packs,
     cargo_manifest,
     create_assembly_session,
     create_marking_batch,
+    get_active_session,
     get_order_preparation,
     get_shipment_request_state,
     get_session_packs,
+    get_session_order_refs,
     get_sync_value,
     marking_batch_rows,
     persist_order,
@@ -46,6 +49,12 @@ from modules.storage.postgres import session_scope
 
 logger = logging.getLogger(__name__)
 _shared_client = None
+
+
+LABEL_ELIGIBLE_STATUSES = {
+    "NEW", "CREATED", "PENDING", "CONFIRMED", "READY_FOR_ASSEMBLY",
+    "AWAITING_SHIPMENT",
+}
 
 
 def get_client():
@@ -112,6 +121,12 @@ def _assembly_allowed(order):
     return status in allowed
 
 
+def _labels_allowed(order):
+    if order.get("allowedForAssembly") is True:
+        return True
+    return str(order.get("status") or "").upper() in LABEL_ELIGIBLE_STATUSES
+
+
 async def discover_orders(client=None):
     client = client or get_client()
     orders = await client.list_orders(sellerId=client.seller_id, fulfillmentType="FBS")
@@ -125,7 +140,10 @@ async def discover_orders(client=None):
         ).scalars()) if order_ids else set()
     eligible = [
         order for order in orders
-        if _order_id(order) and (_assembly_allowed(order) or _order_id(order) in recoverable)
+        if _order_id(order) and (
+            _assembly_allowed(order)
+            or (_order_id(order) in recoverable and _labels_allowed(order))
+        )
     ]
     eligible.sort(key=lambda row: (_parse_dt(_cutoff(row)), _parse_dt(row.get("createdAt"))))
     details = []
@@ -135,7 +153,8 @@ async def discover_orders(client=None):
         with session_scope() as session:
             existing = set(session.execute(select(LamodaPack.item_id).where(LamodaPack.item_id.in_(item_ids))).scalars()) if item_ids else set()
         if (
-            _assembly_allowed(detail) or _order_id(detail) in recoverable
+            _assembly_allowed(detail)
+            or (_order_id(detail) in recoverable and _labels_allowed(detail))
         ) and any(item_id not in existing for item_id in item_ids):
             details.append(detail)
     return details
@@ -172,6 +191,8 @@ async def _existing_pack_numbers(client, order_id):
 async def prepare_orders(orders, user_id, user_name, client=None):
     """Create one assembly pack per item, preserving successes across order failures."""
     client = client or get_client()
+    active = get_active_session()
+    excluded_orders = await reconcile_assembly_session(active.id, client) if active else []
     assembly_session = create_assembly_session(user_id, user_name)
     successes, errors = [], []
     for order in orders:
@@ -241,7 +262,10 @@ async def prepare_orders(orders, user_id, user_name, client=None):
         except Exception as error:
             logger.exception("Lamoda order preparation failed: order_id=%s", order_id)
             errors.append({"order_id": order_id, "error": str(error)})
-    return {"session_id": assembly_session.id, "successes": successes, "errors": errors}
+    return {
+        "session_id": assembly_session.id, "successes": successes, "errors": errors,
+        "excluded_orders": excluded_orders,
+    }
 
 
 def _chunks(values, size=MAX_LABEL_BATCH):
@@ -257,8 +281,12 @@ def _label_result(payload, excluded_key):
 
 async def assembly_label_documents(session_id, client=None):
     client = client or get_client()
+    excluded_orders = await reconcile_assembly_session(session_id, client)
     packs = get_session_packs(session_id)
     if not packs:
+        if excluded_orders:
+            details = ", ".join(f"{row['order_id']} ({row['status']})" for row in excluded_orders)
+            raise RuntimeError(f"После сверки с Lamoda в сборке не осталось подходящих заказов: {details}.")
         raise RuntimeError("В сборке нет упаковок.")
     item_parts, pack_parts, excluded_items, excluded_packs = [], [], [], []
     for batch in _chunks([row["item_id"] for row in packs]):
@@ -282,7 +310,22 @@ async def assembly_label_documents(session_id, client=None):
     return {
         "item_pdf": merge_pdfs(item_parts), "pack_pdf": merge_pdfs(pack_parts),
         "excluded_items": excluded_items, "excluded_packs": excluded_packs,
+        "excluded_orders": excluded_orders,
     }
+
+
+async def reconcile_assembly_session(session_id, client=None):
+    """Remove terminal, unprocessed orders before requesting assembly labels."""
+    client = client or get_client()
+    excluded = []
+    for order_ref in get_session_order_refs(session_id):
+        detail = await client.get_order(order_ref["lamoda_id"])
+        status = str(detail.get("status") or "").upper()
+        if _labels_allowed(detail):
+            continue
+        cancel_session_order_packs(session_id, order_ref["order_id"], status or "UNKNOWN")
+        excluded.append({"order_id": order_ref["order_id"], "status": status or "UNKNOWN"})
+    return excluded
 
 
 def assembly_picking_document(session_id):
@@ -565,6 +608,51 @@ async def resolve_return_barcode(barcode, client=None):
             })
             return local
     return None
+
+
+async def resolve_return_item_barcode(barcode, client=None):
+    """Resolve the mandatory order-item label used on every Lamoda return."""
+    from modules.lamoda_fbs.storage import find_pack_by_item_id
+
+    value = str(barcode or "").strip()
+    local = find_pack_by_item_id(value)
+    client = client or get_client()
+    try:
+        return_items = await client.list_return_items(sellerId=client.seller_id)
+    except Exception:
+        if local:
+            logger.warning("Could not refresh Lamoda return item: item_id=%s", value, exc_info=True)
+            return local
+        raise
+    for item in return_items:
+        identifiers = {
+            str(item.get("id") or ""),
+            str(item.get("orderItemId") or ""),
+            str(item.get("itemId") or ""),
+        }
+        if value not in identifiers:
+            continue
+        item_id = str(item.get("orderItemId") or item.get("itemId") or item.get("id") or "")
+        local = find_pack_by_item_id(item_id)
+        if not local:
+            return {
+                "pack_number": "", "order_id": str(item.get("orderId") or ""),
+                "item_id": item_id, "product_name": str(item.get("itemName") or ""),
+                "size": str(item.get("dimensionSymbol") or ""),
+                "sku": str(item.get("externalSku") or item.get("sku") or ""),
+                "raw_code": "", "fingerprint": "", "lamoda_status": str(item.get("status") or ""),
+                "return_item_id": str(item.get("returnItemId") or item.get("id") or ""),
+                "return_type": str(item.get("returnType") or ""), "return_status": str(item.get("status") or ""),
+                "return_date": item.get("returnDate"),
+            }
+        local.update({
+            "return_item_id": str(item.get("returnItemId") or item.get("id") or ""),
+            "return_type": str(item.get("returnType") or ""),
+            "return_status": str(item.get("status") or ""),
+            "return_date": item.get("returnDate"),
+        })
+        return local
+    return local
 
 
 async def resolve_return_order(order_id, client=None):

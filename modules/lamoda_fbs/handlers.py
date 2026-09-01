@@ -21,6 +21,8 @@ from modules.lamoda_fbs.keyboards import (
     main_menu,
     marking_menu,
     return_condition,
+    return_kiz_optional,
+    return_pack_optional,
     returns_menu,
 )
 from modules.lamoda_fbs.marking import MarkingValidationError, parse_marking_code, short_kiz, validate_against_catalog
@@ -35,6 +37,7 @@ from modules.lamoda_fbs.services import (
     order_summary,
     prepare_orders,
     resolve_return_barcode,
+    resolve_return_item_barcode,
     resolve_return_order,
     shipment_documents,
 )
@@ -69,7 +72,7 @@ from modules.storage.postgres import session_scope
 
 logger = logging.getLogger(__name__)
 
-SCAN_PACK, SCAN_KIZ, CARGO_SCAN, RETURN_PHOTO, RETURN_BARCODE, RETURN_MANUAL_ORDER, RETURN_KIZ, RETURN_CONDITION, RETURN_DEFECT_REASON, RETURN_DEFECT_PHOTOS, BATCH_ERRORS = range(11)
+SCAN_PACK, SCAN_KIZ, CARGO_SCAN, RETURN_PHOTO, RETURN_ITEM, RETURN_PACK, RETURN_MANUAL_ORDER, RETURN_KIZ, RETURN_CONDITION, RETURN_DEFECT_REASON, RETURN_DEFECT_PHOTOS, BATCH_ERRORS = range(12)
 
 
 def _employee(user):
@@ -147,6 +150,17 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
             return
+        try:
+            documents = await assembly_label_documents(result["session_id"], client)
+        except Exception as error:
+            await query.message.reply_text(
+                f"⚠️ Заказы подготовлены, но этикетки получить не удалось: {error}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Повторить получение этикеток", callback_data=f"lamoda:labels:retry:{result['session_id']}")],
+                    [InlineKeyboardButton("⬅️ Lamoda FBS", callback_data="section:lamoda")],
+                ]),
+            )
+            return
         picking_error = ""
         try:
             await query.message.reply_document(
@@ -159,17 +173,6 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             logger.exception("Could not send Lamoda picking list")
             picking_error = str(error)
-        try:
-            documents = await assembly_label_documents(result["session_id"], client)
-        except Exception as error:
-            await query.message.reply_text(
-                f"⚠️ Заказы подготовлены, но этикетки получить не удалось: {error}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Повторить получение этикеток", callback_data=f"lamoda:labels:retry:{result['session_id']}")],
-                    [InlineKeyboardButton("⬅️ Lamoda FBS", callback_data="section:lamoda")],
-                ]),
-            )
-            return
         await _send_assembly_label_docs(query.message, result["session_id"], documents)
         labels_ready = not documents["excluded_items"] and not documents["excluded_packs"]
         set_session_labels_ready(result["session_id"], labels_ready)
@@ -192,6 +195,14 @@ async def assembly_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warnings.append("Исключены item: " + ", ".join(documents["excluded_items"]))
         if documents["excluded_packs"]:
             warnings.append("Исключены pack: " + ", ".join(documents["excluded_packs"]))
+        excluded_orders = result.get("excluded_orders", []) + documents["excluded_orders"]
+        if excluded_orders:
+            warnings.append(
+                "Исключены заказы с неподходящим статусом: "
+                + ", ".join(
+                    f"{row['order_id']} ({row['status']})" for row in excluded_orders
+                )
+            )
         action_rows = []
         if documents["excluded_items"] or documents["excluded_packs"]:
             action_rows.append([InlineKeyboardButton("🔄 Повторить получение этикеток", callback_data=f"lamoda:labels:retry:{result['session_id']}")])
@@ -237,7 +248,14 @@ async def assembly_labels_retry(update: Update, context: ContextTypes.DEFAULT_TY
         rows.append([InlineKeyboardButton("⬅️ Lamoda FBS", callback_data="section:lamoda")])
         await query.message.reply_text(
             "✅ Этикетки получены повторно."
-            + (f"\n⚠️ Всё ещё исключены: {', '.join(excluded)}" if excluded else ""),
+            + (f"\n⚠️ Всё ещё исключены: {', '.join(excluded)}" if excluded else "")
+            + (
+                "\n⚠️ Исключены заказы с неподходящим статусом: "
+                + ", ".join(
+                    f"{row['order_id']} ({row['status']})" for row in documents["excluded_orders"]
+                )
+                if documents["excluded_orders"] else ""
+            ),
             reply_markup=InlineKeyboardMarkup(rows),
         )
     except Exception as error:
@@ -490,30 +508,33 @@ async def return_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data["lamoda_return"] = {}
-    await query.message.reply_text("📷 Сфотографируйте этикетку возвратного отправления.")
+    await query.message.reply_text("📷 Сфотографируйте товарную этикетку возврата.")
     return RETURN_PHOTO
 
 
 async def return_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["lamoda_return"]["label_photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("🔎 Отсканируйте packNumber / штрихкод этикетки.")
-    return RETURN_BARCODE
+    await update.message.reply_text("🔎 Отсканируйте товарную этикетку Lamoda (itemId). Это обязательный шаг.")
+    return RETURN_ITEM
 
 
-async def return_barcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def return_item_barcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data["lamoda_return"]
-    data["barcode"] = update.message.text.strip()
+    data["item_barcode"] = update.message.text.strip()
     await update.message.reply_text("Ищу возврат в базе и Lamoda…")
     try:
-        pack = await resolve_return_barcode(data["barcode"])
+        pack = await resolve_return_item_barcode(data["item_barcode"])
     except Exception as error:
         logger.exception("Return lookup failed")
         pack = None
         data["lookup_error"] = str(error)
     if not pack:
         data["problematic"] = True
-        data["problem_reason"] = "Возврат не найден автоматически."
-        await update.message.reply_text("⚠️ Отправление не найдено. Введите номер заказа вручную; приёмка будет отмечена как проблемная.")
+        data["problem_reason"] = "Товарная этикетка не найдена автоматически."
+        await update.message.reply_text(
+            "⚠️ Товарная этикетка отсканирована, но позиция не найдена. "
+            "Введите номер заказа вручную; приёмка будет отмечена как проблемная."
+        )
         return RETURN_MANUAL_ORDER
     data["pack"] = pack
     data["problematic"] = False
@@ -524,8 +545,64 @@ async def return_barcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"КИЗ: {short_kiz(pack['raw_code'])}\nСтатус Lamoda: {pack.get('return_status') or pack['lamoda_status'] or '—'}\n"
         f"Тип возврата: {pack.get('return_type') or '—'}\n"
         f"Дата возврата: {pack.get('return_date') or '—'}\n\n"
-        "Повторно отсканируйте КИЗ товара."
+        "Если паковая этикетка есть — отсканируйте packNumber. Если её нет — пропустите шаг.",
+        reply_markup=return_pack_optional(),
     )
+    return RETURN_PACK
+
+
+async def return_pack_barcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = context.user_data["lamoda_return"]
+    value = update.message.text.strip()
+    expected = str(data["pack"].get("pack_number") or "")
+    if expected and value != expected:
+        await update.message.reply_text(
+            f"⚠️ Эта паковая этикетка не относится к товару. Ожидается {expected}. Повторите сканирование или пропустите шаг.",
+            reply_markup=return_pack_optional(),
+        )
+        return RETURN_PACK
+    if not expected:
+        try:
+            resolved = await resolve_return_barcode(value)
+        except Exception:
+            logger.exception("Optional return pack lookup failed")
+            resolved = None
+        if resolved and str(resolved.get("item_id") or "") != str(data["pack"].get("item_id") or ""):
+            await update.message.reply_text(
+                "⚠️ Эта паковая этикетка относится к другому товару. Повторите сканирование или пропустите шаг.",
+                reply_markup=return_pack_optional(),
+            )
+            return RETURN_PACK
+        if resolved:
+            data["pack"] = resolved
+        else:
+            data["pack"]["pack_number"] = value
+    data["pack_scanned"] = True
+    return await _ask_return_kiz(update.effective_message, data)
+
+
+async def return_pack_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = context.user_data["lamoda_return"]
+    data["pack_scanned"] = False
+    return await _ask_return_kiz(query.message, data)
+
+
+async def _ask_return_kiz(message, data):
+    pack = data["pack"]
+    has_original_kiz = bool(pack.get("fingerprint"))
+    known_unmarked = pack.get("requires_marking") is False
+    prompt = (
+        "Повторно отсканируйте ЧЗ товара или пропустите шаг."
+        if has_original_kiz
+        else (
+            "Товар ранее принят как немаркируемый — пропустите ЧЗ."
+            if known_unmarked
+            else "Если товар маркируемый — отсканируйте ЧЗ. Для немаркируемого товара пропустите шаг."
+        )
+    )
+    await message.reply_text(prompt, reply_markup=return_kiz_optional())
     return RETURN_KIZ
 
 
@@ -539,26 +616,44 @@ async def return_manual_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         candidates = []
     if len(candidates) == 1:
         data["pack"] = candidates[0]
-        data["problematic"] = False
-        data["problem_reason"] = ""
+        if str(candidates[0].get("item_id") or "") == data["item_barcode"]:
+            data["problematic"] = False
+            data["problem_reason"] = ""
+        else:
+            data["problematic"] = True
+            data["problem_reason"] = (
+                data.get("problem_reason", "") + " Товарная этикетка не совпадает с позицией заказа."
+            ).strip()
         await update.message.reply_text(
             f"Найден pack {candidates[0]['pack_number']} · {candidates[0]['product_name'] or 'без названия'}.\n"
-            "Отсканируйте КИЗ товара."
+            "Если паковая этикетка есть — отсканируйте её. Если нет — пропустите шаг.",
+            reply_markup=return_pack_optional(),
         )
-        return RETURN_KIZ
+        return RETURN_PACK
     if len(candidates) > 1:
         variants = "\n".join(f"• {row['pack_number']} · {row['product_name']} · {row['size']}" for row in candidates)
         await update.message.reply_text(
-            f"В заказе несколько упаковок:\n{variants}\n\nОтсканируйте нужный packNumber."
+            f"В заказе несколько упаковок:\n{variants}\n\n"
+            "Не удалось однозначно сопоставить товарную этикетку. Приёмка будет отмечена как проблемная; "
+            "при наличии отсканируйте нужный packNumber или пропустите шаг.",
+            reply_markup=return_pack_optional(),
         )
-        return RETURN_BARCODE
+        data["pack"] = {
+            "pack_number": "", "order_id": data["manual_order_id"], "item_id": data["item_barcode"],
+            "product_name": "Неопознанный товар", "size": "", "sku": "", "raw_code": "",
+            "fingerprint": "", "lamoda_status": "",
+        }
+        return RETURN_PACK
     data["pack"] = {
-        "pack_number": data["barcode"], "order_id": data["manual_order_id"], "item_id": "",
+        "pack_number": "", "order_id": data["manual_order_id"], "item_id": data["item_barcode"],
         "product_name": "Неопознанный товар", "size": "", "sku": "", "raw_code": "",
         "fingerprint": "", "lamoda_status": "",
     }
-    await update.message.reply_text("Отсканируйте КИЗ товара.")
-    return RETURN_KIZ
+    await update.message.reply_text(
+        "Если паковая этикетка есть — отсканируйте её. Если нет — пропустите шаг.",
+        reply_markup=return_pack_optional(),
+    )
+    return RETURN_PACK
 
 
 async def return_kiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -578,6 +673,30 @@ async def return_kiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("✅ КИЗ совпадает.\n" if data["kiz_matches"] else "⚠️ КИЗ не совпадает; приёмка будет проблемной.\n")
         + "Укажите состояние товара:", reply_markup=return_condition(),
     )
+    return RETURN_CONDITION
+
+
+async def return_kiz_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = context.user_data["lamoda_return"]
+    data["kiz_skipped"] = True
+    data["scanned_kiz_fingerprint"] = ""
+    pack = data["pack"]
+    known_unmarked = pack.get("requires_marking") is False
+    data["kiz_matches"] = known_unmarked
+    if not known_unmarked:
+        data["problematic"] = True
+        reason = (
+            " ЧЗ маркируемого товара не отсканирован."
+            if pack.get("fingerprint")
+            else " Нет данных, подтверждающих, что товар немаркируемый."
+        )
+        data["problem_reason"] = (data.get("problem_reason", "") + reason).strip()
+        message = "⚠️ ЧЗ пропущен; приёмка будет отмечена как требующая сверки."
+    else:
+        message = "✅ Товар принят как немаркируемый."
+    await query.message.reply_text(message + "\nУкажите состояние товара:", reply_markup=return_condition())
     return RETURN_CONDITION
 
 
@@ -647,8 +766,12 @@ async def _save_return(update, context):
     data = context.user_data["lamoda_return"]
     data["employee_name"] = _employee_name(update.effective_user)
     pack = data["pack"]
-    status_upper = str(pack.get("lamoda_status") or "").upper()
-    if pack.get("fingerprint") and not any(token in status_upper for token in ("RETURN", "NOT_BOUGHT", "NOTBOUGHT")):
+    status_upper = str(pack.get("return_status") or pack.get("lamoda_status") or "").upper()
+    has_return_record = bool(pack.get("return_item_id") or pack.get("return_status"))
+    if (
+        pack.get("fingerprint") and not has_return_record
+        and not any(token in status_upper for token in ("RETURN", "NOT_BOUGHT", "NOTBOUGHT"))
+    ):
         data["problematic"] = True
         data["problem_reason"] = (data.get("problem_reason", "") + " В Lamoda нет возвратного статуса.").strip()
     try:
@@ -694,12 +817,14 @@ async def _send_return_report(context, data, receipt_id):
     heading = "❌ Принят бракованный возврат Lamoda" if defect else "✅ Принят возврат Lamoda"
     caption = (
         f"{heading}\n\nСотрудник: {html.escape(data.get('employee_name') or '')}\n"
-        f"Заказ: {html.escape(str(pack.get('order_id') or '—'))}\nПак: {html.escape(str(pack.get('pack_number') or '—'))}\n"
+        f"Заказ: {html.escape(str(pack.get('order_id') or '—'))}\n"
+        f"Товарная этикетка: {html.escape(str(pack.get('item_id') or data.get('item_barcode') or '—'))}\n"
+        f"Пак: {html.escape(str(pack.get('pack_number') or '—'))}"
+        f" ({'отсканирован' if data.get('pack_scanned') else 'этикетка отсутствует / шаг пропущен'})\n"
         f"Товар: {html.escape(pack.get('product_name') or '—')}\nРазмер: {html.escape(pack.get('size') or '—')}\n"
         f"Статус: {'Брак' if defect else 'Норм'}\n"
         + (f"Причина: {html.escape((data.get('defect_reason') or '')[:500])}\n" if defect else "")
-        + f"КИЗ совпадает: {'да' if data.get('kiz_matches') else 'нет'}\n"
-        + f"Маркировка: {'требует сверки' if data.get('problematic') else 'ожидает возврата в оборот'}\n"
+        + _return_marking_report(data)
         + (f"⚠️ {html.escape((data.get('problem_reason') or '')[:300])}\n" if data.get("problematic") else "")
         + f"Дата: {datetime.now():%d.%m.%Y %H:%M}"
     )
@@ -720,6 +845,18 @@ async def _send_return_report(context, data, receipt_id):
     else:
         media = [InputMediaPhoto(media=file_id, caption=caption if index == 0 else None, parse_mode=ParseMode.HTML if index == 0 else None) for index, file_id in enumerate(photos)]
         await context.bot.send_media_group(chat_id=chat_id, message_thread_id=thread_id, media=media)
+
+
+def _return_marking_report(data):
+    pack = data.get("pack") or {}
+    if data.get("kiz_skipped") and pack.get("requires_marking") is False:
+        return "ЧЗ: не требуется (немаркируемый товар)\nМаркировка: операций ЧЗ не требуется\n"
+    if data.get("kiz_skipped"):
+        return "ЧЗ: не отсканирован\nМаркировка: требует сверки\n"
+    return (
+        f"КИЗ совпадает: {'да' if data.get('kiz_matches') else 'нет'}\n"
+        f"Маркировка: {'требует сверки' if data.get('problematic') else 'ожидает возврата в оборот'}\n"
+    )
 
 
 async def returns_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -916,9 +1053,16 @@ def get_lamoda_handlers():
                 CallbackQueryHandler(cargo_close, pattern=r"^lamoda:cargo:close:\d+$"),
             ],
             RETURN_PHOTO: [MessageHandler(filters.PHOTO, return_photo)],
-            RETURN_BARCODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, return_barcode)],
+            RETURN_ITEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, return_item_barcode)],
+            RETURN_PACK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, return_pack_barcode),
+                CallbackQueryHandler(return_pack_skip, pattern=r"^lamoda:return:pack:skip$"),
+            ],
             RETURN_MANUAL_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, return_manual_order)],
-            RETURN_KIZ: [MessageHandler(filters.TEXT & ~filters.COMMAND, return_kiz)],
+            RETURN_KIZ: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, return_kiz),
+                CallbackQueryHandler(return_kiz_skip, pattern=r"^lamoda:return:kiz:skip$"),
+            ],
             RETURN_CONDITION: [CallbackQueryHandler(return_condition_selected, pattern=r"^lamoda:return:condition:")],
             RETURN_DEFECT_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, return_defect_reason)],
             RETURN_DEFECT_PHOTOS: [

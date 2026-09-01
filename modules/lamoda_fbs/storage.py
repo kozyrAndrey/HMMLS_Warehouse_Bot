@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import (
     Boolean,
@@ -13,12 +14,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    or_,
     select,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from modules.lamoda_fbs.constants import CodeState, PackState
+from modules.marking.duplicate_chz import DuplicateChzError, extract_short_marking_code
 from modules.storage.postgres import Base, get_engine, session_scope
 
 
@@ -307,6 +310,31 @@ def json_dumps(value):
     return json.dumps(value or {}, ensure_ascii=False, default=str)
 
 
+def sold_price_from_item_json(raw_json):
+    try:
+        item = json.loads(raw_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    price_container = item.get("price") if isinstance(item.get("price"), dict) else {}
+    for field in ("paidPrice", "salePrice", "sellerAgreedPrice", "basePrice"):
+        price = item.get(field) or price_container.get(field)
+        if not isinstance(price, dict) or price.get("amount") in (None, ""):
+            continue
+        try:
+            value = Decimal(str(price["amount"])) / Decimal("100")
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        return int(value) if value == value.to_integral_value() else float(value)
+    return None
+
+
+def short_marking_code(code, raw_code):
+    try:
+        return extract_short_marking_code(raw_code)
+    except DuplicateChzError:
+        return str(code.uit or "")[:31]
+
+
 def code_fingerprint(raw_code):
     value = str(raw_code or "").strip()
     for source in ("\\x1d", "\\u001d", "<GS>", "[GS]", "{GS}", "␝"):
@@ -342,6 +370,16 @@ def create_assembly_session(user_id, user_name):
             .order_by(AssemblySession.id.desc())
         ).scalars().first()
         if existing:
+            started = session.scalar(
+                select(func.count()).select_from(LamodaPack).where(
+                    LamodaPack.session_id == existing.id,
+                    or_(LamodaPack.pack_scanned_at.is_not(None), LamodaPack.packed_at.is_not(None)),
+                )
+            ) or 0
+            if existing.status == "CARGO" or existing.labels_ready or started:
+                raise RuntimeError(
+                    f"Сборка №{existing.id} уже начата. Завершите её перед подготовкой новых заказов."
+                )
             return existing
         row = AssemblySession(created_by_user_id=str(user_id), created_by_name=str(user_name or ""))
         session.add(row)
@@ -464,19 +502,78 @@ def attach_packs(session_id, pack_rows):
                 session_id=int(session_id),
             ))
             created += 1
+        if created:
+            assembly = session.get(AssemblySession, int(session_id))
+            if assembly:
+                assembly.labels_ready = False
+                assembly.updated_at = utcnow()
         log_operation(session, "PACKS_ATTACHED", "assembly_session", session_id, details={"created": created})
     return created
 
 
-def get_session_packs(session_id):
+def get_session_packs(session_id, *, include_cancelled=False):
     with session_scope() as session:
-        rows = session.execute(
+        statement = (
             select(LamodaPack, LamodaOrderItem)
             .join(LamodaOrderItem, LamodaOrderItem.item_id == LamodaPack.item_id)
             .where(LamodaPack.session_id == int(session_id))
             .order_by(LamodaPack.id)
-        ).all()
+        )
+        if not include_cancelled:
+            statement = statement.where(LamodaPack.marking_state != PackState.CANCELLED)
+        rows = session.execute(statement).all()
         return [pack_view(pack, item) for pack, item in rows]
+
+
+def get_session_order_refs(session_id):
+    with session_scope() as session:
+        rows = session.execute(
+            select(LamodaOrder.order_id, LamodaOrder.lamoda_id)
+            .join(LamodaPack, LamodaPack.order_id == LamodaOrder.order_id)
+            .where(
+                LamodaPack.session_id == int(session_id),
+                LamodaPack.marking_state != PackState.CANCELLED,
+            )
+            .distinct()
+            .order_by(LamodaOrder.order_id)
+        ).all()
+        return [
+            {"order_id": str(order_id), "lamoda_id": str(lamoda_id or order_id)}
+            for order_id, lamoda_id in rows
+        ]
+
+
+def cancel_session_order_packs(session_id, order_id, lamoda_status):
+    """Exclude unprocessed packs of a terminal Lamoda order from assembly."""
+    with session_scope() as session:
+        packs = session.execute(
+            select(LamodaPack).where(
+                LamodaPack.session_id == int(session_id),
+                LamodaPack.order_id == str(order_id),
+                LamodaPack.marking_state != PackState.CANCELLED,
+            ).with_for_update()
+        ).scalars().all()
+        changed = 0
+        for pack in packs:
+            if pack.packed_at or pack.pack_scanned_at or pack.marking_code_id:
+                raise RuntimeError(
+                    f"Заказ {order_id} уже начали собирать, но его статус Lamoda — {lamoda_status}. "
+                    "Требуется ручная сверка."
+                )
+            pack.lamoda_status = str(lamoda_status or "")
+            pack.marking_state = PackState.CANCELLED
+            pack.updated_at = utcnow()
+            changed += 1
+        if changed:
+            assembly = session.get(AssemblySession, int(session_id))
+            if assembly:
+                assembly.labels_ready = False
+                assembly.updated_at = utcnow()
+            log_operation(
+                session, "ORDER_EXCLUDED_FROM_ASSEMBLY", "assembly_session", session_id,
+                details={"order_id": order_id, "status": lamoda_status, "packs": changed},
+            )
+        return changed
 
 
 def pack_view(pack, item=None):
@@ -516,7 +613,11 @@ def get_next_unscanned_pack(session_id):
         row = session.execute(
             select(LamodaPack, LamodaOrderItem)
             .join(LamodaOrderItem, LamodaOrderItem.item_id == LamodaPack.item_id)
-            .where(LamodaPack.session_id == int(session_id), LamodaPack.packed_at.is_(None))
+            .where(
+                LamodaPack.session_id == int(session_id),
+                LamodaPack.packed_at.is_(None),
+                LamodaPack.marking_state != PackState.CANCELLED,
+            )
             .order_by(LamodaPack.id)
         ).first()
         return pack_view(*row) if row else None
@@ -608,9 +709,15 @@ def complete_pack_without_marking(pack_number, user_id):
 
 def all_packs_scanned(session_id):
     with session_scope() as session:
-        total = session.scalar(select(func.count()).select_from(LamodaPack).where(LamodaPack.session_id == int(session_id))) or 0
+        active_filter = (
+            LamodaPack.session_id == int(session_id),
+            LamodaPack.marking_state != PackState.CANCELLED,
+        )
+        total = session.scalar(
+            select(func.count()).select_from(LamodaPack).where(*active_filter)
+        ) or 0
         scanned = session.scalar(select(func.count()).select_from(LamodaPack).where(
-            LamodaPack.session_id == int(session_id), LamodaPack.packed_at.is_not(None)
+            *active_filter, LamodaPack.packed_at.is_not(None)
         )) or 0
         return total > 0 and total == scanned
 
@@ -718,7 +825,10 @@ def save_shipment(session_id, shipment_id, ship_at, payload, pallet_mapping):
             cargo = session.get(CargoPlace, int(cargo_id))
             cargo.pallet_id = str(pallet_id)
             cargo.status = "SHIPPED"
-        packs = session.execute(select(LamodaPack).where(LamodaPack.session_id == int(session_id))).scalars().all()
+        packs = session.execute(select(LamodaPack).where(
+            LamodaPack.session_id == int(session_id),
+            LamodaPack.marking_state != PackState.CANCELLED,
+        )).scalars().all()
         for pack in packs:
             if pack.requires_marking:
                 pack.marking_state = PackState.WAITING_WITHDRAWAL
@@ -739,6 +849,28 @@ def find_pack(pack_number):
             .join(LamodaOrderItem, LamodaOrderItem.item_id == LamodaPack.item_id)
             .outerjoin(MarkingCode, MarkingCode.id == LamodaPack.marking_code_id)
             .where(LamodaPack.pack_number == str(pack_number).strip())
+        ).first()
+        if not row:
+            return None
+        pack, item, code = row
+        result = pack_view(pack, item)
+        result.update({
+            "raw_code": pack.scanned_raw_code or (code.raw_code if code else ""),
+            "fingerprint": pack.kiz_fingerprint or (code.fingerprint if code else ""),
+            "gtin": pack.scanned_gtin or (code.gtin if code else ""),
+            "serial": pack.scanned_serial or (code.serial if code else ""),
+            "code_state": code.state if code else "",
+        })
+        return result
+
+
+def find_pack_by_item_id(item_id):
+    with session_scope() as session:
+        row = session.execute(
+            select(LamodaPack, LamodaOrderItem, MarkingCode)
+            .join(LamodaOrderItem, LamodaOrderItem.item_id == LamodaPack.item_id)
+            .outerjoin(MarkingCode, MarkingCode.id == LamodaPack.marking_code_id)
+            .where(LamodaPack.item_id == str(item_id).strip())
         ).first()
         if not row:
             return None
@@ -948,6 +1080,7 @@ def marking_batch_rows(batch_id):
         ).all()
         result = []
         for batch, batch_item, pack, item, code, shipment, receipt in rows:
+            raw_code = pack.scanned_raw_code or code.raw_code
             result.append({
                 "batch_id": batch.id, "batch_type": batch.batch_type, "batch_status": batch.status,
                 "result": batch_item.result, "shipment_id": shipment.shipment_id if shipment else "",
@@ -956,7 +1089,9 @@ def marking_batch_rows(batch_id):
                 "product_name": item.moysklad_name or item.product_name,
                 "size": item.size, "sku": item.sku,
                 "gtin": pack.scanned_gtin or code.gtin,
-                "raw_code": pack.scanned_raw_code or code.raw_code,
+                "raw_code": raw_code,
+                "short_code": short_marking_code(code, raw_code),
+                "sale_price": sold_price_from_item_json(item.raw_json),
                 "withdrawn_at": pack.withdrawn_at, "return_received_at": pack.return_received_at,
                 "condition": receipt.condition if receipt else "", "defect_reason": receipt.defect_reason if receipt else "",
                 "return_item_id": receipt.return_item_id if receipt else pack.return_item_id,
@@ -1051,9 +1186,14 @@ def record_return_receipt(
         pack = session.execute(
             select(LamodaPack).where(LamodaPack.pack_number == str(pack_number)).with_for_update()
         ).scalar_one_or_none() if pack_number else None
+        duplicate_filter = None
+        if pack_number:
+            duplicate_filter = ReturnReceipt.pack_number == str(pack_number)
+        elif item_id:
+            duplicate_filter = ReturnReceipt.item_id == str(item_id)
         duplicate = session.execute(
-            select(ReturnReceipt).where(ReturnReceipt.pack_number == str(pack_number)).order_by(ReturnReceipt.id.desc())
-        ).scalars().first() if pack_number else None
+            select(ReturnReceipt).where(duplicate_filter).order_by(ReturnReceipt.id.desc())
+        ).scalars().first() if duplicate_filter is not None else None
         mismatch = bool(pack and pack.kiz_fingerprint and scanned_kiz_fingerprint != pack.kiz_fingerprint)
         actual_problem_reason = str(problem_reason or "")
         if mismatch and "КИЗ" not in actual_problem_reason:

@@ -59,9 +59,11 @@ class TaskTemplate(Base):
     __table_args__ = (
         Index("ix_task_templates_weekday", "weekday"),
         Index("ix_task_templates_active", "is_active"),
+        Index("ix_task_templates_series_id", "series_id"),
     )
 
     template_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    series_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     weekday_name: Mapped[str] = mapped_column(String(50), nullable=False)
     weekday: Mapped[int] = mapped_column(Integer, nullable=False)
     task_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -102,6 +104,7 @@ def init_tasks_storage():
     Base.metadata.create_all(get_engine(), tables=[Task.__table__, TaskTemplate.__table__, TaskExport.__table__])
     ensure_tasks_columns()
     seed_default_task_templates_if_empty()
+    ensure_task_template_series_ids()
     return True
 
 
@@ -114,8 +117,10 @@ def ensure_tasks_columns():
         "create index if not exists ix_tasks_task_type on tasks (task_type)",
         "create index if not exists ix_tasks_status on tasks (status)",
         "create index if not exists ix_tasks_template_id on tasks (template_id)",
+        "alter table task_templates add column if not exists series_id varchar(64) not null default ''",
         "create index if not exists ix_task_templates_weekday on task_templates (weekday)",
         "create index if not exists ix_task_templates_active on task_templates (is_active)",
+        "create index if not exists ix_task_templates_series_id on task_templates (series_id)",
         "create unique index if not exists uq_task_exports_date_type on task_exports (task_date, export_type)",
         "create index if not exists ix_task_exports_task_date on task_exports (task_date)",
         "create index if not exists ix_task_exports_export_type on task_exports (export_type)",
@@ -157,6 +162,7 @@ def task_to_dict(task):
 def template_to_dict(template):
     return {
         "template_id": template.template_id,
+        "series_id": template.series_id or template.template_id,
         "День недели": template.weekday_name,
         "weekday": template.weekday,
         "Тип задачи": template.task_type,
@@ -194,6 +200,7 @@ def seed_default_task_templates_if_empty():
             session.add(
                 TaskTemplate(
                     template_id=generate_id("tpl"),
+                    series_id="",
                     weekday_name=WEEKDAY_NAMES[weekday],
                     weekday=weekday,
                     task_type=item["task_type"],
@@ -202,6 +209,43 @@ def seed_default_task_templates_if_empty():
                     deadline=item.get("deadline", ""),
                 )
             )
+
+
+def _template_series_signature(template):
+    return (
+        str(template.task_type or "").strip(),
+        str(template.description or "").strip(),
+        str(template.assignee_mode or "").strip(),
+        str(template.assignee_ids or "").strip(),
+        str(template.assignee_names or "").strip(),
+        str(template.deadline or "").strip(),
+        bool(template.is_active),
+    )
+
+
+def ensure_task_template_series_ids():
+    """Group legacy identical weekday rows into stable recurring-task series."""
+    with session_scope() as session:
+        templates = session.execute(
+            select(TaskTemplate)
+            .where((TaskTemplate.series_id == "") | TaskTemplate.series_id.is_(None))
+            .order_by(TaskTemplate.created_at, TaskTemplate.template_id)
+        ).scalars().all()
+        grouped = {}
+        for template in templates:
+            by_weekday = grouped.setdefault(_template_series_signature(template), {})
+            by_weekday.setdefault(template.weekday, []).append(template)
+
+        updated = 0
+        for by_weekday in grouped.values():
+            occurrences = max((len(rows) for rows in by_weekday.values()), default=0)
+            for occurrence in range(occurrences):
+                series_id = generate_id("tplseries")
+                for rows in by_weekday.values():
+                    if occurrence < len(rows):
+                        rows[occurrence].series_id = series_id
+                        updated += 1
+        return updated
 
 
 def get_task_by_id(task_id):
@@ -353,21 +397,47 @@ def get_task_templates(active_only=True):
 def get_task_template_by_id(template_id):
     with session_scope() as session:
         template = session.get(TaskTemplate, str(template_id))
-        return template_to_dict(template) if template else None
+        if not template:
+            return None
+        series_id = template.series_id or template.template_id
+        templates = session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.series_id == series_id)
+            .order_by(TaskTemplate.weekday, TaskTemplate.created_at)
+        ).scalars().all()
+        if not templates:
+            templates = [template]
+        result = template_to_dict(template)
+        result["weekdays"] = sorted({row.weekday for row in templates})
+        result["Дни недели"] = ", ".join(WEEKDAY_NAMES[row] for row in result["weekdays"])
+        return result
 
 
 def create_task_template(weekday, task_type, description, assignee_mode=ASSIGNEE_MODE_NONE, assignee_employees=None, deadline=""):
-    weekday = int(weekday)
+    result = create_task_template_series(
+        [weekday], task_type, description, assignee_mode, assignee_employees, deadline,
+    )
+    return result["template_ids"][0]
+
+
+def create_task_template_series(weekdays, task_type, description, assignee_mode=ASSIGNEE_MODE_NONE, assignee_employees=None, deadline=""):
+    weekdays = sorted({int(weekday) for weekday in weekdays})
+    if not weekdays or any(weekday < 0 or weekday >= len(WEEKDAY_NAMES) for weekday in weekdays):
+        raise ValueError("Нужно выбрать хотя бы один корректный день недели.")
     employee_ids, employee_names = normalize_employee_list(assignee_employees)
     if assignee_mode != ASSIGNEE_MODE_SPECIFIC:
         employee_ids = ""
         employee_names = ""
 
-    template_id = generate_id("tpl")
+    series_id = generate_id("tplseries")
+    template_ids = []
     with session_scope() as session:
-        session.add(
-            TaskTemplate(
+        for weekday in weekdays:
+            template_id = generate_id("tpl")
+            template_ids.append(template_id)
+            session.add(TaskTemplate(
                 template_id=template_id,
+                series_id=series_id,
                 weekday_name=WEEKDAY_NAMES[weekday],
                 weekday=weekday,
                 task_type=task_type,
@@ -376,9 +446,8 @@ def create_task_template(weekday, task_type, description, assignee_mode=ASSIGNEE
                 assignee_ids=employee_ids,
                 assignee_names=employee_names,
                 deadline=deadline or "",
-            )
-        )
-    return template_id
+            ))
+    return {"series_id": series_id, "template_ids": template_ids, "weekdays": weekdays}
 
 
 def update_task_template_fields(template_id, **fields):
@@ -396,16 +465,66 @@ def update_task_template_fields(template_id, **fields):
         template = session.get(TaskTemplate, str(template_id))
         if not template:
             return False
-        for key, value in fields.items():
-            attr = field_map.get(key)
-            if not attr:
-                continue
-            if attr == "weekday":
-                value = int(value)
-                template.weekday_name = WEEKDAY_NAMES[value]
-            setattr(template, attr, value)
-        template.updated_at = datetime.now()
+        series_id = template.series_id or template.template_id
+        templates = [template]
+        if "weekday" not in fields:
+            templates = session.execute(
+                select(TaskTemplate).where(TaskTemplate.series_id == series_id)
+            ).scalars().all() or [template]
+        for row in templates:
+            for key, value in fields.items():
+                attr = field_map.get(key)
+                if not attr:
+                    continue
+                if attr == "weekday":
+                    value = int(value)
+                    row.weekday_name = WEEKDAY_NAMES[value]
+                setattr(row, attr, value)
+            row.updated_at = datetime.now()
     return True
+
+
+def replace_task_template_series_weekdays(template_id, weekdays):
+    weekdays = sorted({int(weekday) for weekday in weekdays})
+    if not weekdays or any(weekday < 0 or weekday >= len(WEEKDAY_NAMES) for weekday in weekdays):
+        raise ValueError("Нужно выбрать хотя бы один корректный день недели.")
+
+    with session_scope() as session:
+        anchor = session.get(TaskTemplate, str(template_id))
+        if not anchor:
+            return None
+        series_id = anchor.series_id or anchor.template_id
+        anchor.series_id = series_id
+        rows = session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.series_id == series_id)
+            .order_by(TaskTemplate.created_at, TaskTemplate.template_id)
+        ).scalars().all() or [anchor]
+        by_weekday = {}
+        for row in rows:
+            if row.weekday in by_weekday or row.weekday not in weekdays:
+                session.delete(row)
+            else:
+                by_weekday[row.weekday] = row
+
+        source = anchor
+        for weekday in weekdays:
+            if weekday in by_weekday:
+                continue
+            session.add(TaskTemplate(
+                template_id=generate_id("tpl"),
+                series_id=series_id,
+                weekday_name=WEEKDAY_NAMES[weekday],
+                weekday=weekday,
+                task_type=source.task_type,
+                description=source.description,
+                assignee_mode=source.assignee_mode,
+                assignee_ids=source.assignee_ids,
+                assignee_names=source.assignee_names,
+                deadline=source.deadline,
+                is_active=source.is_active,
+            ))
+        return {"series_id": series_id, "weekdays": weekdays}
 
 
 def set_task_template_assignees(template_id, assignee_mode, employees=None):
@@ -429,7 +548,13 @@ def delete_task_template(template_id):
         if not template:
             return None
         result = template_to_dict(template)
-        session.delete(template)
+        series_id = template.series_id or template.template_id
+        templates = session.execute(
+            select(TaskTemplate).where(TaskTemplate.series_id == series_id)
+        ).scalars().all() or [template]
+        result["weekdays"] = sorted({row.weekday for row in templates})
+        for row in templates:
+            session.delete(row)
         return result
 
 
@@ -553,10 +678,12 @@ def add_task_to_template(record, assignee_mode=None):
             assignee_mode = ASSIGNEE_MODE_NONE
 
     template_id = generate_id("tpl")
+    series_id = generate_id("tplseries")
     with session_scope() as session:
         session.add(
             TaskTemplate(
                 template_id=template_id,
+                series_id=series_id,
                 weekday_name=WEEKDAY_NAMES[task_date.weekday()],
                 weekday=task_date.weekday(),
                 task_type=task_type,

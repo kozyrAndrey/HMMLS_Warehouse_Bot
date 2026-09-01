@@ -61,6 +61,20 @@ def return_condition():
     ])
 
 
+def return_pack_optional():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Паковой этикетки нет", callback_data="lamoda:return:pack:skip")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="section:lamoda")],
+    ])
+
+
+def return_kiz_optional():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Товар без ЧЗ / пропустить", callback_data="lamoda:return:kiz:skip")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="section:lamoda")],
+    ])
+
+
 def defect_photos():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Готово", callback_data="lamoda:return:defect:done")],
@@ -86,4 +100,3 @@ def batch_actions(batch_id, batch_type):
         [InlineKeyboardButton("⚠️ Есть ошибки", callback_data=f"lamoda:batch:errors:{batch_id}")],
         [InlineKeyboardButton("❌ Отменить выгрузку", callback_data=f"lamoda:batch:cancel:{batch_id}")],
     ])
-

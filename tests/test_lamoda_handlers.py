@@ -2,7 +2,20 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from modules.lamoda_fbs.handlers import _pack_prompt, _send_return_report, marking_open, show_lamoda_menu
+from modules.lamoda_fbs.handlers import (
+    RETURN_CONDITION,
+    RETURN_ITEM,
+    RETURN_KIZ,
+    RETURN_PACK,
+    _pack_prompt,
+    _send_return_report,
+    marking_open,
+    return_item_barcode,
+    return_kiz_skip,
+    return_pack_skip,
+    return_photo,
+    show_lamoda_menu,
+)
 from modules.lamoda_fbs.jobs import (
     lamoda_cancellation_job,
     lamoda_marking_reminder_job,
@@ -57,6 +70,42 @@ class LamodaHandlerTests(unittest.IsolatedAsyncioTestCase):
         update.callback_query.answer.assert_awaited_once()
         self.assertTrue(update.callback_query.answer.await_args.kwargs["show_alert"])
         update.callback_query.edit_message_text.assert_not_awaited()
+
+    async def test_return_requires_item_label_then_allows_pack_and_kiz_skips(self):
+        message = SimpleNamespace(
+            photo=[SimpleNamespace(file_id="photo")], text="ITEM-1", reply_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            message=message, effective_message=message,
+            effective_user=SimpleNamespace(id=7, full_name="Сотрудник"),
+        )
+        context = SimpleNamespace(user_data={"lamoda_return": {}})
+
+        self.assertEqual(await return_photo(update, context), RETURN_ITEM)
+        with patch("modules.lamoda_fbs.handlers.resolve_return_item_barcode", new=AsyncMock(return_value={
+            "order_id": "ORDER-1", "pack_number": "PACK-1", "item_id": "ITEM-1",
+            "product_name": "Футболка", "size": "M", "sku": "SKU", "raw_code": "",
+            "fingerprint": "", "requires_marking": False, "lamoda_status": "RETURN",
+        })):
+            self.assertEqual(await return_item_barcode(update, context), RETURN_PACK)
+
+        callback = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(reply_text=AsyncMock()))
+        callback_update = SimpleNamespace(callback_query=callback)
+        self.assertEqual(await return_pack_skip(callback_update, context), RETURN_KIZ)
+        self.assertEqual(await return_kiz_skip(callback_update, context), RETURN_CONDITION)
+        self.assertFalse(context.user_data["lamoda_return"]["problematic"])
+        self.assertTrue(context.user_data["lamoda_return"]["kiz_matches"])
+
+    async def test_skipping_kiz_for_known_marked_product_requires_reconciliation(self):
+        callback = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(reply_text=AsyncMock()))
+        update = SimpleNamespace(callback_query=callback)
+        context = SimpleNamespace(user_data={"lamoda_return": {
+            "pack": {"fingerprint": "known-code"}, "problematic": False, "problem_reason": "",
+        }})
+
+        self.assertEqual(await return_kiz_skip(update, context), RETURN_CONDITION)
+        self.assertTrue(context.user_data["lamoda_return"]["problematic"])
+        self.assertIn("не отсканирован", context.user_data["lamoda_return"]["problem_reason"])
 
     async def test_normal_return_uses_configured_topic_without_manager_mention(self):
         bot = SimpleNamespace(send_photo=AsyncMock(), send_media_group=AsyncMock())

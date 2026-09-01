@@ -18,6 +18,11 @@ from core.keyboards import (
     build_return_product_colors_keyboard,
     build_return_sizes_keyboard,
 )
+from modules.marking.duplicate_chz import (
+    DuplicateChzError,
+    extract_short_marking_code,
+    normalize_chz_text,
+)
 from modules.receiving.products import CATEGORIES, SIZES
 from modules.returns.storage import (
     create_return_record,
@@ -60,7 +65,8 @@ SUPPORT_MANAGER_MENTION = "@meelxw1"
     RET_ADMIN_EDIT_FIELD,
     RET_ADMIN_EDIT_VALUE,
     RET_ADMIN_DELETE_CONFIRM,
-) = range(100, 117)
+    RET_ITEM_CHZ_SCAN,
+) = range(100, 118)
 
 
 # ============================================================
@@ -126,6 +132,18 @@ def build_return_condition_keyboard():
 
 
 def build_chz_photo_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("ЧЗ нет", callback_data="ret:chz_missing")],
+            [
+                InlineKeyboardButton("⬅️ Назад", callback_data="ret:back"),
+                InlineKeyboardButton("❌ Отмена", callback_data="ret:cancel"),
+            ],
+        ]
+    )
+
+
+def build_chz_scan_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("ЧЗ нет", callback_data="ret:chz_missing")],
@@ -427,6 +445,8 @@ async def send_item_chz_photo_to_topic(context: ContextTypes.DEFAULT_TYPE, user,
         caption_lines.append(f"Размер: {size}")
     if condition_label:
         caption_lines.append(f"Состояние: {condition_label}")
+    if current_item.get("chz_code_short"):
+        caption_lines.append(f"Короткий код ЧЗ: {current_item['chz_code_short']}")
 
     common_kwargs = {
         "chat_id": int(RETURN_CHZ_CHAT_ID),
@@ -467,6 +487,11 @@ def clear_current_item(context: ContextTypes.DEFAULT_TYPE):
     context.user_data["return_current_item"] = {}
 
 
+def clear_current_item_chz(current_item):
+    for field in ("chz_photo_file_id", "chz_status", "chz_code_full", "chz_code_short"):
+        current_item.pop(field, None)
+
+
 def current_item_number(context: ContextTypes.DEFAULT_TYPE):
     return len(get_return_items(context)) + 1
 
@@ -499,6 +524,8 @@ def append_current_item(context: ContextTypes.DEFAULT_TYPE):
     condition_comment = current_item.get("condition_comment", "")
     chz_photo_file_id = current_item.get("chz_photo_file_id", "")
     chz_status = current_item.get("chz_status", "")
+    chz_code_full = current_item.get("chz_code_full", "")
+    chz_code_short = current_item.get("chz_code_short", "")
 
     if not category_id or not model_id or not product_id or not size or not condition_key:
         raise RuntimeError("Не все данные товара заполнены.")
@@ -511,6 +538,8 @@ def append_current_item(context: ContextTypes.DEFAULT_TYPE):
     if condition_key != "normal":
         chz_status = ""
         chz_photo_file_id = ""
+        chz_code_full = ""
+        chz_code_short = ""
 
     if condition.get("needs_photo") and not extra_photo_file_id:
         raise RuntimeError("Для выбранного состояния нужно фото переупакованного возврата.")
@@ -527,6 +556,8 @@ def append_current_item(context: ContextTypes.DEFAULT_TYPE):
             "size": size,
             "chz_status": chz_status,
             "chz_photo_file_id": chz_photo_file_id,
+            "chz_code_full": chz_code_full,
+            "chz_code_short": chz_code_short,
             "condition_key": condition_key,
             "condition_label": condition["label"],
             "condition_comment": condition_comment,
@@ -1159,8 +1190,7 @@ async def return_product_selected(update: Update, context: ContextTypes.DEFAULT_
         return RET_ITEM_PRODUCT
 
     current_item["product_id"] = product_id
-    current_item.pop("chz_photo_file_id", None)
-    current_item.pop("chz_status", None)
+    clear_current_item_chz(current_item)
 
     item_no = current_item_number(context)
     total = total_items_count(context)
@@ -1217,7 +1247,43 @@ async def item_chz_photo_received(update: Update, context: ContextTypes.DEFAULT_
     current_item = get_current_item(context)
     chz_photo_file_id = update.message.photo[-1].file_id
     current_item["chz_photo_file_id"] = chz_photo_file_id
-    current_item["chz_status"] = "Фото отправлено"
+    current_item["chz_status"] = "Фото сохранено, ожидается сканирование"
+    current_item.pop("chz_code_full", None)
+    current_item.pop("chz_code_short", None)
+
+    await update.message.reply_text(
+        "Фото ЧЗ сохранено ✅\n\n"
+        "Теперь отсканируйте DataMatrix. Бот сохранит полный код и отправит "
+        "в тему его короткую 31-символьную версию.",
+        reply_markup=build_chz_scan_keyboard(),
+    )
+    return RET_ITEM_CHZ_SCAN
+
+
+async def item_chz_scan_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw_code = normalize_chz_text(update.message.text).replace(" ", "")
+    try:
+        short_code = extract_short_marking_code(raw_code)
+    except DuplicateChzError as error:
+        await update.message.reply_text(
+            f"Не удалось прочитать код ЧЗ: {error}\n\n"
+            "Повторно отсканируйте DataMatrix или нажмите «ЧЗ нет».",
+            reply_markup=build_chz_scan_keyboard(),
+        )
+        return RET_ITEM_CHZ_SCAN
+
+    current_item = get_current_item(context)
+    chz_photo_file_id = current_item.get("chz_photo_file_id")
+    if not chz_photo_file_id:
+        await update.message.reply_text(
+            "Фото маркировки не сохранилось. Сначала отправьте фото ЧЗ.",
+            reply_markup=build_chz_photo_keyboard(),
+        )
+        return RET_ITEM_CHZ_PHOTO
+
+    current_item["chz_code_full"] = raw_code
+    current_item["chz_code_short"] = short_code
+    current_item["chz_status"] = f"Код отсканирован: {short_code}"
 
     try:
         chz_status = await send_item_chz_photo_to_topic(
@@ -1239,8 +1305,24 @@ async def item_chz_photo_received(update: Update, context: ContextTypes.DEFAULT_
         )
         return RET_ITEM_CATEGORY
 
-    await update.message.reply_text(chz_status)
+    await update.message.reply_text(
+        f"DataMatrix принят ✅\nКороткий код: {short_code}\n\n{chz_status}"
+    )
     return await ask_next_item_or_finish(update.message, context, update.effective_user)
+
+
+async def back_to_item_chz_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    current_item = get_current_item(context)
+    clear_current_item_chz(current_item)
+    await query.edit_message_text(
+        "Отправьте фото маркировки «Честный знак» по этому товару "
+        "или нажмите кнопку «ЧЗ нет»: так сотрудник сможет проверить код визуально.",
+        reply_markup=build_chz_photo_keyboard(),
+    )
+    return RET_ITEM_CHZ_PHOTO
 
 
 async def item_chz_missing_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1250,6 +1332,8 @@ async def item_chz_missing_selected(update: Update, context: ContextTypes.DEFAUL
     current_item = get_current_item(context)
     current_item["chz_status"] = "ЧЗ нет"
     current_item.pop("chz_photo_file_id", None)
+    current_item.pop("chz_code_full", None)
+    current_item.pop("chz_code_short", None)
 
     try:
         append_current_item(context)
@@ -1321,8 +1405,7 @@ async def back_to_return_product(update: Update, context: ContextTypes.DEFAULT_T
         return RET_ITEM_CATEGORY
 
     current_item.pop("product_id", None)
-    current_item.pop("chz_photo_file_id", None)
-    current_item.pop("chz_status", None)
+    clear_current_item_chz(current_item)
 
     variants = CATEGORIES[category_id]["models"][model_id]["variants"]
 
@@ -1369,8 +1452,7 @@ async def return_condition_selected(update: Update, context: ContextTypes.DEFAUL
 
     current_item = get_current_item(context)
     current_item["condition_key"] = condition_key
-    current_item.pop("chz_photo_file_id", None)
-    current_item.pop("chz_status", None)
+    clear_current_item_chz(current_item)
 
     condition = RETURN_CONDITIONS[condition_key]
 
@@ -1386,7 +1468,7 @@ async def return_condition_selected(update: Update, context: ContextTypes.DEFAUL
             f"{product_name} — размер {size}\n"
             f"Состояние: {condition['label']}\n\n"
             "Отправьте фото маркировки «Честный знак» по этому товару "
-            "или нажмите кнопку «ЧЗ нет»:",
+            "или нажмите кнопку «ЧЗ нет». После фото бот попросит отсканировать DataMatrix:",
             reply_markup=build_chz_photo_keyboard(),
         )
         return RET_ITEM_CHZ_PHOTO
@@ -1424,8 +1506,7 @@ async def back_to_return_size(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_item.pop("condition_key", None)
     current_item.pop("extra_photo_file_id", None)
     current_item.pop("condition_comment", None)
-    current_item.pop("chz_photo_file_id", None)
-    current_item.pop("chz_status", None)
+    clear_current_item_chz(current_item)
 
     product_name = get_current_item_product_name(context)
     item_no = current_item_number(context)
@@ -1479,8 +1560,7 @@ async def back_to_return_condition(update: Update, context: ContextTypes.DEFAULT
     current_item.pop("condition_key", None)
     current_item.pop("extra_photo_file_id", None)
     current_item.pop("condition_comment", None)
-    current_item.pop("chz_photo_file_id", None)
-    current_item.pop("chz_status", None)
+    clear_current_item_chz(current_item)
 
     product_name = get_current_item_product_name(context)
     size = current_item.get("size", "")
@@ -2753,6 +2833,12 @@ def get_returns_conversation_handler():
                 MessageHandler(filters.PHOTO, item_chz_photo_received),
                 CallbackQueryHandler(item_chz_missing_selected, pattern=r"^ret:chz_missing$"),
                 CallbackQueryHandler(back_to_return_condition, pattern=r"^ret:back$"),
+                CallbackQueryHandler(return_cancel, pattern=r"^ret:cancel$"),
+            ],
+            RET_ITEM_CHZ_SCAN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, item_chz_scan_received),
+                CallbackQueryHandler(item_chz_missing_selected, pattern=r"^ret:chz_missing$"),
+                CallbackQueryHandler(back_to_item_chz_photo, pattern=r"^ret:back$"),
                 CallbackQueryHandler(return_cancel, pattern=r"^ret:cancel$"),
             ],
             RET_ITEM_SIZE: [

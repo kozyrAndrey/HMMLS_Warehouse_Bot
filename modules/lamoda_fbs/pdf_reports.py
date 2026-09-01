@@ -119,26 +119,35 @@ REINTRO_EXTRA_HEADERS = [
     "Дата вывода", "Дата приёмки", "Состояние", "Причина брака",
     "returnItemId", "Статус возврата",
 ]
+WITHDRAWAL_HEADERS = [
+    "Номер товарной этикетки", "Название товара", "Код маркировки", "Цена продажи",
+]
 
 
 def create_marking_xlsx(rows, batch_type):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Коды Lamoda"
-    headers = EXPORT_HEADERS + (REINTRO_EXTRA_HEADERS if batch_type == "REINTRODUCTION" else [])
-    sheet.append(headers)
-    for row in rows:
-        values = [
-            row.get("batch_id"), row.get("shipment_id"), row.get("date"), row.get("order_id"),
-            row.get("item_id"), row.get("pack_number"), row.get("product_name"), row.get("size"),
-            row.get("sku"), row.get("gtin"), row.get("raw_code"),
-        ]
-        if batch_type == "REINTRODUCTION":
-            values.extend([
+    if batch_type == "WITHDRAWAL":
+        sheet.append(WITHDRAWAL_HEADERS)
+        for row in rows:
+            sheet.append([
+                row.get("item_id"), row.get("product_name"),
+                row.get("short_code"), row.get("sale_price"),
+            ])
+        for cell in sheet["D"][1:]:
+            cell.number_format = '#,##0.00 "₽"'
+    else:
+        sheet.append(EXPORT_HEADERS + REINTRO_EXTRA_HEADERS)
+        for row in rows:
+            values = [
+                row.get("batch_id"), row.get("shipment_id"), row.get("date"), row.get("order_id"),
+                row.get("item_id"), row.get("pack_number"), row.get("product_name"), row.get("size"),
+                row.get("sku"), row.get("gtin"), row.get("raw_code"),
                 row.get("withdrawn_at"), row.get("return_received_at"), row.get("condition"),
                 row.get("defect_reason"), row.get("return_item_id"), row.get("return_status"),
-            ])
-        sheet.append(values)
+            ]
+            sheet.append(values)
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     for column in sheet.columns:
@@ -154,6 +163,21 @@ def create_marking_pdf(rows, batch_type):
     pdf = canvas.Canvas(output, pagesize=A4)
     label = "Возврат в оборот" if batch_type == "REINTRODUCTION" else "Вывод из оборота"
     lines = []
+    if batch_type == "WITHDRAWAL":
+        for index, row in enumerate(rows, 1):
+            price = row.get("sale_price")
+            price_text = f"{price:,.2f} ₽".replace(",", " ") if price is not None else "—"
+            lines.extend([
+                f"{index}. Товарная этикетка: {row.get('item_id') or '—'}",
+                f"   Товар: {row.get('product_name') or '—'}",
+                f"   Код маркировки: {row.get('short_code') or '—'}",
+                f"   Цена продажи: {price_text}",
+                "",
+            ])
+        _draw_lines(pdf, lines, title=f"Lamoda · {label} · партия №{rows[0].get('batch_id') if rows else '—'}")
+        pdf.save()
+        return output.getvalue()
+
     for index, row in enumerate(rows, 1):
         lines.extend([
             f"{index}. Заказ {row.get('order_id')} · pack {row.get('pack_number')} · item {row.get('item_id')}",

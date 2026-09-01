@@ -132,31 +132,40 @@ def format_regular_tasks_view(templates):
     if not templates:
         return "📋 Шаблоны регулярных задач\n\nШаблонов пока нет."
 
-    grouped = {weekday: [] for weekday in range(7)}
+    grouped = {}
     for template in templates:
         try:
             weekday = int(str(template.get("weekday", "")).strip())
         except ValueError:
             continue
-        if weekday in grouped:
-            grouped[weekday].append(template)
+        if weekday < 0 or weekday >= len(WEEKDAY_NAMES):
+            continue
+        series_id = str(template.get("series_id") or template.get("template_id") or "").strip()
+        if not series_id:
+            continue
+        group = grouped.setdefault(series_id, {"template": template, "weekdays": set()})
+        group["weekdays"].add(weekday)
 
     lines = ["📋 Шаблоны регулярных задач", ""]
-    for weekday, day_name in enumerate(WEEKDAY_NAMES):
-        day_templates = grouped[weekday]
-        if not day_templates:
-            continue
+    ordered = sorted(
+        grouped.values(),
+        key=lambda group: (
+            min(group["weekdays"]),
+            str(group["template"].get("Описание", "")).casefold(),
+        ),
+    )
+    for index, group in enumerate(ordered, start=1):
+        template = group["template"]
+        task_type = TASK_TYPE_LABELS.get(str(template.get("Тип задачи", "")).strip(), "Задача")
+        description = str(template.get("Описание", "")).strip()
+        deadline = str(template.get("Дедлайн", "")).strip()
+        days = ", ".join(WEEKDAY_NAMES[weekday] for weekday in sorted(group["weekdays"]))
 
-        lines.append(day_name)
-        for index, template in enumerate(day_templates, start=1):
-            task_type = TASK_TYPE_LABELS.get(str(template.get("Тип задачи", "")).strip(), "Задача")
-            description = str(template.get("Описание", "")).strip()
-            deadline = str(template.get("Дедлайн", "")).strip()
-
-            lines.append(f"{index}. {task_type}: {description}")
-            lines.append(template_assignee_label(template))
-            if deadline:
-                lines.append(f"дедлайн: {deadline}")
+        lines.append(f"{index}. {task_type}: {description}")
+        lines.append(f"дни: {days}")
+        lines.append(template_assignee_label(template))
+        if deadline:
+            lines.append(f"дедлайн: {deadline}")
         lines.append("")
 
     return "\n".join(lines).strip()

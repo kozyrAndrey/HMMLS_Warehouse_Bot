@@ -73,6 +73,18 @@ def extract_gtin(raw_code):
     return extract_gs1_ai_values(raw_code).get("01", "")
 
 
+def extract_short_marking_code(raw_code, serial_length=13):
+    """Return the 31-character Russian marking UIT (AI 01 + AI 21)."""
+    values = extract_gs1_ai_values(raw_code)
+    gtin = str(values.get("01") or "")
+    serial = str(values.get("21") or "").strip(GROUP_SEPARATOR)
+    if len(gtin) != 14 or not gtin.isdigit():
+        raise DuplicateChzError("В коде не найден корректный 14-значный GTIN (AI 01).")
+    if len(serial) < serial_length:
+        raise DuplicateChzError("В коде не найден полный серийный номер (AI 21).")
+    return f"01{gtin}21{serial[:serial_length]}"
+
+
 def _parse_variable_ai_tail(tail):
     parts = []
     rest = tail

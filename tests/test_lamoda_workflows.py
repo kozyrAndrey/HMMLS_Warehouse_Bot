@@ -17,6 +17,7 @@ from modules.lamoda_fbs.services import (
     discover_orders,
     match_pallets,
     prepare_orders,
+    resolve_return_item_barcode,
 )
 from modules.lamoda_fbs.client import LamodaDocumentError, LamodaTemporaryError, LamodaValidationError
 from modules.lamoda_fbs.storage import (
@@ -68,6 +69,7 @@ class FakeLamodaClient:
         self.item_label_batches = []
         self.pack_label_batches = []
         self.pdf = one_page_pdf("label")
+        self.order_statuses = {}
 
     async def create_assembly(self, order_id, packs):
         self.assemblies.append((order_id, packs))
@@ -78,6 +80,15 @@ class FakeLamodaClient:
         return {"packs": [{"packNumber": f"PACK-{index:03d}"} for index in range(count, 0, -1)]}
 
     async def existing_order_pack_numbers(self, order_id):
+        return []
+
+    async def get_order(self, order_id):
+        return {
+            "id": str(order_id), "orderId": str(order_id),
+            "status": self.order_statuses.get(str(order_id), "AWAITING_SHIPMENT"),
+        }
+
+    async def list_return_items(self, **params):
         return []
 
     async def order_item_labels(self, values, label_format):
@@ -284,6 +295,21 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["orderId"] for row in result], ["RU260809-591247"])
         self.assertEqual(client.detail_requests, ["RU260809-591247"])
 
+    async def test_discovery_does_not_resume_terminal_local_order(self):
+        terminal = {
+            "id": "RU260815-219987", "orderId": "RU260815-219987",
+            "status": "SENT_BACK_TO_PARTNER",
+            "items": [{"id": "ITEM-TERMINAL", "sku": "SKU-1"}],
+        }
+        persist_order(terminal, terminal["items"])
+        set_order_preparation(terminal["orderId"], "ASSEMBLED")
+        client = FakeDiscoveryClient([terminal])
+
+        result = await discover_orders(client)
+
+        self.assertEqual(result, [])
+        self.assertEqual(client.detail_requests, [])
+
     async def test_label_requests_are_split_at_100_and_merged(self):
         client = FakeLamodaClient()
         result = await prepare_orders([self.order(count=101)], "7", "Сотрудник", client)
@@ -319,6 +345,43 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
         documents = await assembly_label_documents(result["session_id"], client)
         self.assertEqual(documents["excluded_items"], ["ITEM-001"])
         self.assertEqual(documents["excluded_packs"], ["PACK-001"])
+
+    async def test_terminal_order_from_active_session_is_excluded_from_labels(self):
+        client = FakeLamodaClient()
+        stale = {
+            "orderId": "RU260815-219987", "status": "NEW",
+            "items": [{"itemId": "STALE-ITEM", "name": "Старый товар"}],
+        }
+        session = create_assembly_session("7", "Сотрудник")
+        persist_order(stale, stale["items"])
+        attach_packs(session.id, [{
+            "order_id": stale["orderId"], "item_id": "STALE-ITEM", "pack_number": "STALE-PACK",
+        }])
+        client.order_statuses[stale["orderId"]] = "SENT_BACK_TO_PARTNER"
+
+        result = await prepare_orders([self.order("CURRENT-ORDER", 1)], "7", "Сотрудник", client)
+        documents = await assembly_label_documents(result["session_id"], client)
+
+        self.assertEqual(client.item_label_batches[0][0], ["ITEM-001"])
+        self.assertEqual(client.pack_label_batches[0][0], ["PACK-001"])
+        self.assertEqual(result["excluded_orders"], [{
+            "order_id": "RU260815-219987", "status": "SENT_BACK_TO_PARTNER",
+        }])
+        self.assertEqual(documents["excluded_orders"], [])
+        self.assertEqual(
+            [row["pack_number"] for row in get_session_packs(session.id, include_cancelled=True)],
+            ["STALE-PACK", "PACK-001"],
+        )
+        self.assertEqual([row["pack_number"] for row in get_session_packs(session.id)], ["PACK-001"])
+
+    async def test_return_item_label_resolves_local_pack_without_pack_scan(self):
+        client = FakeLamodaClient()
+        result = await prepare_orders([self.order(count=1)], "7", "Сотрудник", client)
+
+        resolved = await resolve_return_item_barcode("ITEM-001", client)
+
+        self.assertEqual(resolved["pack_number"], "PACK-001")
+        self.assertEqual(resolved["item_id"], "ITEM-001")
 
     async def test_scan_resume_duplicate_kiz_and_cargo_rules(self):
         client = FakeLamodaClient()
@@ -509,6 +572,35 @@ class LamodaWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 scanned_kiz_fingerprint="", defect_photo_file_ids=[],
                 user_id="7", user_name="Сотрудник",
             )
+
+    def test_return_without_pack_is_deduplicated_by_mandatory_item_label(self):
+        kwargs = {
+            "pack_number": None, "order_id": "ORDER", "item_id": "ITEM-LABEL",
+            "return_item_id": "RETURN-1", "condition": "NORMAL", "defect_reason": "",
+            "label_photo_file_id": "label", "scanned_kiz_fingerprint": "",
+            "defect_photo_file_ids": [], "user_id": "7", "user_name": "Сотрудник",
+        }
+        record_return_receipt(**kwargs)
+
+        with self.assertRaisesRegex(RuntimeError, "Возврат уже принят"):
+            record_return_receipt(**kwargs)
+
+    async def test_unmarked_return_without_kiz_does_not_wait_for_reintroduction(self):
+        client = FakeLamodaClient()
+        result = await prepare_orders([self.order(count=1)], "7", "Сотрудник", client)
+        pack = get_session_packs(result["session_id"])[0]
+        mark_pack_barcode_scanned(pack["pack_number"], pack["pack_number"])
+        complete_pack_without_marking(pack["pack_number"], "7")
+
+        record_return_receipt(
+            pack_number=pack["pack_number"], order_id=pack["order_id"], item_id=pack["item_id"],
+            return_item_id="RETURN-UNMARKED", condition="NORMAL", defect_reason="",
+            label_photo_file_id="label", scanned_kiz_fingerprint="", defect_photo_file_ids=[],
+            user_id="7", user_name="Сотрудник",
+        )
+
+        self.assertEqual(self._pack(pack["pack_number"]).marking_state, PackState.REINTRODUCED)
+        self.assertFalse(self._pack(pack["pack_number"]).requires_marking)
 
     def _pack(self, pack_number):
         with self.session_scope() as session:
