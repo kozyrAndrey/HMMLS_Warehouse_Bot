@@ -51,6 +51,7 @@ REPORT_HEADERS = [
     "telegram_user_id",
     "Рабочий промежуток",
     "Отработано часов",
+    "Обед",
     "Задачи",
     "KPI данные",
     "KPI сумма",
@@ -775,7 +776,16 @@ def upsert_daily_kpi_row(employee, report_date, hours, kpi_items):
         ws.append_row(row)
 
 
-def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data=None):
+def append_daily_report(
+    employee,
+    report_date,
+    interval,
+    hours,
+    tasks,
+    kpi_items,
+    telegram_data=None,
+    lunch_hours=0,
+):
     telegram_data = telegram_data or {}
     ws = get_worksheet(REPORTS_SHEET)
     report_id = generate_id("report")
@@ -790,6 +800,7 @@ def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items
         employee.get("telegram_user_id", ""),
         interval,
         hours,
+        safe_float(lunch_hours),
         tasks,
         kpi_to_json(kpi_items),
         kpi_sum,
@@ -807,7 +818,8 @@ def append_daily_report(employee, report_date, interval, hours, tasks, kpi_items
 def update_daily_report(row_index, report_data):
     ws = get_worksheet(REPORTS_SHEET)
     values = [[report_data.get(header, "") for header in REPORT_HEADERS]]
-    ws.update(f"A{row_index}:O{row_index}", values)
+    end_col = column_letter(len(REPORT_HEADERS))
+    ws.update(f"A{row_index}:{end_col}{row_index}", values)
 
     employee = get_employee_by_id(report_data.get("employee_id"))
     if employee:
@@ -852,6 +864,7 @@ def report_data_to_model(report_data):
         "employee": employee,
         "interval": report_data.get("Рабочий промежуток", ""),
         "hours": safe_float(report_data.get("Отработано часов")),
+        "lunch_hours": safe_float(report_data.get("Обед")),
         "tasks": report_data.get("Задачи", ""),
         "kpi_items": kpi_from_json(report_data.get("KPI данные", "")),
         "kpi_sum": safe_float(report_data.get("KPI сумма")),

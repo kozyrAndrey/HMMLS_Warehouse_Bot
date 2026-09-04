@@ -692,6 +692,7 @@ PRODUCT_CATALOG = {
 
 
 CUSTOM_PRODUCTS_PATH = Path(__file__).resolve().parents[2] / "resources" / "products" / "custom_products.json"
+PRODUCT_OVERRIDES_KEY = "__product_overrides__"
 
 
 def _hash_key(*parts):
@@ -766,6 +767,8 @@ def _refresh_category_products(category_id):
 
 def _merge_custom_catalog(catalog):
     for category_id, category_data in catalog.items():
+        if category_id == PRODUCT_OVERRIDES_KEY:
+            continue
         if category_id not in CATEGORIES:
             CATEGORIES[category_id] = {
                 "name": category_data.get("name", category_id),
@@ -791,11 +794,63 @@ def _merge_custom_catalog(catalog):
         _refresh_category_products(category_id)
 
 
+def _find_product(product_id):
+    product_id = str(product_id or "").strip()
+    for category_id, category_data in CATEGORIES.items():
+        for model_id, model_data in category_data["models"].items():
+            for variant_id, variant_data in model_data["variants"].items():
+                if str(variant_data.get("id")) == product_id:
+                    return category_id, model_id, variant_id, variant_data
+    return None
+
+
+def _apply_product_override(product_id, override):
+    location = _find_product(product_id)
+    if not location:
+        return
+
+    found_category_id, found_model_id, found_variant_id, variant_data = location
+    category_id = str(override.get("category_id") or found_category_id)
+    model_id = str(override.get("model_id") or found_model_id)
+    category = CATEGORIES.get(category_id)
+    model = category.get("models", {}).get(model_id) if category else None
+    if not category or not model:
+        category_id, model_id, found_variant_id, variant_data = location
+        category = CATEGORIES[category_id]
+        model = category["models"][model_id]
+
+    category_name = str(override.get("category_name") or category["name"]).strip()
+    model_name = str(override.get("model_name") or model["name"]).strip()
+    color = str(override.get("color") or variant_data.get("color") or "ONE COLOR").strip().upper()
+
+    category["name"] = category_name
+    model["name"] = model_name
+    for current_variant in model["variants"].values():
+        current_color = str(current_variant.get("color") or "ONE COLOR").strip().upper()
+        current_variant["name"] = (
+            model_name if current_color == "ONE COLOR" else f"{model_name} {current_color}"
+        )
+    variant_data["color"] = color
+    variant_data["name"] = model_name if color == "ONE COLOR" else f"{model_name} {color}"
+    _refresh_category_products(category_id)
+
+
+def _apply_product_overrides(catalog):
+    overrides = catalog.get(PRODUCT_OVERRIDES_KEY, {})
+    if not isinstance(overrides, dict):
+        return
+    for product_id, override in overrides.items():
+        if isinstance(override, dict):
+            _apply_product_override(product_id, override)
+
+
 def reload_product_catalog():
+    custom_catalog = _read_custom_catalog()
     CATEGORIES.clear()
     for category_id, category_data in PRODUCT_CATALOG.items():
         _merge_category(category_id, category_data)
-    _merge_custom_catalog(_read_custom_catalog())
+    _merge_custom_catalog(custom_catalog)
+    _apply_product_overrides(custom_catalog)
 
 
 def add_custom_product(category_name, model_name, color):
@@ -808,14 +863,21 @@ def add_custom_product(category_name, model_name, color):
 
     if not color:
         color = "ONE COLOR"
+    color = color.upper()
 
     reload_product_catalog()
 
     category_id = _find_category_id_by_name(category_name) or _generated_key("cat", category_name)
     model_id = _find_model_id_by_name(category_id, model_name) or _generated_key("model", category_name, model_name)
+    existing_variants = CATEGORIES.get(category_id, {}).get("models", {}).get(model_id, {}).get("variants", {})
+    if any(
+        str(variant.get("color") or "ONE COLOR").strip().casefold() == color.casefold()
+        for variant in existing_variants.values()
+    ):
+        raise ValueError("Товар такого цвета уже существует в этой модели.")
     variant_id = _generated_key("variant", category_name, model_name, color)
     product_id = _generated_key("custom", category_name, model_name, color)
-    product_name = model_name if color.upper() == "ONE COLOR" else f"{model_name} {color}"
+    product_name = model_name if color == "ONE COLOR" else f"{model_name} {color}"
 
     catalog = _read_custom_catalog()
     category_data = catalog.setdefault(category_id, {"name": category_name, "models": {}})
@@ -824,7 +886,7 @@ def add_custom_product(category_name, model_name, color):
     model_data["name"] = CATEGORIES.get(category_id, {}).get("models", {}).get(model_id, {}).get("name", model_name)
     model_data.setdefault("variants", {})[variant_id] = {
         "id": product_id,
-        "color": color.upper(),
+        "color": color,
         "name": product_name,
     }
 
@@ -838,8 +900,87 @@ def add_custom_product(category_name, model_name, color):
         "model_name": CATEGORIES[category_id]["models"][model_id]["name"],
         "product_id": product_id,
         "product_name": CATEGORIES[category_id]["products"][product_id],
-        "color": color.upper(),
+        "color": color,
     }
+
+
+def get_catalog_product(product_id):
+    location = _find_product(product_id)
+    if not location:
+        return None
+    category_id, model_id, variant_id, variant_data = location
+    category_data = CATEGORIES[category_id]
+    model_data = category_data["models"][model_id]
+    return {
+        "category_id": category_id,
+        "category_name": category_data["name"],
+        "model_id": model_id,
+        "model_name": model_data["name"],
+        "variant_id": variant_id,
+        "product_id": str(variant_data["id"]),
+        "product_name": variant_data["name"],
+        "color": variant_data.get("color") or "ONE COLOR",
+    }
+
+
+def update_catalog_product(product_id, category_name, model_name, color):
+    product_id = str(product_id or "").strip()
+    category_name = str(category_name or "").strip()
+    model_name = str(model_name or "").strip()
+    color = str(color or "").strip().upper() or "ONE COLOR"
+    current_product = get_catalog_product(product_id)
+    if not product_id or not current_product:
+        raise ValueError("Товар не найден.")
+    if not category_name or not model_name:
+        raise ValueError("Группа и модель не должны быть пустыми.")
+
+    current_category_id = current_product["category_id"]
+    current_model_id = current_product["model_id"]
+    for category_id, category_data in CATEGORIES.items():
+        if (
+            category_id != current_category_id
+            and category_data["name"].strip().casefold() == category_name.casefold()
+        ):
+            raise ValueError("Группа с таким названием уже существует.")
+    for model_id, model_data in CATEGORIES[current_category_id]["models"].items():
+        if (
+            model_id != current_model_id
+            and model_data["name"].strip().casefold() == model_name.casefold()
+        ):
+            raise ValueError("Модель с таким названием уже существует в этой группе.")
+    for variant_data in CATEGORIES[current_category_id]["models"][current_model_id]["variants"].values():
+        if (
+            str(variant_data["id"]) != product_id
+            and str(variant_data.get("color") or "ONE COLOR").strip().casefold() == color.casefold()
+        ):
+            raise ValueError("Товар такого цвета уже существует в этой модели.")
+
+    catalog = _read_custom_catalog()
+    overrides = catalog.setdefault(PRODUCT_OVERRIDES_KEY, {})
+    affected_product_ids = []
+    for catalog_model_id, model_data in CATEGORIES[current_category_id]["models"].items():
+        updated_model_name = model_name if catalog_model_id == current_model_id else model_data["name"]
+        for variant_data in model_data["variants"].values():
+            current_id = str(variant_data["id"])
+            current_color = str(variant_data.get("color") or "ONE COLOR").strip().upper()
+            if current_id == product_id:
+                current_color = color
+            overrides[current_id] = {
+                "category_id": current_category_id,
+                "model_id": catalog_model_id,
+                "category_name": category_name,
+                "model_name": updated_model_name,
+                "color": current_color,
+            }
+            if catalog_model_id == current_model_id:
+                affected_product_ids.append(current_id)
+    _write_custom_catalog(catalog)
+    reload_product_catalog()
+    result = get_catalog_product(product_id)
+    result["updated_products"] = [
+        get_catalog_product(affected_product_id) for affected_product_id in affected_product_ids
+    ]
+    return result
 
 
 reload_product_catalog()

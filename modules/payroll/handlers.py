@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
@@ -77,7 +78,7 @@ from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_d
     CREATE_EMPLOYEE,
     CREATE_DATE,
     CREATE_INTERVAL,
-    CREATE_HOURS,
+    CREATE_LUNCH,
     CREATE_TASKS,
     CREATE_KPI_SELECT,
     CREATE_KPI_QTY,
@@ -291,7 +292,7 @@ def edit_field_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Рабочий промежуток", callback_data="editfield:interval")],
-            [InlineKeyboardButton("Отработано часов", callback_data="editfield:hours")],
+            [InlineKeyboardButton("Время обеда", callback_data="editfield:lunch")],
             [InlineKeyboardButton("Задачи", callback_data="editfield:tasks")],
             [InlineKeyboardButton("KPI", callback_data="editfield:kpi")],
             [InlineKeyboardButton("✅ Завершить изменение", callback_data="editfield:finish")],
@@ -339,6 +340,16 @@ def period_payment_mode_keyboard(prefix):
         [
             [InlineKeyboardButton("По часам", callback_data=f"{prefix}:{PAYMENT_MODE_HOURLY}")],
             [InlineKeyboardButton("Посменно", callback_data=f"{prefix}:{PAYMENT_MODE_SHIFT}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+        ]
+    )
+
+
+def lunch_keyboard(prefix):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("30 минут", callback_data=f"{prefix}:0.5")],
+            [InlineKeyboardButton("1 час", callback_data=f"{prefix}:1")],
             [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
         ]
     )
@@ -415,13 +426,35 @@ def manager_wizard_choice_keyboard(rows):
 # ============================================================
 
 
-def parse_hours(text):
-    value = safe_float(text)
-    if value <= 0:
+WORK_INTERVAL_RE = re.compile(
+    r"^\s*([01]?\d|2[0-3]):([0-5]\d)\s*[-–—]\s*([01]?\d|2[0-3]):([0-5]\d)\s*$"
+)
+
+
+def parse_work_interval(text):
+    """Возвращает нормализованный интервал и длительность с шагом 0,5 часа."""
+    match = WORK_INTERVAL_RE.match(str(text or ""))
+    if not match:
         return None
-    if abs(value * 2 - round(value * 2)) > 0.0001:
+    start_hour, start_minute, end_hour, end_minute = map(int, match.groups())
+    start_total = start_hour * 60 + start_minute
+    end_total = end_hour * 60 + end_minute
+    duration_minutes = end_total - start_total
+    if duration_minutes <= 0 or duration_minutes % 30:
         return None
-    return value
+    normalized = f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"
+    return normalized, duration_minutes / 60
+
+
+def calculate_worked_hours(interval, lunch_hours):
+    parsed = parse_work_interval(interval)
+    if not parsed:
+        return None
+    _, duration = parsed
+    worked_hours = duration - safe_float(lunch_hours)
+    if worked_hours <= 0 or abs(worked_hours * 2 - round(worked_hours * 2)) > 0.0001:
+        return None
+    return worked_hours
 
 
 def parse_positive_amount(text):
@@ -733,6 +766,7 @@ def format_daily_report_text(report_model):
             f"Сотрудник: {employee['full_name']}",
             *([] if report_model.get("manager_report") else [f"Дата: {report_model['date']}"]),
             f"Время работы: {report_model['interval']}",
+            f"Обед: {money(report_model.get('lunch_hours', 0))} ч.",
             f"Отработано часов: {money(report_model['hours'])}",
             "",
             "Задачи:",
@@ -1070,27 +1104,50 @@ async def create_date_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def create_interval_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    interval = update.message.text.strip()
-    if not interval:
-        await update.message.reply_text("Введите рабочий временной промежуток:", reply_markup=payroll_back_keyboard())
+    parsed = parse_work_interval(update.message.text)
+    if not parsed:
+        await update.message.reply_text(
+            "Введите корректный промежуток с шагом 30 минут, например 10:00-19:00.",
+            reply_markup=payroll_back_keyboard(),
+        )
         return CREATE_INTERVAL
 
+    interval, _ = parsed
     context.user_data["interval"] = interval
     await update.message.reply_text(
-        "Введите количество отработанных часов. Можно кратно 0.5, например 8 или 7.5:",
+        "Сколько времени занял обед?",
+        reply_markup=lunch_keyboard("crlunch"),
+    )
+    return CREATE_LUNCH
+
+
+async def create_lunch_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lunch_hours = safe_float(query.data.replace("crlunch:", ""))
+    if lunch_hours not in {0.5, 1.0}:
+        await query.edit_message_text(
+            "Выберите время обеда:",
+            reply_markup=lunch_keyboard("crlunch"),
+        )
+        return CREATE_LUNCH
+
+    hours = calculate_worked_hours(context.user_data.get("interval"), lunch_hours)
+    if hours is None:
+        await query.edit_message_text(
+            "После вычета обеда рабочее время должно быть больше нуля и кратно 0,5 часа. "
+            "Введите рабочий промежуток заново, например 10:00-19:00.",
+            reply_markup=payroll_back_keyboard(),
+        )
+        return CREATE_INTERVAL
+
+    context.user_data["lunch_hours"] = lunch_hours
+    context.user_data["hours"] = hours
+    await query.edit_message_text(
+        f"Отработано за вычетом обеда: {money(hours)} ч.\n\n"
+        "Опишите выполненные за день задачи:",
         reply_markup=payroll_back_keyboard(),
     )
-    return CREATE_HOURS
-
-
-async def create_hours_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    hours = parse_hours(update.message.text)
-    if hours is None:
-        await update.message.reply_text("Введите часы числом, кратным 0.5. Например: 8 или 7.5")
-        return CREATE_HOURS
-
-    context.user_data["hours"] = hours
-    await update.message.reply_text("Опишите выполненные за день задачи:", reply_markup=payroll_back_keyboard())
     return CREATE_TASKS
 
 
@@ -1459,6 +1516,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
     report_date = context.user_data["report_date"]
     interval = context.user_data["interval"]
     hours = context.user_data["hours"]
+    lunch_hours = safe_float(context.user_data.get("lunch_hours"))
     tasks = context.user_data["tasks"]
     kpi_items = context.user_data.get("kpi_items", [])
 
@@ -1467,6 +1525,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
         "employee": employee,
         "interval": interval,
         "hours": hours,
+        "lunch_hours": lunch_hours,
         "tasks": tasks,
         "kpi_items": kpi_items,
         "kpi_sum": calculate_kpi_sum(kpi_items),
@@ -1492,7 +1551,16 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
                 else None
             ),
         )
-        append_daily_report(employee, report_date, interval, hours, tasks, kpi_items, telegram_data)
+        append_daily_report(
+            employee,
+            report_date,
+            interval,
+            hours,
+            tasks,
+            kpi_items,
+            telegram_data,
+            lunch_hours=lunch_hours,
+        )
         if is_warehouse_manager(employee):
             status = "Отчет сохранен и отправлен руководителю склада в личные сообщения ✅"
         else:
@@ -1608,20 +1676,19 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(
             "Текущий рабочий промежуток:\n"
             f"{current_value}\n\n"
-            "Введите новый рабочий промежуток:",
+            "Введите новый рабочий промежуток с шагом 30 минут:",
             reply_markup=payroll_back_keyboard(),
         )
         return EDIT_VALUE
 
-    if field == "hours":
-        current_value = report_data.get("Отработано часов", "") or "—"
+    if field == "lunch":
+        current_value = safe_float(report_data.get("Обед"))
         await query.edit_message_text(
-            "Текущие отработанные часы:\n"
-            f"{money(safe_float(current_value)) if current_value != '—' else '—'}\n\n"
-            "Введите новое количество часов:",
-            reply_markup=payroll_back_keyboard(),
+            f"Текущий обед: {money(current_value)} ч.\n\n"
+            "Выберите новое время обеда:",
+            reply_markup=lunch_keyboard("editlunch"),
         )
-        return EDIT_VALUE
+        return EDIT_FIELD
 
     if field == "tasks":
         current_tasks = report_data.get("Задачи", "") or "—"
@@ -1738,12 +1805,20 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
         return EDIT_VALUE
 
     if field == "interval":
-        report_data["Рабочий промежуток"] = value
-    elif field == "hours":
-        hours = parse_hours(value)
-        if hours is None:
-            await update.message.reply_text("Введите часы числом, кратным 0.5. Например: 8 или 7.5")
+        parsed = parse_work_interval(value)
+        if not parsed:
+            await update.message.reply_text(
+                "Введите корректный промежуток с шагом 30 минут, например 10:00-19:00."
+            )
             return EDIT_VALUE
+        interval, _ = parsed
+        hours = calculate_worked_hours(interval, report_data.get("Обед", 0))
+        if hours is None:
+            await update.message.reply_text(
+                "После вычета обеда рабочее время должно быть больше нуля и кратно 0,5 часа."
+            )
+            return EDIT_VALUE
+        report_data["Рабочий промежуток"] = interval
         report_data["Отработано часов"] = hours
     elif field == "tasks":
         mode = context.user_data.get("edit_mode", "replace")
@@ -1766,6 +1841,33 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text(
         "Изменение принято. Текущая версия отчета:\n\n"
+        f"{format_daily_report_text(model_preview)}\n\n"
+        "Выберите ещё поле или нажмите «Завершить изменение».",
+        reply_markup=edit_field_keyboard(),
+    )
+    return EDIT_FIELD
+
+
+async def edit_lunch_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lunch_hours = safe_float(query.data.replace("editlunch:", ""))
+    report_data = context.user_data.get("edit_report_data") or {}
+    hours = calculate_worked_hours(report_data.get("Рабочий промежуток", ""), lunch_hours)
+    if lunch_hours not in {0.5, 1.0} or hours is None:
+        await query.edit_message_text(
+            "Не удалось рассчитать часы. Проверьте рабочий промежуток и выберите обед заново.",
+            reply_markup=lunch_keyboard("editlunch"),
+        )
+        return EDIT_FIELD
+
+    report_data["Обед"] = lunch_hours
+    report_data["Отработано часов"] = hours
+    report_data["Обновлено"] = now_str()
+    context.user_data["edit_report_data"] = report_data
+    model_preview = report_data_to_model(report_data)
+    await query.edit_message_text(
+        "Время обеда и отработанные часы обновлены. Текущая версия отчета:\n\n"
         f"{format_daily_report_text(model_preview)}\n\n"
         "Выберите ещё поле или нажмите «Завершить изменение».",
         reply_markup=edit_field_keyboard(),
@@ -3330,8 +3432,8 @@ def get_payroll_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_interval_received),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
-            CREATE_HOURS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, create_hours_received),
+            CREATE_LUNCH: [
+                CallbackQueryHandler(create_lunch_selected, pattern=r"^crlunch:(0\.5|1)$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             CREATE_TASKS: [
@@ -3362,6 +3464,7 @@ def get_payroll_conversation_handler():
             EDIT_FIELD: [
                 CallbackQueryHandler(edit_tasks_mode_selected, pattern=r"^edittasks:"),
                 CallbackQueryHandler(edit_kpi_mode_selected, pattern=r"^editkpi:"),
+                CallbackQueryHandler(edit_lunch_selected, pattern=r"^editlunch:(0\.5|1)$"),
                 CallbackQueryHandler(edit_field_selected, pattern=r"^editfield:"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
