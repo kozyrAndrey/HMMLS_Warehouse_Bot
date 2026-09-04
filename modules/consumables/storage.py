@@ -2149,6 +2149,21 @@ def get_product_consumable_rules(product_id, active_only=True):
     return [rule_to_dict(rule, items.get(rule.item_id)) for rule in rules]
 
 
+def update_product_consumable_rules_name(product_id, product_name):
+    product_name = str(product_name or "").strip()
+    if not product_name:
+        raise ValueError("Название товара не должно быть пустым.")
+    with session_scope() as session:
+        rules = session.execute(
+            select(ProductConsumableRule).where(
+                ProductConsumableRule.product_id == str(product_id)
+            )
+        ).scalars().all()
+        for rule in rules:
+            rule.product_name = product_name
+        return len(rules)
+
+
 def apply_receiving_consumable_usage(
     product_id,
     product_name,

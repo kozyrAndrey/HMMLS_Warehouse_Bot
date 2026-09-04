@@ -68,6 +68,7 @@ REPORT_HEADERS = [
     "Рабочий промежуток",
     "Отработано часов",
     "Тип смены",
+    "Обед",
     "Задачи",
     "KPI данные",
     "KPI сумма",
@@ -907,6 +908,7 @@ def append_daily_report(
     kpi_items,
     telegram_data=None,
     shift_type="",
+    lunch_hours=0,
 ):
     telegram_data = telegram_data or {}
     ws = get_worksheet(REPORTS_SHEET)
@@ -923,6 +925,7 @@ def append_daily_report(
         interval,
         hours,
         normalize_shift_type(shift_type),
+        safe_float(lunch_hours),
         tasks,
         kpi_to_json(kpi_items),
         kpi_sum,
@@ -991,6 +994,7 @@ def report_data_to_model(report_data):
         "hours": safe_float(report_data.get("Отработано часов")),
         "shift_type": normalize_shift_type(report_data.get("Тип смены", "")),
         "payment_mode": period.get("payment_mode") if period else PAYMENT_MODE_HOURLY,
+        "lunch_hours": safe_float(report_data.get("Обед")),
         "tasks": report_data.get("Задачи", ""),
         "kpi_items": kpi_from_json(report_data.get("KPI данные", "")),
         "kpi_sum": safe_float(report_data.get("KPI сумма")),

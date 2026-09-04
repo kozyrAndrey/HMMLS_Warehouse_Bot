@@ -70,6 +70,7 @@ def build_employees_menu_keyboard():
 def build_products_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("➕ Добавить товар", callback_data="prodadmin:add")],
+        [InlineKeyboardButton("✏️ Изменить товар", callback_data="prodadmin:edit")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
     ]
     return InlineKeyboardMarkup(keyboard)

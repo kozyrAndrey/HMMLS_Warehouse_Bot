@@ -31,6 +31,7 @@ SHEET_TABLES = {
             ("Рабочий промежуток", "work_interval"),
             ("Отработано часов", "worked_hours"),
             ("Тип смены", "shift_type"),
+            ("Обед", "lunch_hours"),
             ("Задачи", "tasks"),
             ("KPI данные", "kpi_data"),
             ("KPI сумма", "kpi_sum"),
