@@ -2,6 +2,8 @@ import logging
 import os
 from copy import deepcopy
 import re
+import uuid
+from decimal import InvalidOperation
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
@@ -83,6 +85,11 @@ from modules.payroll.vacations import (
 from modules.tasks.config import TASK_TYPE_GENERAL, TASK_TYPE_WAREHOUSE
 from modules.tasks.storage import get_tasks_by_date, materialize_templates_for_date
 from modules.schedule.google_sheets import get_schedule_matrix
+from modules.payroll.daily_summary import refresh_daily_summary
+from modules.payroll.report_automation import (
+    completed_tasks_text, load_day_reports, quantity, quantity_text,
+    report_coverage_text, summary_chunks, volume_values, warehouse_tasks_for_report,
+)
 
 
 (
@@ -689,7 +696,7 @@ MANAGER_VOLUME_STEPS = [
     ("accepted_goods", "Принятых товаров", "Сколько товаров принято за день?"),
     ("posted_goods", "Оприходованных товаров", "Сколько товаров оприходовано?"),
     ("posted_returns", "Оприходованных возвратов", "Сколько возвратов оприходовано?"),
-    ("stock_shipments", "Отправка стока в магазины", "Сколько было отправок стока в магазины?"),
+    ("stock_shipments", "Сток в магазины (количество по KPI)", "Какое количество стока отправлено в магазины (по KPI «Сток»)?"),
     (
         "no_shipments_work",
         "Если не было отправок, то что сделали за день",
@@ -1637,12 +1644,45 @@ async def start_manager_report_wizard(target, context: ContextTypes.DEFAULT_TYPE
     context.user_data["manager_wizard_history"] = []
     context.user_data["manager_wizard_step"] = MANAGER_VOLUME_STEPS[0][0]
     context.user_data["manager_wizard_screen"] = "prompt"
-    await send_manager_wizard_prompt(
-        target,
-        context,
-        text=f"Блок 1 «ОБЪЁМЫ».\n\n{MANAGER_VOLUME_STEPS[0][2]}",
-    )
-    return CREATE_MANAGER_VOLUMES
+    return await ask_next_manager_step(target, context)
+
+
+def manager_report_suggestion(context, step):
+    report_date = context.user_data["report_date"]
+    if step in {"no_shipments_work", "all_tasks_done"}:
+        if step == "no_shipments_work":
+            sent = context.user_data.get("manager_wizard_values", {}).get("sent_orders")
+            if sent is not None and quantity(sent) > 0:
+                return "Не актуально", "В отчете указаны отправки."
+        tasks = warehouse_tasks_for_report(report_date)
+        if not tasks:
+            return None, "Нет выгруженных складских задач за эту дату. Заполните ответ вручную."
+        if step == "no_shipments_work":
+            completed = completed_tasks_text(tasks)
+            if not completed:
+                return None, "Нет складских задач с отметкой выполнения за эту дату. Заполните ответ вручную."
+            return completed, "Выполненные задачи из темы склада. Можно принять список или ввести свой ответ."
+        remaining = [task["Описание"] for task in tasks if task.get("Статус") != "done"]
+        return ("Нет" if remaining else "Да", "По выгруженным складским задачам." + (
+            "\nНе выполнены:\n" + "\n".join(f"• {name}" for name in remaining) if remaining else " Все выполнены."
+        ))
+    if step not in {"sent_orders", "posted_goods", "posted_returns", "stock_shipments"}:
+        return None, ""
+    draft = None
+    if not context.user_data.get("manager_report_only"):
+        employee = get_employee_by_id(context.user_data["employee_id"])
+        draft = {"employee_id": employee["employee_id"], "ФИО": employee["full_name"],
+                 "Дата": report_date, "KPI данные": kpi_to_json(context.user_data.get("kpi_items", []))}
+    day = load_day_reports(report_date, draft=draft)
+    if not day["reports"]:
+        return None, report_coverage_text(day) + "\nСохраненных отчетов нет. Введите значение вручную."
+    value = volume_values(day["reports"].values())[step]
+    lines = [report_coverage_text(day), "", "По отчетам сотрудников:"]
+    for row in day["reports"].values():
+        lines.append(f"• {row.get('ФИО') or row['employee_id']}: {volume_values([row])[step]}")
+    if step == "posted_goods":
+        lines.append("Сумма количеств всех KPI упаковки.")
+    return value, "\n".join(lines)
 
 
 async def ask_next_manager_step(target, context: ContextTypes.DEFAULT_TYPE):
@@ -1655,7 +1695,30 @@ async def ask_next_manager_step(target, context: ContextTypes.DEFAULT_TYPE):
         prefix = "Блок 3 «ОШИБКИ».\n\n"
     elif step in {item[0] for item in MANAGER_COMPLETION_STEPS}:
         prefix = "Блок 7 «ВЫПОЛНЕНИЕ ПЛАНА И ОЦЕНКА ДНЯ».\n\n"
-    await send_manager_wizard_prompt(target, context, text=f"{prefix}{manager_step_prompt(step)}")
+    context.user_data.pop("manager_auto_suggestion", None)
+    text = f"{prefix}{manager_step_prompt(step)}"
+    rows = []
+    auto_steps = {"sent_orders", "posted_goods", "posted_returns", "stock_shipments", "no_shipments_work", "all_tasks_done"}
+    if step in auto_steps:
+        try:
+            value, explanation = manager_report_suggestion(context, step)
+        except Exception:
+            logging.exception("Не удалось рассчитать подсказку руководителю")
+            value, explanation = None, "Не удалось загрузить данные. Можно обновить расчет или ввести ответ вручную."
+        token = uuid.uuid4().hex[:8]
+        context.user_data["manager_auto_suggestion"] = {"step": step, "token": token, "value": value}
+        if explanation:
+            parts = summary_chunks(explanation, limit=1500)
+            text += "\n\n" + parts[0] + ("\n…" if len(parts) > 1 else "")
+        if value is not None:
+            parts = summary_chunks(value, limit=1400)
+            preview = parts[0] + ("\n… (будет принят полный список)" if len(parts) > 1 else "")
+            text += f"\n\nПредлагаемый ответ:\n{preview}"
+            rows.append([InlineKeyboardButton("✅ Принять", callback_data=f"mgrwiz:auto:accept:{token}")])
+        rows.append([InlineKeyboardButton("✏️ Ввести другое", callback_data=f"mgrwiz:auto:manual:{token}"),
+                     InlineKeyboardButton("🔄 Обновить расчет", callback_data=f"mgrwiz:auto:refresh:{token}")])
+    rows.extend(manager_wizard_nav_keyboard(context).inline_keyboard)
+    await send_manager_wizard_prompt(target, context, text=text, reply_markup=InlineKeyboardMarkup(rows))
     return CREATE_MANAGER_VOLUMES
 
 
@@ -1799,9 +1862,12 @@ def validate_manager_wizard_value(step, value):
         return None, "Ответ слишком длинный. Ограничение — 1500 символов."
     numeric_volume_steps = {item[0] for item in MANAGER_VOLUME_STEPS[:-1]}
     if step in numeric_volume_steps:
-        if not value.isdigit():
-            return None, "Введите целое число 0 или больше."
-        return str(int(value)), None
+        try:
+            if not re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", value):
+                raise ValueError("Invalid quantity")
+            return quantity_text(value), None
+        except (ValueError, InvalidOperation):
+            return None, "Введите число 0 или больше."
     if step == "day_score":
         if not value.isdigit() or not 1 <= int(value) <= 10:
             return None, "Введите оценку целым числом от 1 до 10."
@@ -1821,6 +1887,12 @@ async def manager_report_wizard_text_received(update: Update, context: ContextTy
         await update.message.reply_text(validation_error, reply_markup=manager_wizard_nav_keyboard(context))
         return CREATE_MANAGER_VOLUMES
 
+    return await accept_manager_wizard_value(update.message, context, update.effective_user, value)
+
+
+async def accept_manager_wizard_value(target, context, telegram_user, value):
+    step = context.user_data.get("manager_wizard_step")
+    context.user_data.pop("manager_auto_suggestion", None)
     remember_manager_wizard_state(context)
     values = context.user_data.setdefault("manager_wizard_values", {})
 
@@ -1833,71 +1905,71 @@ async def manager_report_wizard_text_received(update: Update, context: ContextTy
         next_step = next_step_after_linear(step, MANAGER_VOLUME_STEPS)
         if next_step:
             context.user_data["manager_wizard_step"] = next_step
-            return await ask_next_manager_step(update.message, context)
+            return await ask_next_manager_step(target, context)
         context.user_data["manager_wizard_step"] = "speed_task"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "speed_task":
         context.user_data["manager_current_speed"] = {"task": value}
         context.user_data["manager_wizard_step"] = "speed_time"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "speed_time":
         context.user_data.setdefault("manager_current_speed", {})["time"] = value
         context.user_data["manager_wizard_step"] = "speed_blockers"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "speed_blockers":
         current = context.user_data.pop("manager_current_speed", {})
         current["blockers"] = value
         context.user_data.setdefault("manager_speed_entries", []).append(current)
-        return await ask_speed_continue(update.message, context)
+        return await ask_speed_continue(target, context)
 
     if step in error_keys:
         values[step] = value
         next_step = next_step_after_linear(step, MANAGER_ERROR_STEPS)
         if next_step:
             context.user_data["manager_wizard_step"] = next_step
-            return await ask_next_manager_step(update.message, context)
+            return await ask_next_manager_step(target, context)
         context.user_data["manager_wizard_step"] = "problem_description"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "problem_description":
         context.user_data["manager_current_problem"] = {"description": value}
         context.user_data["manager_wizard_step"] = "problem_reason"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "problem_reason":
         context.user_data.setdefault("manager_current_problem", {})["reason"] = value
         context.user_data["manager_wizard_step"] = "problem_solution"
-        return await ask_next_manager_step(update.message, context)
+        return await ask_next_manager_step(target, context)
 
     if step == "problem_solution":
         current = context.user_data.pop("manager_current_problem", {})
         current["solution"] = value
         context.user_data.setdefault("manager_problem_entries", []).append(current)
-        return await ask_problem_continue(update.message, context)
+        return await ask_problem_continue(target, context)
 
     if step == "personal_plan_extra":
         context.user_data.setdefault("manager_personal_extra", []).append(value)
-        return await ask_personal_plan_continue(update.message, context)
+        return await ask_personal_plan_continue(target, context)
 
     if step == "warehouse_plan_extra":
         context.user_data.setdefault("manager_warehouse_extra", []).append(value)
-        return await ask_warehouse_plan_continue(update.message, context)
+        return await ask_warehouse_plan_continue(target, context)
 
     if step in completion_keys:
         values[step] = value
         next_step = next_step_after_linear(step, MANAGER_COMPLETION_STEPS)
         if next_step:
             context.user_data["manager_wizard_step"] = next_step
-            return await ask_next_manager_step(update.message, context)
+            return await ask_next_manager_step(target, context)
         context.user_data["manager_report"] = build_manager_report_from_wizard(context)
         if context.user_data.get("manager_report_only"):
-            return await finish_manager_only_report(update.message, context, update.effective_user)
-        return await finish_create_report(update.message, context, update.effective_user)
+            return await finish_manager_only_report(target, context, telegram_user)
+        return await finish_create_report(target, context, telegram_user)
 
-    await update.message.reply_text("Я потерял текущий шаг отчета. Начните создание отчета заново.")
+    await send_manager_wizard_prompt(target, context, text="Я потерял текущий шаг отчета. Начните создание отчета заново.")
     return ConversationHandler.END
 
 
@@ -1905,6 +1977,22 @@ async def manager_report_wizard_callback(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
     action = query.data.replace("mgrwiz:", "")
+
+    if action.startswith("auto:"):
+        parts = action.split(":")
+        suggestion = context.user_data.get("manager_auto_suggestion") or {}
+        if (len(parts) != 3 or parts[2] != suggestion.get("token")
+                or suggestion.get("step") != context.user_data.get("manager_wizard_step")):
+            return CREATE_MANAGER_VOLUMES
+        if parts[1] == "refresh":
+            return await ask_next_manager_step(query, context)
+        if parts[1] == "manual":
+            context.user_data.pop("manager_auto_suggestion", None)
+            await send_manager_wizard_prompt(query, context, text=manager_step_prompt(suggestion["step"]) + "\n\nВведите свой ответ:")
+            return CREATE_MANAGER_VOLUMES
+        if parts[1] == "accept" and suggestion.get("value") is not None:
+            return await accept_manager_wizard_value(query, context, update.effective_user, suggestion["value"])
+        return CREATE_MANAGER_VOLUMES
 
     if action == "back":
         if not restore_manager_wizard_state(context):
@@ -2082,6 +2170,7 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
             lunch_hours=lunch_hours,
         )
         report_saved = True
+        await refresh_daily_summary(context, report_date)
         if is_warehouse_manager(employee):
             status = "Складской отчет сохранен и отправлен в личные сообщения ✅"
         else:
@@ -2596,6 +2685,7 @@ async def finish_edit_report(query, context: ContextTypes.DEFAULT_TYPE, telegram
         report_data["telegram_thread_id"] = telegram_data.get("thread_id", "")
         report_data["telegram_message_id"] = telegram_data.get("message_id", "")
         update_daily_report(row_index, report_data)
+        await refresh_daily_summary(context, model["date"])
         if is_warehouse_manager(model.get("employee")):
             status = "Отчет обновлен и новое сообщение отправлено руководителю склада в личные сообщения ✅"
         else:
@@ -3868,22 +3958,7 @@ async def period_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def split_long_message(text, limit=3900):
-    chunks = []
-    current = ""
-    for line in text.splitlines():
-        candidate = current + ("\n" if current else "") + line
-        if len(candidate) > limit:
-            if current:
-                chunks.append(current)
-                current = line
-            else:
-                chunks.append(line[:limit])
-                current = line[limit:]
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+    return summary_chunks(text, limit=limit)
 
 
 async def send_payroll_for_period(query, context: ContextTypes.DEFAULT_TYPE, period):

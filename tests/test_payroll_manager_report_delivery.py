@@ -38,6 +38,14 @@ def report_model():
 
 
 class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        summary_patch = patch("modules.payroll.handlers.refresh_daily_summary", new_callable=AsyncMock)
+        self.refresh_summary = summary_patch.start()
+        self.addCleanup(summary_patch.stop)
+        period_patch = patch("modules.payroll.google_sheets.get_period_for_date", return_value={"payment_mode": "hourly"})
+        period_patch.start()
+        self.addCleanup(period_patch.stop)
+
     def test_manager_menu_has_separate_management_report_button(self):
         keyboard = payroll_main_keyboard(manager=True, warehouse_manager=True)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
@@ -112,6 +120,7 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
         target.reply_text.assert_awaited_once()
         context.bot.send_message.assert_not_awaited()
         self.assertEqual(context.user_data, {})
+        self.refresh_summary.assert_awaited_once_with(context, "16.07.2026")
         telegram_data = append_report.call_args.args[-1]
         self.assertEqual(
             telegram_data,
@@ -177,6 +186,7 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(brand_call.kwargs["chat_id"], 77)
         self.assertIn("Руководительский отчет", manager_call.kwargs["text"])
         append_manager.assert_called_once()
+        self.refresh_summary.assert_awaited_once_with(context, "16.07.2026")
 
     async def test_own_edited_report_reuses_current_bot_message(self):
         edited_message = SimpleNamespace(chat_id=42, message_id=303)
@@ -229,6 +239,7 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
         saved_report = update_report.call_args.args[1]
         self.assertEqual(saved_report["telegram_chat_id"], 42)
         self.assertEqual(saved_report["telegram_message_id"], 303)
+        self.refresh_summary.assert_awaited_once_with(context, "16.07.2026")
 
 
 if __name__ == "__main__":
