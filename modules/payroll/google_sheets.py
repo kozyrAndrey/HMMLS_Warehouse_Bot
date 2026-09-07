@@ -32,6 +32,8 @@ BONUSES_SHEET = "Премиальные"
 KPI_SHEET = "KPI"
 PERIODS_SHEET = "Расчетные периоды"
 KPI_DAILY_SHEET = "KPI за день"
+DRIVERS_SHEET = "Водители"
+DRIVER_PAYMENTS_SHEET = "Оплата водителям"
 PAYMENT_MODE_HOURLY = "hourly"
 PAYMENT_MODE_SHIFT = "shift"
 SHIFT_TYPE_FULL = "full"
@@ -170,6 +172,27 @@ PERIOD_HEADERS = [
 
 KPI_DAILY_HEADERS = ["Дата", "Имя сотрудника", "Отработанные часы"] + KPI_DAILY_COLUMNS + ["Общее"]
 
+DRIVER_HEADERS = [
+    "driver_id",
+    "ФИО",
+    "Телефон",
+    "Комментарий",
+    "Активен",
+    "Создал",
+    "Создано",
+]
+
+DRIVER_PAYMENT_HEADERS = [
+    "driver_payment_id",
+    "Дата",
+    "driver_id",
+    "ФИО водителя",
+    "Сумма",
+    "Комментарий",
+    "Создал",
+    "Создано",
+]
+
 
 def now_str():
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -294,6 +317,8 @@ def get_worksheet(title, rows=1000, cols=30):
         PERIODS_SHEET: PERIOD_HEADERS,
         KPI_DAILY_SHEET: KPI_DAILY_HEADERS,
         ADDITIONAL_PAY_SHEET: ADDITIONAL_PAY_HEADERS,
+        DRIVERS_SHEET: DRIVER_HEADERS,
+        DRIVER_PAYMENTS_SHEET: DRIVER_PAYMENT_HEADERS,
     }
     headers = headers_by_title.get(title)
     if not headers:
@@ -471,6 +496,8 @@ def init_payroll_sheet():
     periods_ws = get_worksheet(PERIODS_SHEET, rows=200, cols=10)
     kpi_daily_ws = get_worksheet(KPI_DAILY_SHEET, rows=3000, cols=20)
     additional_pay_ws = get_worksheet(ADDITIONAL_PAY_SHEET, rows=1000, cols=22)
+    drivers_ws = get_worksheet(DRIVERS_SHEET, rows=300, cols=8)
+    driver_payments_ws = get_worksheet(DRIVER_PAYMENTS_SHEET, rows=2000, cols=10)
 
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
@@ -482,6 +509,8 @@ def init_payroll_sheet():
     ensure_headers(periods_ws, PERIOD_HEADERS)
     ensure_headers(kpi_daily_ws, KPI_DAILY_HEADERS)
     ensure_headers(additional_pay_ws, ADDITIONAL_PAY_HEADERS)
+    ensure_headers(drivers_ws, DRIVER_HEADERS)
+    ensure_headers(driver_payments_ws, DRIVER_PAYMENT_HEADERS)
 
     # Сотрудники по-прежнему синхронизируются с конфигом. KPI из конфига служат
     # только стартовым наполнением: существующие позиции управляются через бот.

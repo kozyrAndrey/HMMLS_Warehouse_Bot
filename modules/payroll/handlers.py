@@ -179,6 +179,7 @@ def payroll_main_keyboard(manager=False, additional_pay_manager=False, warehouse
                 [InlineKeyboardButton("⚠️ Штраф", callback_data="pay:add_penalty")],
                 [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
                 [InlineKeyboardButton("🏖 Отпускные", callback_data="pay:vacations")],
+                [InlineKeyboardButton("🚚 Водители", callback_data="pay:drivers")],
                 [InlineKeyboardButton("📊 Рассчитать ЗП за период", callback_data="pay:calculate_period")],
                 [InlineKeyboardButton("⚙️ Расчетные периоды", callback_data="pay:periods")],
                 [InlineKeyboardButton("⚙️ Позиции KPI", callback_data="pay:kpi_management")],
@@ -4345,6 +4346,7 @@ def get_payroll_conversation_handler():
 def get_payroll_handlers():
     from modules.payroll.kpi_handlers import get_kpi_management_handler
     from modules.payroll.additional_pay_handlers import get_additional_pay_handler
+    from modules.payroll.driver_handlers import get_drivers_handler
 
     return [
         CommandHandler("whoami", whoami),
@@ -4352,4 +4354,5 @@ def get_payroll_handlers():
         get_payroll_conversation_handler(),
         get_kpi_management_handler(),
         get_additional_pay_handler(),
+        get_drivers_handler(),
     ]

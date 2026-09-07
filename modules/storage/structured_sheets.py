@@ -166,6 +166,31 @@ SHEET_TABLES = {
             ("Обновлено", "updated_at_text"),
         ],
     },
+    ("payroll", "Водители"): {
+        "table": "payroll_drivers",
+        "columns": [
+            ("driver_id", "driver_id"),
+            ("ФИО", "full_name"),
+            ("Телефон", "phone"),
+            ("Комментарий", "comment"),
+            ("Активен", "is_active"),
+            ("Создал", "created_by"),
+            ("Создано", "created_at_text"),
+        ],
+    },
+    ("payroll", "Оплата водителям"): {
+        "table": "payroll_driver_payments",
+        "columns": [
+            ("driver_payment_id", "driver_payment_id"),
+            ("Дата", "payment_date"),
+            ("driver_id", "driver_id"),
+            ("ФИО водителя", "driver_name"),
+            ("Сумма", "amount"),
+            ("Комментарий", "comment"),
+            ("Создал", "created_by"),
+            ("Создано", "created_at_text"),
+        ],
+    },
     ("operations", "Архив расписаний"): {
         "table": "schedule_archive",
         "columns": [

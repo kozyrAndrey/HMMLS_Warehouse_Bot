@@ -412,6 +412,21 @@ def build_full_payroll_text(period=None):
         lines.append(format_payroll_statement_line(item))
         lines.append("")
 
+    from modules.payroll.drivers import get_driver_payments
+
+    driver_payments = get_driver_payments(period["start_date"], period["end_date"])
+    drivers_total = sum(item["amount"] for item in driver_payments)
+    if driver_payments:
+        lines.append("Водители:")
+        for payment in driver_payments:
+            detail = f" — {payment['comment']}" if payment.get("comment") else ""
+            lines.append(
+                f"{payment['driver_name']}: {money_pretty(payment['amount'])} "
+                f"({short_date(payment['date'])}){detail}"
+            )
+        lines.append(f"ИТОГО ВОДИТЕЛИ: {money_pretty(drivers_total)}")
+        lines.append("")
+
     lines.append(f"ОБЩИЙ ИТОГ: {money_pretty(warehouse_total)}")
 
     return "\n".join(lines).strip()
