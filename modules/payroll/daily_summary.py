@@ -112,7 +112,11 @@ async def refresh_daily_summary(context, report_date):
             save_summary_state(day, deliveries)
             snapshot = load_day_reports(report_date)
             # An empty roster is not proof that every working employee has reported.
-            if not snapshot["expected"] or not snapshot["reports"]:
+            if not snapshot["expected"]:
+                return
+            # После удаления последнего отчета обновляем уже отправленную сводку,
+            # но не создаем новую пустую сводку.
+            if not snapshot["reports"] and not any(deliveries.values()):
                 return
             if snapshot["missing"] and not any(deliveries.values()):
                 return

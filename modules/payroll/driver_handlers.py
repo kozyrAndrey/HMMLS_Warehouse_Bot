@@ -13,7 +13,7 @@ from modules.payroll.drivers import (
 from modules.payroll.google_sheets import money, validate_date
 
 
-(DRIVER_SELECT, DRIVER_NAME, DRIVER_PHONE, PAYMENT_DATE, PAYMENT_AMOUNT, PAYMENT_COMMENT, PAYMENT_DELETE) = range(600, 607)
+(DRIVER_SELECT, DRIVER_NAME, DRIVER_PHONE, DRIVER_VEHICLE, PAYMENT_DATE, PAYMENT_AMOUNT, PAYMENT_COMMENT, PAYMENT_DELETE) = range(600, 608)
 
 
 def drivers_menu_keyboard():
@@ -107,15 +107,26 @@ async def driver_name_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def driver_phone_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = (update.message.text or "").strip()
+    context.user_data["driver_phone"] = "" if phone == "-" else phone
+    await update.message.reply_text(
+        "Введите номер машины или «-», если он пока неизвестен:",
+        reply_markup=cancel_keyboard(),
+    )
+    return DRIVER_VEHICLE
+
+
+async def driver_vehicle_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     manager = _manager(update)
     if not manager:
         await update.message.reply_text("Недостаточно прав.")
         return ConversationHandler.END
-    phone = (update.message.text or "").strip()
+    vehicle_number = (update.message.text or "").strip()
     try:
         driver = create_driver(
             context.user_data.get("driver_name"),
-            phone="" if phone == "-" else phone,
+            phone=context.user_data.get("driver_phone", ""),
+            vehicle_number="" if vehicle_number == "-" else vehicle_number,
             created_by=manager["full_name"],
         )
     except DriverValidationError as error:
@@ -127,7 +138,11 @@ async def driver_phone_received(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Водитель создан ✅\n\nВведите дату оплаты в формате ДД.ММ.ГГГГ:", reply_markup=cancel_keyboard())
         return PAYMENT_DATE
     context.user_data.clear()
-    await update.message.reply_text(f"Водитель «{driver['full_name']}» создан ✅", reply_markup=drivers_menu_keyboard())
+    vehicle_text = f"\nМашина: {driver['vehicle_number']}" if driver.get("vehicle_number") else ""
+    await update.message.reply_text(
+        f"Водитель «{driver['full_name']}» создан ✅{vehicle_text}",
+        reply_markup=drivers_menu_keyboard(),
+    )
     return ConversationHandler.END
 
 
@@ -175,7 +190,8 @@ async def payment_comment_received(update: Update, context: ContextTypes.DEFAULT
 
 
 def _payment_label(item):
-    return f"{item['date']} — {item['driver_name']} — {money(item['amount'])} ₽"
+    vehicle = f" · {item['vehicle_number']}" if item.get("vehicle_number") else ""
+    return f"{item['date']} — {item['driver_name']}{vehicle} — {money(item['amount'])} ₽"
 
 
 async def payments_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,6 +256,7 @@ def get_drivers_handler():
             DRIVER_SELECT: [CallbackQueryHandler(driver_selected, pattern=r"^driverselect:")],
             DRIVER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, driver_name_received)],
             DRIVER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, driver_phone_received)],
+            DRIVER_VEHICLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, driver_vehicle_received)],
             PAYMENT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, payment_date_received)],
             PAYMENT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, payment_amount_received)],
             PAYMENT_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, payment_comment_received)],

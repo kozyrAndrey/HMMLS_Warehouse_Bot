@@ -420,9 +420,10 @@ def build_full_payroll_text(period=None):
         lines.append("Водители:")
         for payment in driver_payments:
             detail = f" — {payment['comment']}" if payment.get("comment") else ""
+            vehicle = f", машина {payment['vehicle_number']}" if payment.get("vehicle_number") else ""
             lines.append(
                 f"{payment['driver_name']}: {money_pretty(payment['amount'])} "
-                f"({short_date(payment['date'])}){detail}"
+                f"({short_date(payment['date'])}{vehicle}){detail}"
             )
         lines.append(f"ИТОГО ВОДИТЕЛИ: {money_pretty(drivers_total)}")
         lines.append("")

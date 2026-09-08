@@ -176,6 +176,7 @@ DRIVER_HEADERS = [
     "driver_id",
     "ФИО",
     "Телефон",
+    "Номер машины",
     "Комментарий",
     "Активен",
     "Создал",
@@ -187,6 +188,7 @@ DRIVER_PAYMENT_HEADERS = [
     "Дата",
     "driver_id",
     "ФИО водителя",
+    "Номер машины",
     "Сумма",
     "Комментарий",
     "Создал",
@@ -984,6 +986,23 @@ def update_daily_report(row_index, report_data):
             kpi_items=kpi_from_json(report_data.get("KPI данные", "")),
             shift_type=report_data.get("Тип смены", ""),
         )
+
+
+def delete_daily_kpi_row(report_date, employee_full_name):
+    row_index = find_kpi_daily_row(report_date, employee_full_name)
+    if row_index:
+        get_worksheet(KPI_DAILY_SHEET).delete_rows(row_index)
+        return True
+    return False
+
+
+def delete_daily_report(row_index):
+    _, report_data = find_report_by_row(row_index)
+    if not report_data:
+        return None
+    get_worksheet(REPORTS_SHEET).delete_rows(row_index)
+    delete_daily_kpi_row(report_data.get("Дата", ""), report_data.get("ФИО", ""))
+    return report_data_to_model(report_data)
 
 
 def update_report_message_ids(row_index, chat_id, thread_id, message_id):

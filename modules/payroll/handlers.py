@@ -39,6 +39,8 @@ from modules.payroll.google_sheets import (
     create_active_period,
     delete_bonus,
     delete_expense,
+    delete_daily_kpi_row,
+    delete_daily_report,
     find_employee_for_telegram_user,
     find_manager_report_row,
     find_report_row,
@@ -294,6 +296,18 @@ def date_keyboard(prefix, back_target=None):
     return InlineKeyboardMarkup(rows)
 
 
+def edit_report_date_keyboard():
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(today.strftime("%d.%m.%Y"), callback_data=f"editnewdate:{today.strftime('%d.%m.%Y')}")],
+        [InlineKeyboardButton(yesterday.strftime("%d.%m.%Y"), callback_data=f"editnewdate:{yesterday.strftime('%d.%m.%Y')}")],
+        [InlineKeyboardButton("Ввести другую дату", callback_data="editnewdate:manual")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="editfield:back")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+    ])
+
+
 def employees_keyboard(prefix, include_cancel=True):
     rows = []
     for employee in get_employees():
@@ -330,6 +344,7 @@ def kpi_keyboard(prefix, back_target=None):
 
 def edit_field_keyboard(include_shift_type=False):
     rows = [
+        [InlineKeyboardButton("Дата отчета", callback_data="editfield:date")],
         [InlineKeyboardButton("Рабочий промежуток", callback_data="editfield:interval")],
     ]
     if include_shift_type:
@@ -339,6 +354,7 @@ def edit_field_keyboard(include_shift_type=False):
             [InlineKeyboardButton("Время обеда", callback_data="editfield:lunch")],
             [InlineKeyboardButton("Задачи", callback_data="editfield:tasks")],
             [InlineKeyboardButton("KPI", callback_data="editfield:kpi")],
+            [InlineKeyboardButton("🗑 Удалить отчет", callback_data="editfield:delete")],
             [InlineKeyboardButton("✅ Завершить изменение", callback_data="editfield:finish")],
             [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
         ]
@@ -513,7 +529,9 @@ def parse_work_interval(text):
     start_total = start_hour * 60 + start_minute
     end_total = end_hour * 60 + end_minute
     duration_minutes = end_total - start_total
-    if duration_minutes <= 0 or duration_minutes % 30:
+    if duration_minutes <= 0:
+        duration_minutes += 24 * 60
+    if duration_minutes <= 0 or duration_minutes >= 24 * 60 or duration_minutes % 30:
         return None
     normalized = f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"
     return normalized, duration_minutes / 60
@@ -2078,6 +2096,7 @@ async def finish_manager_only_report(target, context, telegram_user):
             own_reply_markup=menu,
         )
         append_manager_report(employee, report_date, manager_report, telegram_messages)
+        await refresh_daily_summary(context, report_date)
     except Exception as error:
         logging.exception("Ошибка создания отдельного руководительского отчета")
         message = f"Руководительский отчет не удалось сохранить/отправить ⚠️\nОшибка: {error}"
@@ -2283,6 +2302,7 @@ async def edit_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["edit_row_index"] = row_index
     context.user_data["edit_report_data"] = report_data
+    context.user_data["edit_original_date"] = report_date
     context.user_data["edit_period"] = period
     await query.edit_message_text(
         "Отчет найден. Что нужно изменить?",
@@ -2299,6 +2319,19 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
     if field == "finish":
         return await finish_edit_report(query, context, update.effective_user)
 
+    if field == "delete":
+        report_data = context.user_data.get("edit_report_data") or {}
+        await query.edit_message_text(
+            "Удалить ежедневный отчет без возможности восстановления?\n\n"
+            f"{report_data.get('Дата', '')} — {report_data.get('ФИО', '')}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Да, удалить", callback_data="editdelete:confirm")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="editfield:back")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+            ]),
+        )
+        return EDIT_FIELD
+
     if field == "back":
         await query.edit_message_text(
             "Что нужно изменить?",
@@ -2308,6 +2341,13 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     context.user_data["edit_field"] = field
     report_data = context.user_data.get("edit_report_data") or {}
+
+    if field == "date":
+        await query.edit_message_text(
+            f"Текущая дата: {report_data.get('Дата', '—')}\n\nВыберите новую дату:",
+            reply_markup=edit_report_date_keyboard(),
+        )
+        return EDIT_FIELD
 
     if field == "shift_type":
         period = context.user_data.get("edit_period") or {}
@@ -2367,6 +2407,68 @@ async def edit_field_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=edit_field_keyboard_for_context(context),
     )
     return EDIT_FIELD
+
+
+async def edit_report_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    new_date = query.data.replace("editnewdate:", "", 1)
+    if new_date == "manual":
+        context.user_data["edit_field"] = "date"
+        await query.edit_message_text(
+            "Введите новую дату отчета в формате ДД.ММ.ГГГГ:",
+            reply_markup=payroll_back_keyboard(),
+        )
+        return EDIT_VALUE
+    report_data = context.user_data.get("edit_report_data") or {}
+    employee_id = report_data.get("employee_id")
+    current_date = report_data.get("Дата", "")
+    if new_date != current_date and find_report_row(employee_id, new_date)[0] is not None:
+        await query.edit_message_text(
+            "У этого сотрудника уже есть отчет за выбранную дату. Выберите другую дату:",
+            reply_markup=edit_report_date_keyboard(),
+        )
+        return EDIT_FIELD
+    period = get_period_for_date(new_date)
+    if not period:
+        await query.edit_message_text(
+            "Для выбранной даты не настроен расчетный период. Выберите другую дату:",
+            reply_markup=edit_report_date_keyboard(),
+        )
+        return EDIT_FIELD
+    report_data["Дата"] = new_date
+    report_data["Обновлено"] = now_str()
+    context.user_data["edit_report_data"] = report_data
+    context.user_data["edit_period"] = period
+    await query.edit_message_text(
+        f"Дата отчета изменена на {new_date}.\n\nВыберите ещё поле или завершите изменение.",
+        reply_markup=edit_field_keyboard_for_context(context),
+    )
+    return EDIT_FIELD
+
+
+async def edit_report_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    row_index = context.user_data.get("edit_row_index")
+    report_data = context.user_data.get("edit_report_data") or {}
+    if not row_index or not report_data:
+        await query.edit_message_text("Данные отчета потерялись.")
+        return ConversationHandler.END
+    deleted = delete_daily_report(row_index)
+    if not deleted:
+        await query.edit_message_text("Отчет уже удален или не найден.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    await delete_old_report_message(context, deleted)
+    await refresh_daily_summary(context, deleted["date"])
+    manager = is_manager(current_employee_or_none(update))
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Ежедневный отчет удален ✅",
+        reply_markup=payroll_main_keyboard(manager=manager),
+    )
+    return ConversationHandler.END
 
 
 async def edit_shift_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2512,6 +2614,21 @@ async def edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE
             return EDIT_VALUE
         report_data["Рабочий промежуток"] = interval
         report_data["Отработано часов"] = hours
+    elif field == "date":
+        if not validate_date(value):
+            await update.message.reply_text("Введите дату в формате ДД.ММ.ГГГГ:")
+            return EDIT_VALUE
+        current_date = report_data.get("Дата", "")
+        employee_id = report_data.get("employee_id")
+        if value != current_date and find_report_row(employee_id, value)[0] is not None:
+            await update.message.reply_text("У сотрудника уже есть отчет за эту дату. Введите другую дату:")
+            return EDIT_VALUE
+        period = get_period_for_date(value)
+        if not period:
+            await update.message.reply_text("Для этой даты не настроен расчетный период. Введите другую дату:")
+            return EDIT_VALUE
+        report_data["Дата"] = value
+        context.user_data["edit_period"] = period
     elif field == "tasks":
         mode = context.user_data.get("edit_mode", "replace")
         old_tasks = str(report_data.get("Задачи", "") or "").strip()
@@ -2686,6 +2803,10 @@ async def finish_edit_report(query, context: ContextTypes.DEFAULT_TYPE, telegram
         report_data["telegram_thread_id"] = telegram_data.get("thread_id", "")
         report_data["telegram_message_id"] = telegram_data.get("message_id", "")
         update_daily_report(row_index, report_data)
+        original_date = context.user_data.get("edit_original_date")
+        if original_date and original_date != model["date"]:
+            delete_daily_kpi_row(original_date, report_data.get("ФИО", ""))
+            await refresh_daily_summary(context, original_date)
         await refresh_daily_summary(context, model["date"])
         if is_warehouse_manager(model.get("employee")):
             status = "Отчет обновлен и новое сообщение отправлено руководителю склада в личные сообщения ✅"
@@ -4162,6 +4283,8 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             EDIT_FIELD: [
+                CallbackQueryHandler(edit_report_date_selected, pattern=r"^editnewdate:"),
+                CallbackQueryHandler(edit_report_delete_confirmed, pattern=r"^editdelete:confirm$"),
                 CallbackQueryHandler(edit_tasks_mode_selected, pattern=r"^edittasks:"),
                 CallbackQueryHandler(edit_kpi_mode_selected, pattern=r"^editkpi:"),
                 CallbackQueryHandler(edit_lunch_selected, pattern=r"^editlunch:(0\.5|1)$"),

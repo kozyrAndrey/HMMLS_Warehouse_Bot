@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from telegram.ext import ConversationHandler
 
 from modules.payroll.handlers import (
+    finish_manager_only_report,
     finish_create_report,
     finish_edit_report,
     payroll_main_keyboard,
@@ -126,6 +127,25 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
             telegram_data,
             {"chat_id": 42, "thread_id": "", "message_id": 202},
         )
+
+    async def test_manager_only_report_refreshes_brand_daily_summary(self):
+        target = SimpleNamespace(reply_text=AsyncMock())
+        context = SimpleNamespace(
+            user_data={
+                "employee_id": "emp_manager",
+                "report_date": "16.07.2026",
+                "manager_report": {"volumes": "готово"},
+            }
+        )
+        with (
+            patch("modules.payroll.handlers.get_employee_by_id", return_value=warehouse_manager()),
+            patch("modules.payroll.handlers.send_manager_report_to_recipients", new=AsyncMock(return_value=[])),
+            patch("modules.payroll.handlers.append_manager_report"),
+        ):
+            state = await finish_manager_only_report(target, context, SimpleNamespace(id=42))
+
+        self.assertEqual(state, ConversationHandler.END)
+        self.refresh_summary.assert_awaited_once_with(context, "16.07.2026")
 
     async def test_working_manager_gets_two_separate_reports_and_brand_manager_copy(self):
         sent_message = SimpleNamespace(chat_id=42, message_id=202)

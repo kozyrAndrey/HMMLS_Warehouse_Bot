@@ -35,19 +35,23 @@ class DriverStorageTests(unittest.TestCase):
         self.worksheet_patch.stop()
 
     def test_create_select_and_filter_driver_payments(self):
-        driver = drivers.create_driver("Иван Иванов", "+79990000000", created_by="Менеджер")
+        driver = drivers.create_driver(
+            "Иван Иванов", "+79990000000", "А123ВС777", created_by="Менеджер"
+        )
         self.assertEqual(drivers.get_driver(driver["driver_id"])["full_name"], "Иван Иванов")
+        self.assertEqual(drivers.get_driver(driver["driver_id"])["vehicle_number"], "А123ВС777")
 
         included = drivers.add_driver_payment(driver, "05.09.2026", 3500, "Доставка", "Менеджер")
         drivers.add_driver_payment(driver, "20.09.2026", 1000, "Поздняя", "Менеджер")
 
         actual = drivers.get_driver_payments("01.09.2026", "15.09.2026")
         self.assertEqual([item["driver_payment_id"] for item in actual], [included["driver_payment_id"]])
+        self.assertEqual(actual[0]["vehicle_number"], "А123ВС777")
 
     def test_driver_payment_has_separate_total_in_payroll_statement(self):
         payment = {
             "driver_name": "Иван Иванов", "amount": 3500,
-            "date": "05.09.2026", "comment": "Доставка",
+            "date": "05.09.2026", "vehicle_number": "А123ВС777", "comment": "Доставка",
         }
         period = {"start_date": "01.09.2026", "end_date": "15.09.2026", "payment_mode": "hourly"}
         with (
@@ -58,5 +62,6 @@ class DriverStorageTests(unittest.TestCase):
 
         self.assertIn("Водители:", text)
         self.assertIn("Иван Иванов: 3 500,00", text)
+        self.assertIn("машина А123ВС777", text)
         self.assertIn("ИТОГО ВОДИТЕЛИ: 3 500,00", text)
         self.assertIn("ОБЩИЙ ИТОГ: 0,00", text)

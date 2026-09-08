@@ -28,6 +28,7 @@ def get_drivers(include_inactive=False):
             "driver_id": str(record.get("driver_id", "")).strip(),
             "full_name": str(record.get("ФИО", "")).strip(),
             "phone": str(record.get("Телефон", "")).strip(),
+            "vehicle_number": str(record.get("Номер машины", "")).strip(),
             "comment": str(record.get("Комментарий", "")).strip(),
             "is_active": safe_bool(record.get("Активен")),
             "created_by": str(record.get("Создал", "")).strip(),
@@ -42,7 +43,7 @@ def get_driver(driver_id):
     return next((item for item in get_drivers(True) if item["driver_id"] == str(driver_id)), None)
 
 
-def create_driver(full_name, phone="", comment="", created_by=""):
+def create_driver(full_name, phone="", vehicle_number="", comment="", created_by=""):
     full_name = str(full_name or "").strip()
     if len(full_name) < 2:
         raise DriverValidationError("Укажите имя водителя.")
@@ -55,13 +56,14 @@ def create_driver(full_name, phone="", comment="", created_by=""):
         "driver_id": generate_id("driver"),
         "full_name": full_name,
         "phone": str(phone or "").strip(),
+        "vehicle_number": str(vehicle_number or "").strip().upper(),
         "comment": str(comment or "").strip(),
         "is_active": True,
         "created_by": str(created_by or "").strip(),
         "created_at": now_str(),
     }
     get_worksheet(DRIVERS_SHEET).append_row([
-        driver["driver_id"], driver["full_name"], driver["phone"], driver["comment"],
+        driver["driver_id"], driver["full_name"], driver["phone"], driver["vehicle_number"], driver["comment"],
         "TRUE", driver["created_by"], driver["created_at"],
     ])
     return driver
@@ -82,13 +84,14 @@ def add_driver_payment(driver, payment_date, amount, comment="", created_by=""):
         "date": str(payment_date).strip(),
         "driver_id": driver["driver_id"],
         "driver_name": driver["full_name"],
+        "vehicle_number": str(driver.get("vehicle_number", "")).strip(),
         "amount": amount,
         "comment": str(comment or "").strip(),
         "created_by": str(created_by or "").strip(),
         "created_at": now_str(),
     }
     get_worksheet(DRIVER_PAYMENTS_SHEET).append_row([
-        item["driver_payment_id"], item["date"], item["driver_id"], item["driver_name"],
+        item["driver_payment_id"], item["date"], item["driver_id"], item["driver_name"], item["vehicle_number"],
         item["amount"], item["comment"], item["created_by"], item["created_at"],
     ])
     return item
@@ -112,6 +115,7 @@ def get_driver_payments(start_date=None, end_date=None):
             "date": str(record.get("Дата", "")),
             "driver_id": str(record.get("driver_id", "")),
             "driver_name": str(record.get("ФИО водителя", "")),
+            "vehicle_number": str(record.get("Номер машины", "")),
             "amount": safe_float(record.get("Сумма")),
             "comment": str(record.get("Комментарий", "")),
             "created_by": str(record.get("Создал", "")),

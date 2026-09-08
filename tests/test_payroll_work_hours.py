@@ -21,7 +21,10 @@ class WorkIntervalTests(unittest.TestCase):
 
     def test_interval_must_use_half_hour_step(self):
         self.assertIsNone(parse_work_interval("10:00-19:20"))
-        self.assertIsNone(parse_work_interval("19:00-10:00"))
+
+    def test_interval_can_cross_midnight(self):
+        self.assertEqual(parse_work_interval("10:00-02:00"), ("10:00-02:00", 16))
+        self.assertEqual(calculate_worked_hours("10:00-02:00", 1), 15)
 
 
 class DailyReportHoursFlowTests(unittest.IsolatedAsyncioTestCase):
