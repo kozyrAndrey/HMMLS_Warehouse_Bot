@@ -66,6 +66,22 @@ class ReportAggregationTests(unittest.TestCase):
         self.assertIn("черновик", automation.report_coverage_text(day))
         self.assertIn("Нет отчетов: a", automation.report_coverage_text(day))
 
+    def test_standalone_manager_report_completes_coverage_without_entering_totals(self):
+        with (
+            patch.object(automation, "reports_for_date", return_value={"a": row("a", kpi("kpi007", 10))}),
+            patch.object(
+                automation,
+                "get_working_employees_for_date",
+                return_value=[employee("a"), employee("manager", "warehouse_manager")],
+            ),
+            patch.object(automation, "manager_report_ids_for_date", return_value={"manager"}),
+        ):
+            day = automation.load_day_reports(REPORT_DATE, include_manager_reports=True)
+
+        self.assertEqual(day["missing"], [])
+        self.assertEqual(set(day["reports"]), {"a"})
+        self.assertEqual(automation.volume_values(day["reports"].values())["sent_orders"], "10")
+
     def test_only_exported_warehouse_tasks_are_used(self):
         tasks = [{"Описание": "Готово", "Тип задачи": "warehouse", "Статус": "done"},
                  {"Описание": "В работе", "Тип задачи": "warehouse", "Статус": "active"},
@@ -177,10 +193,16 @@ class DailySummaryDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.engine.dispose)
         self.employees = [employee("a"), employee("manager", "warehouse_manager")]
         self.reports = {"a": row("a", kpi("kpi007", 10))}
+        self.manager_report_ids = set()
         self.recipients = [employee("brand", "brand_manager", "77")]
         patches = [
             patch.object(delivery, "session_scope", self.session_scope),
             patch.object(automation, "reports_for_date", side_effect=lambda _: dict(self.reports)),
+            patch.object(
+                automation,
+                "manager_report_ids_for_date",
+                side_effect=lambda _: set(self.manager_report_ids),
+            ),
             patch.object(automation, "get_working_employees_for_date", side_effect=lambda _: self.employees),
             patch.object(delivery, "get_employees", side_effect=lambda **_: self.recipients),
         ]
@@ -218,6 +240,25 @@ class DailySummaryDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await delivery.refresh_daily_summary(self.context, REPORT_DATE)
         self.assertIn("Отправка: 17", self.context.bot.edit_message_text.await_args.kwargs["text"])
         self.context.bot.send_message.assert_awaited_once()
+
+    async def test_manager_only_report_sends_employee_summary_without_manager_daily_report(self):
+        self.manager_report_ids.add("manager")
+
+        await delivery.refresh_daily_summary(self.context, REPORT_DATE)
+
+        self.context.bot.send_message.assert_awaited_once()
+        text = self.context.bot.send_message.await_args.kwargs["text"]
+        self.assertIn("Отправка: 10", text)
+        self.assertNotIn("\nmanager\n", text)
+
+    async def test_off_schedule_manager_report_can_close_day_with_daily_reports(self):
+        self.employees = []
+        self.manager_report_ids.add("manager")
+
+        await delivery.refresh_daily_summary(self.context, REPORT_DATE)
+
+        self.context.bot.send_message.assert_awaited_once()
+        self.assertIn("Отправка: 10", self.context.bot.send_message.await_args.kwargs["text"])
 
     async def test_no_schedule_never_means_everyone_reported(self):
         self.employees = []

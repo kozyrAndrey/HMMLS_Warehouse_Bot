@@ -4,8 +4,9 @@ import json
 from decimal import Decimal
 
 from modules.payroll.google_sheets import (
-    REPORTS_SHEET, get_worksheet, records_from_worksheet,
+    MANAGER_REPORTS_SHEET, REPORTS_SHEET, get_worksheet, records_from_worksheet,
 )
+from modules.employees.roles import has_role
 from modules.schedule.config import parse_date
 from modules.tasks.config import TASK_STATUS_DONE, TASK_TYPE_WAREHOUSE
 from modules.tasks.storage import (
@@ -37,6 +38,15 @@ def reports_for_date(report_date):
     # Read saved report rows, not the salary totals in the daily KPI sheet.
     rows = records_from_worksheet(get_worksheet(REPORTS_SHEET))
     return latest_reports(rows, report_date)
+
+
+def manager_report_ids_for_date(report_date):
+    rows = records_from_worksheet(get_worksheet(MANAGER_REPORTS_SHEET))
+    return {
+        str(row.get("employee_id", "")).strip()
+        for row in rows
+        if row.get("Дата") == report_date and str(row.get("employee_id", "")).strip()
+    }
 
 
 def latest_reports(rows, report_date):
@@ -82,18 +92,30 @@ def volume_values(rows):
     return result
 
 
-def load_day_reports(report_date, draft=None):
+def load_day_reports(report_date, draft=None, include_manager_reports=False):
     reports = reports_for_date(report_date)
     saved_ids = set(reports)
     if draft:
         reports[str(draft["employee_id"])] = draft
     expected = get_working_employees_for_date(parse_date(report_date))
-    missing = [employee for employee in expected if str(employee["employee_id"]) not in reports]
+    manager_report_ids = (
+        manager_report_ids_for_date(report_date) if include_manager_reports else set()
+    )
+    missing = [
+        employee
+        for employee in expected
+        if str(employee["employee_id"]) not in reports
+        and not (
+            has_role(employee, "warehouse_manager")
+            and str(employee["employee_id"]) in manager_report_ids
+        )
+    ]
     return {
         "reports": reports,
         "expected": expected,
         "missing": missing,
         "saved_ids": saved_ids,
+        "manager_report_ids": manager_report_ids,
         "draft": draft,
     }
 

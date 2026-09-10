@@ -110,9 +110,15 @@ async def refresh_daily_summary(context, report_date):
         try:
             deliveries = summary_state(day)
             save_summary_state(day, deliveries)
-            snapshot = load_day_reports(report_date)
+            # A standalone warehouse-manager report is a valid completion signal,
+            # but its contents must not be mixed into the employees' KPI totals.
+            snapshot = load_day_reports(report_date, include_manager_reports=True)
             # An empty roster is not proof that every working employee has reported.
-            if not snapshot["expected"]:
+            # The explicit manager report is the exception: it may close a day on
+            # which the manager (or the whole roster) had no scheduled shift.
+            if not snapshot["expected"] and not (
+                snapshot["manager_report_ids"] and snapshot["reports"]
+            ):
                 return
             # После удаления последнего отчета обновляем уже отправленную сводку,
             # но не создаем новую пустую сводку.
