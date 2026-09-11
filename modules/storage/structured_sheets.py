@@ -193,6 +193,20 @@ SHEET_TABLES = {
             ("Создано", "created_at_text"),
         ],
     },
+    ("payroll", "Списания водителям"): {
+        "table": "payroll_driver_write_offs",
+        "columns": [
+            ("driver_write_off_id", "driver_write_off_id"),
+            ("Дата", "write_off_date"),
+            ("driver_id", "driver_id"),
+            ("ФИО водителя", "driver_name"),
+            ("Номер машины", "vehicle_number"),
+            ("Сумма", "amount"),
+            ("Комментарий", "comment"),
+            ("Создал", "created_by"),
+            ("Создано", "created_at_text"),
+        ],
+    },
     ("operations", "Архив расписаний"): {
         "table": "schedule_archive",
         "columns": [

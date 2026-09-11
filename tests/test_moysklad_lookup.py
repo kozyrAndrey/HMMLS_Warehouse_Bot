@@ -1,9 +1,11 @@
 import unittest
+from types import SimpleNamespace
 
 from modules.marking.moysklad_lookup import (
     barcode_matches,
     gtin_barcode_variants,
     lookup_rows_by_gtin,
+    product_info_from_row,
 )
 
 
@@ -47,6 +49,26 @@ class MoySkladLookupTests(unittest.TestCase):
         row = {"barcodes": [{"ean13": "4670332747445"}]}
 
         self.assertTrue(barcode_matches(row, "04670332747445"))
+
+    def test_product_info_contains_large_label_fields(self):
+        row = {
+            "name": "HOMME LEATHER JACKET BLACK L",
+            "article": "HLJB-L",
+            "barcodes": [{"ean13": "4670332747445"}],
+            "characteristics": [{"name": "Размер", "value": "L"}],
+            "attributes": [
+                {"name": "Цвет", "value": "черный"},
+                {"name": "Состав", "value": "Полиуретан 100%"},
+                {"name": "Производитель", "value": "Производитель"},
+            ],
+        }
+
+        actual = product_info_from_row(SimpleNamespace(), row)
+
+        self.assertEqual(actual["article"], "HLJB-L")
+        self.assertEqual(actual["color"], "черный")
+        self.assertEqual(actual["composition"], "Полиуретан 100%")
+        self.assertEqual(actual["ean13"], "4670332747445")
 
 
 if __name__ == "__main__":

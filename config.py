@@ -118,6 +118,24 @@ MOYSKLAD_API_BASE_URL = os.getenv(
 )
 MOYSKLAD_CA_FILE = os.getenv("MOYSKLAD_CA_FILE", "")
 MOYSKLAD_SSL_VERIFY = os.getenv("MOYSKLAD_SSL_VERIFY", "true")
+
+# Реквизиты для товарной этикетки ЧЗ 75×120 мм. При необходимости их можно
+# переопределить без изменения кода через переменные окружения.
+MARKING_LABEL_CUSTOMER = os.getenv(
+    "MARKING_LABEL_CUSTOMER",
+    "",
+) or (
+    "ИП Ахмед Дамир Султанович. 364018, Россия, Республика Чеченская, город Грозный, "
+    "улица Толстого, дом 11. ИНН: 775111486928"
+)
+MARKING_LABEL_MANUFACTURER = os.getenv(
+    "MARKING_LABEL_MANUFACTURER",
+    "",
+) or (
+    "Индивидуальный предприниматель Израимов Султанбек Омюрбекович. Место жительства и "
+    "адрес места осуществления деятельности по изготовлению продукции: 105523, Россия, "
+    "город Москва, ш Щёлковское, дом 100 корпус 1"
+)
 MOYSKLAD_SALE_PRICE_TYPE = os.getenv("MOYSKLAD_SALE_PRICE_TYPE", "Цена продажи")
 
 MARKING_ONE_C_TEMPLATE_PATH = os.getenv("MARKING_ONE_C_TEMPLATE_PATH", "") or str(

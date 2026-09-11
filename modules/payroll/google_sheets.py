@@ -34,6 +34,7 @@ PERIODS_SHEET = "Расчетные периоды"
 KPI_DAILY_SHEET = "KPI за день"
 DRIVERS_SHEET = "Водители"
 DRIVER_PAYMENTS_SHEET = "Оплата водителям"
+DRIVER_WRITE_OFFS_SHEET = "Списания водителям"
 PAYMENT_MODE_HOURLY = "hourly"
 PAYMENT_MODE_SHIFT = "shift"
 SHIFT_TYPE_FULL = "full"
@@ -195,6 +196,18 @@ DRIVER_PAYMENT_HEADERS = [
     "Создано",
 ]
 
+DRIVER_WRITE_OFF_HEADERS = [
+    "driver_write_off_id",
+    "Дата",
+    "driver_id",
+    "ФИО водителя",
+    "Номер машины",
+    "Сумма",
+    "Комментарий",
+    "Создал",
+    "Создано",
+]
+
 
 def now_str():
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -321,6 +334,7 @@ def get_worksheet(title, rows=1000, cols=30):
         ADDITIONAL_PAY_SHEET: ADDITIONAL_PAY_HEADERS,
         DRIVERS_SHEET: DRIVER_HEADERS,
         DRIVER_PAYMENTS_SHEET: DRIVER_PAYMENT_HEADERS,
+        DRIVER_WRITE_OFFS_SHEET: DRIVER_WRITE_OFF_HEADERS,
     }
     headers = headers_by_title.get(title)
     if not headers:
@@ -500,6 +514,7 @@ def init_payroll_sheet():
     additional_pay_ws = get_worksheet(ADDITIONAL_PAY_SHEET, rows=1000, cols=22)
     drivers_ws = get_worksheet(DRIVERS_SHEET, rows=300, cols=8)
     driver_payments_ws = get_worksheet(DRIVER_PAYMENTS_SHEET, rows=2000, cols=10)
+    driver_write_offs_ws = get_worksheet(DRIVER_WRITE_OFFS_SHEET, rows=2000, cols=10)
 
     ensure_headers(employees_ws, EMPLOYEE_HEADERS)
     ensure_headers(reports_ws, REPORT_HEADERS)
@@ -513,6 +528,7 @@ def init_payroll_sheet():
     ensure_headers(additional_pay_ws, ADDITIONAL_PAY_HEADERS)
     ensure_headers(drivers_ws, DRIVER_HEADERS)
     ensure_headers(driver_payments_ws, DRIVER_PAYMENT_HEADERS)
+    ensure_headers(driver_write_offs_ws, DRIVER_WRITE_OFF_HEADERS)
 
     # Сотрудники по-прежнему синхронизируются с конфигом. KPI из конфига служат
     # только стартовым наполнением: существующие позиции управляются через бот.

@@ -7,6 +7,11 @@ from modules.moysklad.client import MoySkladError
 
 SIZE_NAMES = {"размер", "size"}
 COUNTRY_NAMES = {"страна производства", "страна", "country"}
+ARTICLE_NAMES = {"артикул", "article"}
+COLOR_NAMES = {"цвет", "основной цвет", "цвет изделия", "color"}
+COMPOSITION_NAMES = {"состав", "состав изделия", "composition"}
+MANUFACTURER_NAMES = {"производитель", "изготовитель", "фабрика", "manufacturer"}
+CUSTOMER_NAMES = {"заказчик", "customer"}
 
 
 def find_marking_product_info(raw_code):
@@ -84,6 +89,12 @@ def product_info_from_row(client, row):
         "model_name": model_name,
         "size": size,
         "country": country,
+        "article": field_value(row, product, ARTICLE_NAMES) or row.get("article") or product.get("article") or "",
+        "color": field_value(row, product, COLOR_NAMES),
+        "composition": field_value(row, product, COMPOSITION_NAMES),
+        "manufacturer": field_value(row, product, MANUFACTURER_NAMES),
+        "customer": field_value(row, product, CUSTOMER_NAMES),
+        "ean13": ean13_from_rows(row, product),
     }
 
 
@@ -144,4 +155,36 @@ def attribute_value(row, wanted_names):
         if isinstance(value, dict):
             return value.get("name") or value.get("value") or ""
         return value
+    return ""
+
+
+def characteristic_value(row, wanted_names):
+    for item in row.get("characteristics") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip().lower()
+        if name not in wanted_names:
+            continue
+        value = item.get("value")
+        if isinstance(value, dict):
+            return value.get("name") or value.get("value") or ""
+        return value
+    return ""
+
+
+def field_value(row, product, wanted_names):
+    value = characteristic_value(row, wanted_names) or attribute_value(row, wanted_names)
+    if not value:
+        value = attribute_value(product, wanted_names)
+    return str(value or "").strip()
+
+
+def ean13_from_rows(row, product):
+    for source in (row, product):
+        for barcode in source.get("barcodes") or []:
+            if not isinstance(barcode, dict):
+                continue
+            value = str(barcode.get("ean13") or "").strip()
+            if len(value) == 13 and value.isdigit():
+                return value
     return ""

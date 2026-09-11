@@ -7,7 +7,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from core.keyboards import build_marking_menu_keyboard
-from modules.marking.duplicate_chz import DuplicateChzError, create_duplicate_chz_pdf
+from modules.marking.duplicate_chz import (
+    DuplicateChzError,
+    create_duplicate_chz_75x120_pdf,
+    create_duplicate_chz_pdf,
+)
 from modules.marking.export import (
     TrendExportValidationError,
     build_moysklad_client,
@@ -788,8 +792,11 @@ async def catalog_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def duplicate_chz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    is_large_label = query.data == "marking:duplicate_chz_75x120"
+    context.user_data["marking_duplicate_chz_size"] = "75x120" if is_large_label else "58x40"
 
     await query.edit_message_text(
+        f"Дубликат ЧЗ {'75×120' if is_large_label else '58×40'} мм.\n\n"
         "Пришлите полный код ЧЗ текстом.\n\n"
         "Если в коде есть разделитель GS, можно вставить его как <GS> или \\x1d.",
         reply_markup=marking_cancel_keyboard(),
@@ -810,13 +817,15 @@ async def duplicate_chz_code_received(update: Update, context: ContextTypes.DEFA
 
     try:
         product_info = find_marking_product_info(raw_code)
-        create_duplicate_chz_pdf(raw_code, path, product_info=product_info)
+        label_size = context.user_data.get("marking_duplicate_chz_size", "58x40")
+        create_pdf = create_duplicate_chz_75x120_pdf if label_size == "75x120" else create_duplicate_chz_pdf
+        create_pdf(raw_code, path, product_info=product_info)
         with open(path, "rb") as file:
             await context.bot.send_document(
                 chat_id=update.effective_chat.id,
                 document=file,
-                filename=f"duplicate_chz_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                caption="Дубликат ЧЗ ✅",
+                filename=f"duplicate_chz_{label_size}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                caption=f"Дубликат ЧЗ {label_size.replace('x', '×')} мм ✅",
             )
     except DuplicateChzError as error:
         await status_message.edit_text(str(error), reply_markup=marking_menu_keyboard(update))
@@ -879,7 +888,7 @@ def get_marking_handlers():
         entry_points=[
             CallbackQueryHandler(trend_export_start, pattern=r"^marking:trend_export$"),
             CallbackQueryHandler(stock_codes_export_start, pattern=r"^marking:stock_codes_export$"),
-            CallbackQueryHandler(duplicate_chz_start, pattern=r"^marking:duplicate_chz$"),
+            CallbackQueryHandler(duplicate_chz_start, pattern=r"^marking:duplicate_chz(?:_75x120)?$"),
             CallbackQueryHandler(catalog_start, pattern=r"^marking:catalog$"),
         ],
         states={

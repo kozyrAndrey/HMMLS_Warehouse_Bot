@@ -8,6 +8,7 @@ from core.keyboards import build_marking_menu_keyboard
 from modules.marking.handlers import (
     MARKING_DISCOUNTS,
     MARKING_DOCUMENT_NAME,
+    MARKING_DUPLICATE_CHZ_CODE,
     MARKING_STOCK_CODES_DOCUMENT_NAME,
     MARKING_UNMARKED_CONFIRM,
     MARKING_UNMARKED_PRODUCT,
@@ -18,6 +19,7 @@ from modules.marking.handlers import (
     trend_export_discounts_received,
     trend_export_document_received,
     trend_export_start,
+    duplicate_chz_start,
     stock_codes_export_start,
     trend_unmarked_quantity_received,
     catalog_start,
@@ -35,7 +37,22 @@ class MarkingHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("marking:stock_codes_export", callbacks)
         self.assertIn("marking:trend_export", callbacks)
         self.assertIn("marking:duplicate_chz", callbacks)
+        self.assertIn("marking:duplicate_chz_75x120", callbacks)
         self.assertNotIn("marking:catalog", callbacks)
+
+    async def test_large_duplicate_stores_75x120_format(self):
+        query = SimpleNamespace(
+            data="marking:duplicate_chz_75x120",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(user_data={})
+
+        state = await duplicate_chz_start(SimpleNamespace(callback_query=query), context)
+
+        self.assertEqual(state, MARKING_DUPLICATE_CHZ_CODE)
+        self.assertEqual(context.user_data["marking_duplicate_chz_size"], "75x120")
+        self.assertIn("75×120", query.edit_message_text.await_args.args[0])
 
     async def test_catalog_remains_manager_only(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())

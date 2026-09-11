@@ -50,7 +50,8 @@ def build_marking_menu_keyboard(manager=False):
         keyboard.append([InlineKeyboardButton("📚 Справочник Честного ЗНАКа", callback_data="marking:catalog")])
     keyboard.extend(
         [
-            [InlineKeyboardButton("🏷 Дубликат ЧЗ", callback_data="marking:duplicate_chz")],
+            [InlineKeyboardButton("🏷 Дубликат ЧЗ 58×40", callback_data="marking:duplicate_chz")],
+            [InlineKeyboardButton("🏷 Дубликат ЧЗ 75×120", callback_data="marking:duplicate_chz_75x120")],
             [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")],
         ]
     )

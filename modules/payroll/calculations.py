@@ -412,11 +412,19 @@ def build_full_payroll_text(period=None):
         lines.append(format_payroll_statement_line(item))
         lines.append("")
 
-    from modules.payroll.drivers import get_driver_payments
+    # Общий итог относится только к складу. Водители вынесены ниже в отдельный
+    # блок, чтобы их суммы нельзя было случайно принять за часть общего итога.
+    lines.append(f"ОБЩИЙ ИТОГ: {money_pretty(warehouse_total)}")
+    lines.append("")
+
+    from modules.payroll.drivers import get_driver_payments, get_driver_write_offs
 
     driver_payments = get_driver_payments(period["start_date"], period["end_date"])
-    drivers_total = sum(item["amount"] for item in driver_payments)
-    if driver_payments:
+    driver_write_offs = get_driver_write_offs(period["start_date"], period["end_date"])
+    drivers_accrued_total = sum(item["amount"] for item in driver_payments)
+    drivers_write_off_total = sum(item["amount"] for item in driver_write_offs)
+    drivers_total = drivers_accrued_total - drivers_write_off_total
+    if driver_payments or driver_write_offs:
         lines.append("Водители:")
         for payment in driver_payments:
             detail = f" — {payment['comment']}" if payment.get("comment") else ""
@@ -425,9 +433,17 @@ def build_full_payroll_text(period=None):
                 f"{payment['driver_name']}: {money_pretty(payment['amount'])} "
                 f"({short_date(payment['date'])}{vehicle}){detail}"
             )
+        if driver_write_offs:
+            lines.append("Списания (выдано ранее):")
+            for write_off in driver_write_offs:
+                detail = f" — {write_off['comment']}" if write_off.get("comment") else ""
+                vehicle = f", машина {write_off['vehicle_number']}" if write_off.get("vehicle_number") else ""
+                lines.append(
+                    f"{write_off['driver_name']}: −{money_pretty(write_off['amount'])} "
+                    f"({short_date(write_off['date'])}{vehicle}){detail}"
+                )
+        lines.append(f"НАЧИСЛЕНО ВОДИТЕЛЯМ: {money_pretty(drivers_accrued_total)}")
+        lines.append(f"СПИСАНО ВОДИТЕЛЯМ: {money_pretty(drivers_write_off_total)}")
         lines.append(f"ИТОГО ВОДИТЕЛИ: {money_pretty(drivers_total)}")
-        lines.append("")
-
-    lines.append(f"ОБЩИЙ ИТОГ: {money_pretty(warehouse_total)}")
 
     return "\n".join(lines).strip()
