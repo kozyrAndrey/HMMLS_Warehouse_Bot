@@ -290,7 +290,7 @@ def create_visitor_pass_pdf(data):
     cursor_y -= 9 * mm
     pdf.setFont(regular, 8.5)
     pdf.drawString(center_x, cursor_y, "Выдано по ______________________________________________")
-    cursor_y -= 10 * mm
+    cursor_y -= 7 * mm
     car_line = "Автомашина"
     if has_vehicle:
         car_line += f"  {vehicle_make}    гос/№ {license_plate}"
@@ -309,7 +309,7 @@ def create_visitor_pass_pdf(data):
         feminine=True,
         centered=True,
     )
-    cursor_y -= 3 * mm
+    cursor_y -= 6 * mm
     pdf.drawString(center_x, cursor_y, "Проверил Д.Б.П.")
     pdf.line(center_x + 29 * mm, cursor_y - 0.8 * mm, center_x + center_width, cursor_y - 0.8 * mm)
     cursor_y -= 12 * mm
