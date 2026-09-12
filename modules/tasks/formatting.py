@@ -132,7 +132,8 @@ def format_regular_tasks_view(templates):
     if not templates:
         return "📋 Шаблоны регулярных задач\n\nШаблонов пока нет."
 
-    grouped = {}
+    templates_by_weekday = {weekday: [] for weekday in range(len(WEEKDAY_NAMES))}
+    seen_by_weekday = {weekday: set() for weekday in range(len(WEEKDAY_NAMES))}
     for template in templates:
         try:
             weekday = int(str(template.get("weekday", "")).strip())
@@ -140,32 +141,35 @@ def format_regular_tasks_view(templates):
             continue
         if weekday < 0 or weekday >= len(WEEKDAY_NAMES):
             continue
-        series_id = str(template.get("series_id") or template.get("template_id") or "").strip()
-        if not series_id:
+        template_id = str(template.get("template_id") or "").strip()
+        if not template_id or template_id in seen_by_weekday[weekday]:
             continue
-        group = grouped.setdefault(series_id, {"template": template, "weekdays": set()})
-        group["weekdays"].add(weekday)
+        seen_by_weekday[weekday].add(template_id)
+        templates_by_weekday[weekday].append(template)
 
     lines = ["📋 Шаблоны регулярных задач", ""]
-    ordered = sorted(
-        grouped.values(),
-        key=lambda group: (
-            min(group["weekdays"]),
-            str(group["template"].get("Описание", "")).casefold(),
-        ),
-    )
-    for index, group in enumerate(ordered, start=1):
-        template = group["template"]
-        task_type = TASK_TYPE_LABELS.get(str(template.get("Тип задачи", "")).strip(), "Задача")
-        description = str(template.get("Описание", "")).strip()
-        deadline = str(template.get("Дедлайн", "")).strip()
-        days = ", ".join(WEEKDAY_NAMES[weekday] for weekday in sorted(group["weekdays"]))
+    for weekday, weekday_name in enumerate(WEEKDAY_NAMES):
+        day_templates = sorted(
+            templates_by_weekday[weekday],
+            key=lambda template: (
+                0 if str(template.get("Тип задачи", "")).strip() == TASK_TYPE_WAREHOUSE else 1,
+                str(template.get("Описание", "")).casefold(),
+                str(template.get("Дедлайн", "")),
+            ),
+        )
+        if not day_templates:
+            continue
 
-        lines.append(f"{index}. {task_type}: {description}")
-        lines.append(f"дни: {days}")
-        lines.append(template_assignee_label(template))
-        if deadline:
-            lines.append(f"дедлайн: {deadline}")
+        lines.append(f"📅 {weekday_name}")
+        for index, template in enumerate(day_templates, start=1):
+            task_type = TASK_TYPE_LABELS.get(str(template.get("Тип задачи", "")).strip(), "Задача")
+            description = str(template.get("Описание", "")).strip()
+            deadline = str(template.get("Дедлайн", "")).strip()
+
+            lines.append(f"{index}. {task_type}: {description}")
+            lines.append(f"   {template_assignee_label(template)}")
+            if deadline:
+                lines.append(f"   дедлайн: {deadline}")
         lines.append("")
 
     return "\n".join(lines).strip()

@@ -17,9 +17,50 @@ from modules.tasks.handlers import (
     regular_template_series_list,
     weekday_multiselect_keyboard,
 )
+from modules.tasks.formatting import format_regular_tasks_view
 
 
 class TaskTemplateSeriesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_template_view_is_grouped_by_weekday(self):
+        templates = [
+            {
+                "template_id": "tpl-mon",
+                "series_id": "series-shipping",
+                "weekday": 0,
+                "Тип задачи": "warehouse",
+                "Описание": "Отправки",
+                "Тип исполнителей": "working_today",
+                "Дедлайн": "18:00",
+            },
+            {
+                "template_id": "tpl-wed",
+                "series_id": "series-returns",
+                "weekday": 2,
+                "Тип задачи": "general",
+                "Описание": "Разобрать возвраты",
+                "Тип исполнителей": "none",
+                "Дедлайн": "",
+            },
+            {
+                "template_id": "tpl-fri",
+                "series_id": "series-shipping",
+                "weekday": 4,
+                "Тип задачи": "warehouse",
+                "Описание": "Отправки",
+                "Тип исполнителей": "working_today",
+                "Дедлайн": "18:00",
+            },
+        ]
+
+        text = format_regular_tasks_view(templates)
+
+        self.assertIn("📅 Понедельник\n1. Складская: Отправки", text)
+        self.assertIn("📅 Среда\n1. Нескладская: Разобрать возвраты", text)
+        self.assertIn("📅 Пятница\n1. Складская: Отправки", text)
+        self.assertNotIn("дни:", text)
+        self.assertLess(text.index("📅 Понедельник"), text.index("📅 Среда"))
+        self.assertLess(text.index("📅 Среда"), text.index("📅 Пятница"))
+
     async def test_add_flow_toggles_several_weekdays_before_continuing(self):
         query = SimpleNamespace(
             data="regweekday:toggle:2",
