@@ -100,6 +100,49 @@ from modules.tasks.storage import (
 
 
 WEEKDAY_SHORT_NAMES = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+PERSONAL_GENERAL_TASK_USERNAMES = ("fadexdf",)
+
+
+def normalize_telegram_username(value):
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def personal_general_task_recipients():
+    target_usernames = {normalize_telegram_username(value) for value in PERSONAL_GENERAL_TASK_USERNAMES}
+    return [
+        employee
+        for employee in get_employees(include_inactive=False)
+        if normalize_telegram_username(employee.get("telegram_username")) in target_usernames
+        and str(employee.get("telegram_user_id", "")).strip()
+    ]
+
+
+def task_is_assigned_to_employee(task, employee):
+    employee_id = str(employee.get("employee_id", "")).strip()
+    assignee_ids = {
+        value.strip()
+        for value in str(task.get("Исполнители ID", "")).split(",")
+        if value.strip()
+    }
+    if employee_id and employee_id in assignee_ids:
+        return True
+
+    username = normalize_telegram_username(employee.get("telegram_username"))
+    assignee_usernames = {
+        normalize_telegram_username(value)
+        for value in str(task.get("Исполнители", "")).split(",")
+        if str(value).strip().startswith("@")
+    }
+    return bool(username and username in assignee_usernames)
+
+
+def personal_general_tasks(tasks, employee):
+    return [
+        task
+        for task in tasks
+        if str(task.get("Тип задачи", "")).strip() == TASK_TYPE_GENERAL
+        and task_is_assigned_to_employee(task, employee)
+    ]
 
 
 def current_employee(update: Update):
@@ -1346,7 +1389,32 @@ async def export_general_tasks_for_date(context, day):
                     None,
                 )
             )
-    return "; ".join(statuses) if statuses else "руководитель склада не найден"
+    manager_status = "; ".join(statuses) if statuses else "руководитель склада не найден"
+    delivery_statuses = [f"руководитель: {manager_status}"]
+
+    for employee in personal_general_task_recipients():
+        assigned_tasks = personal_general_tasks(tasks, employee)
+        if not assigned_tasks:
+            continue
+        chat_id = str(employee.get("telegram_user_id", "")).strip()
+        employee_id = str(employee.get("employee_id", "")).strip()
+        username = normalize_telegram_username(employee.get("telegram_username"))
+        try:
+            status = await send_or_edit_task_message(
+                context,
+                day,
+                f"general_assignee:{employee_id or chat_id}",
+                chat_id,
+                "",
+                format_general_tasks_message(day, assigned_tasks),
+                None,
+            )
+            delivery_statuses.append(f"@{username}: {status}")
+        except Exception:
+            logging.exception("Не удалось отправить личные нескладские задачи сотруднику @%s", username)
+            delivery_statuses.append(f"@{username}: ошибка отправки")
+
+    return "; ".join(delivery_statuses)
 
 
 async def export_tasks_for_date(context, day):
@@ -1364,7 +1432,7 @@ async def export_tasks_for_date(context, day):
         warehouse_status,
         general_status,
     )
-    return f"Задачи на {date_to_str(day)} выгружены ✅\n\nСкладские в тему: {warehouse_status}\nНескладские в личку руководителю: {general_status}"
+    return f"Задачи на {date_to_str(day)} выгружены ✅\n\nСкладские в тему: {warehouse_status}\nНескладские в личные сообщения: {general_status}"
 
 
 async def refresh_existing_exports_for_date(context, day):
@@ -1379,11 +1447,31 @@ async def refresh_existing_exports_for_date(context, day):
             format_warehouse_tasks_message(day, tasks),
             warehouse_tasks_inline_keyboard(tasks),
         )
+    general_was_exported = False
     for manager in get_warehouse_managers():
         chat_id = str(manager.get("telegram_user_id", "")).strip()
         export_type = f"general:{chat_id}"
         if chat_id and get_task_export(day, export_type):
+            general_was_exported = True
             await send_or_edit_task_message(context, day, export_type, chat_id, "", format_general_tasks_message(day, tasks), None)
+
+    for employee in personal_general_task_recipients():
+        chat_id = str(employee.get("telegram_user_id", "")).strip()
+        employee_id = str(employee.get("employee_id", "")).strip()
+        export_type = f"general_assignee:{employee_id or chat_id}"
+        existing = get_task_export(day, export_type)
+        assigned_tasks = personal_general_tasks(tasks, employee)
+        if not existing and not (general_was_exported and assigned_tasks):
+            continue
+        await send_or_edit_task_message(
+            context,
+            day,
+            export_type,
+            chat_id,
+            "",
+            format_general_tasks_message(day, assigned_tasks),
+            None,
+        )
 
 
 async def task_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
