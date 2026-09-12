@@ -57,6 +57,8 @@ from modules.products.handlers import get_product_handlers
 from modules.lamoda_fbs.handlers import get_lamoda_handlers, show_lamoda_menu
 from modules.lamoda_fbs.jobs import setup_lamoda_jobs
 from modules.lamoda_fbs.storage import init_lamoda_storage
+from modules.passes.handlers import get_pass_handlers
+from modules.passes.storage import init_passes_storage
 
 
 def setup_logging():
@@ -100,6 +102,7 @@ def main():
     init_recruitment_storage()
     init_returns_storage()
     init_marking_storage()
+    init_passes_storage()
 
     try:
         init_lamoda_storage()
@@ -218,6 +221,10 @@ def main():
 
     # Резюме кандидатов.
     for handler in get_recruitment_handlers():
+        app.add_handler(handler)
+
+    # Разовые пропуска.
+    for handler in get_pass_handlers():
         app.add_handler(handler)
 
     # Маркировка.

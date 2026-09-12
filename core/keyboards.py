@@ -24,6 +24,7 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False):
         [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
         [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
+        [InlineKeyboardButton("🚪 Разовые пропуска", callback_data="section:passes")],
         [InlineKeyboardButton("🏷 Маркировка", callback_data="section:marking")],
         [InlineKeyboardButton("🛒 Lamoda FBS", callback_data="section:lamoda")],
     ]
