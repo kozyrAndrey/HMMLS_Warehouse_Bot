@@ -8,6 +8,7 @@ from modules.tasks.handlers import (
     task_assignee_selected,
     task_deadline_selected,
     task_edit_description_received,
+    task_select_keyboard,
     task_status_selected,
 )
 
@@ -21,6 +22,48 @@ TASK = {
 
 
 class TaskEditHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_edit_task_list_is_grouped_by_type_and_sorted_by_deadline(self):
+        tasks = [
+            {"task_id": "g-none", "Тип задачи": "general", "Описание": "Без срока", "Дедлайн": ""},
+            {"task_id": "w-late", "Тип задачи": "warehouse", "Описание": "Поздняя", "Дедлайн": "18:00"},
+            {"task_id": "g-early", "Тип задачи": "general", "Описание": "Нескладская", "Дедлайн": "12:00"},
+            {"task_id": "w-none", "Тип задачи": "warehouse", "Описание": "Складская без срока", "Дедлайн": ""},
+            {"task_id": "w-early", "Тип задачи": "warehouse", "Описание": "Ранняя", "Дедлайн": "11:00"},
+        ]
+
+        keyboard = task_select_keyboard(tasks, "taskedit", edit_mode=True)
+        task_buttons = [row[0] for row in keyboard.inline_keyboard[:-1]]
+
+        self.assertEqual(
+            [button.callback_data for button in task_buttons],
+            [
+                "taskedit:w-early",
+                "taskedit:w-late",
+                "taskedit:w-none",
+                "taskedit:g-early",
+                "taskedit:g-none",
+            ],
+        )
+        self.assertTrue(task_buttons[0].text.endswith(" · 11:00"))
+        self.assertTrue(task_buttons[2].text.endswith(" · без дедлайна"))
+
+    def test_edit_task_button_preserves_deadline_after_truncation(self):
+        keyboard = task_select_keyboard(
+            [{
+                "task_id": "task-1",
+                "Тип задачи": "warehouse",
+                "Описание": "Очень длинное описание задачи, которое не помещается в кнопку целиком",
+                "Дедлайн": "18:00",
+            }],
+            "taskedit",
+            edit_mode=True,
+        )
+
+        label = keyboard.inline_keyboard[0][0].text
+        self.assertIn("...", label)
+        self.assertTrue(label.endswith(" · 18:00"))
+        self.assertLessEqual(len(label), 45)
+
     async def test_returns_to_same_task_after_description_update(self):
         message = SimpleNamespace(
             text="Новое описание",

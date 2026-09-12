@@ -34,6 +34,7 @@ from modules.tasks.formatting import (
     format_general_tasks_message,
     format_regular_tasks_view,
     format_warehouse_tasks_message,
+    task_deadline_sort_key,
 )
 from modules.tasks.storage import (
     can_user_complete_task,
@@ -284,16 +285,32 @@ def regular_assignees_keyboard(selected_ids, back_target=None):
     return InlineKeyboardMarkup(rows)
 
 
-def task_select_keyboard(tasks, prefix, back_target=None):
+def task_edit_sort_key(task):
+    task_type = str(task.get("Тип задачи", "")).strip()
+    type_order = {
+        TASK_TYPE_WAREHOUSE: 0,
+        TASK_TYPE_GENERAL: 1,
+    }
+    return (type_order.get(task_type, 2), *task_deadline_sort_key(task))
+
+
+def task_select_keyboard(tasks, prefix, back_target=None, *, edit_mode=False):
     rows = []
+    if edit_mode:
+        tasks = sorted(tasks, key=task_edit_sort_key)
     for task in tasks:
         task_id = str(task.get("task_id", "")).strip()
         status = str(task.get("Статус", "")).strip()
         icon = "✅" if status == TASK_STATUS_DONE else "🚫" if status == TASK_STATUS_CANCELLED else "⬜"
         description = str(task.get("Описание", "")).strip()
-        if len(description) > 45:
-            description = description[:42] + "..."
-        rows.append([InlineKeyboardButton(f"{icon} {description}", callback_data=f"{prefix}:{task_id}")])
+        suffix = ""
+        if edit_mode:
+            deadline = str(task.get("Дедлайн", "")).strip()
+            suffix = f" · {deadline or 'без дедлайна'}"
+        max_description = max(12, 45 - len(icon) - 1 - len(suffix))
+        if len(description) > max_description:
+            description = description[:max_description - 3] + "..."
+        rows.append([InlineKeyboardButton(f"{icon} {description}{suffix}", callback_data=f"{prefix}:{task_id}")])
     if back_target:
         rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"taskback:{back_target}")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="task:cancel")])
@@ -684,7 +701,10 @@ async def task_edit_date_selected(update: Update, context: ContextTypes.DEFAULT_
     if not tasks:
         await query.edit_message_text("На эту дату задач пока нет.", reply_markup=tasks_menu_keyboard())
         return ConversationHandler.END
-    await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date"))
+    await query.edit_message_text(
+        "Выберите задачу:",
+        reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date", edit_mode=True),
+    )
     return TASK_EDIT_SELECT
 
 
@@ -1231,7 +1251,10 @@ async def tasks_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("edit_task_id", None)
         day = parse_date(context.user_data["edit_task_date"])
         tasks = get_tasks_by_date(day, include_cancelled=False)
-        await query.edit_message_text("Выберите задачу:", reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date"))
+        await query.edit_message_text(
+            "Выберите задачу:",
+            reply_markup=task_select_keyboard(tasks, "taskedit", "edit_date", edit_mode=True),
+        )
         return TASK_EDIT_SELECT
     if target == "edit_field":
         context.user_data.pop("selected_employee_ids", None)
