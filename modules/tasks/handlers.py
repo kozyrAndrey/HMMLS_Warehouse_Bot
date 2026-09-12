@@ -1,7 +1,8 @@
 import logging
 from datetime import time, timedelta
+from io import BytesIO
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
@@ -768,10 +769,24 @@ async def regular_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.edit_message_text(
-        format_regular_tasks_view(get_task_templates(active_only=True)),
-        reply_markup=regular_tasks_menu_keyboard(),
-    )
+    text = format_regular_tasks_view(get_task_templates(active_only=True))
+    if len(text) <= 4000:
+        await query.edit_message_text(
+            text,
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
+    else:
+        await query.message.reply_document(
+            document=InputFile(
+                BytesIO(text.encode("utf-8")),
+                filename="Шаблоны_регулярных_задач.txt",
+            ),
+            caption="📋 Шаблоны регулярных задач по дням недели",
+        )
+        await query.edit_message_text(
+            "Список шаблонов слишком большой для одного сообщения, поэтому отправлен файлом `.txt`.",
+            reply_markup=regular_tasks_menu_keyboard(),
+        )
     return ConversationHandler.END
 
 

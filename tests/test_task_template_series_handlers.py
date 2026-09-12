@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telegram.ext import ConversationHandler
+
 from modules.tasks.handlers import (
     REG_ADD_TYPE,
     REG_ADD_WEEKDAY,
@@ -14,6 +16,7 @@ from modules.tasks.handlers import (
     regular_manage_selected,
     regular_manage_start,
     regular_edit_weekday_selected,
+    regular_view,
     regular_template_series_list,
     weekday_multiselect_keyboard,
 )
@@ -21,6 +24,29 @@ from modules.tasks.formatting import format_regular_tasks_view
 
 
 class TaskTemplateSeriesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_large_template_view_is_sent_as_weekday_text_file(self):
+        query = SimpleNamespace(
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(reply_document=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={"old": "value"})
+        long_text = "📋 Шаблоны регулярных задач\n\n📅 Понедельник\n" + "Задача\n" * 700
+
+        with (
+            patch("modules.tasks.handlers.get_task_templates", return_value=[{"template_id": "1"}]),
+            patch("modules.tasks.handlers.format_regular_tasks_view", return_value=long_text),
+        ):
+            state = await regular_view(SimpleNamespace(callback_query=query), context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        self.assertEqual(context.user_data, {})
+        query.message.reply_document.assert_awaited_once()
+        document = query.message.reply_document.await_args.kwargs["document"]
+        self.assertEqual(document.filename, "Шаблоны_регулярных_задач.txt")
+        self.assertEqual(document.input_file_content, long_text.encode("utf-8"))
+        self.assertIn("отправлен файлом", query.edit_message_text.await_args.args[0])
+
     def test_template_view_is_grouped_by_weekday(self):
         templates = [
             {
