@@ -64,15 +64,12 @@ class NavigationKeyboardTests(unittest.TestCase):
         hidden_callbacks = {
             "section:receiving",
             "section:returns",
-            "section:schedule",
             "section:lamoda",
         }
         for manager in (False, True):
-            self.assertTrue(
-                hidden_callbacks.isdisjoint(
-                    callback_values(build_main_menu_keyboard(manager=manager))
-                )
-            )
+            callbacks = callback_values(build_main_menu_keyboard(manager=manager))
+            self.assertTrue(hidden_callbacks.isdisjoint(callbacks))
+            self.assertIn("section:schedule", callbacks)
 
     def test_major_wizards_expose_previous_step_callbacks(self):
         self.assertIn("empback:phone", callback_values(employee_navigation_keyboard("phone")))

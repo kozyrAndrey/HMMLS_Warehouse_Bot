@@ -19,6 +19,7 @@ def build_start_keyboard():
 def build_main_menu_keyboard(recruitment_tester=False, manager=False):
     keyboard = [
         [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
+        [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
         [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
         [InlineKeyboardButton("🚪 Разовые пропуска", callback_data="section:passes")],
