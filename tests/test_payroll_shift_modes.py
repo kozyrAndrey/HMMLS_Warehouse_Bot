@@ -39,7 +39,6 @@ def empty_payroll_dependencies(reports):
         patch("modules.payroll.calculations.get_expenses_in_period", return_value=[]),
         patch("modules.payroll.calculations.get_penalties_in_period", return_value=[]),
         patch("modules.payroll.calculations.get_bonuses_in_period", return_value=[]),
-        patch("modules.payroll.calculations.get_additional_payments_in_period", return_value=[]),
         patch("modules.payroll.calculations.get_vacations_in_period", return_value=[]),
         patch("modules.payroll.calculations.SALARY_FIXED_PARTS", {}),
     )
@@ -56,7 +55,7 @@ class PayrollShiftCalculationTests(unittest.TestCase):
             }
         ]
         dependencies = empty_payroll_dependencies(reports)
-        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6], dependencies[7]:
+        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6]:
             total = calculate_payroll_for_period(
                 "01.08.2026",
                 "15.08.2026",
@@ -84,7 +83,7 @@ class PayrollShiftCalculationTests(unittest.TestCase):
             },
         ]
         dependencies = empty_payroll_dependencies(reports)
-        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6], dependencies[7]:
+        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6]:
             total = calculate_payroll_for_period(
                 "01.08.2026",
                 "15.08.2026",
@@ -108,7 +107,7 @@ class PayrollShiftCalculationTests(unittest.TestCase):
             }
         ]
         dependencies = empty_payroll_dependencies(reports)
-        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6], dependencies[7]:
+        with dependencies[0], dependencies[1], dependencies[2], dependencies[3], dependencies[4], dependencies[5], dependencies[6]:
             total = calculate_payroll_for_period(
                 "01.08.2026",
                 "15.08.2026",

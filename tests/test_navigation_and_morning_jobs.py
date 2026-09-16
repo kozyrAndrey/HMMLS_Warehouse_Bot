@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from modules.ai_agent.weather import setup_ai_agent_jobs
+from core.keyboards import build_main_menu_keyboard
 from modules.employees.handlers import cancel_keyboard as employee_navigation_keyboard
 from modules.payroll.handlers import payroll_back_keyboard
 from modules.products.handlers import PRODUCT_ADD_GTIN, product_add_back
@@ -59,6 +60,20 @@ class MorningJobsTests(unittest.TestCase):
 
 
 class NavigationKeyboardTests(unittest.TestCase):
+    def test_hidden_modules_are_absent_for_employees_and_managers(self):
+        hidden_callbacks = {
+            "section:receiving",
+            "section:returns",
+            "section:schedule",
+            "section:lamoda",
+        }
+        for manager in (False, True):
+            self.assertTrue(
+                hidden_callbacks.isdisjoint(
+                    callback_values(build_main_menu_keyboard(manager=manager))
+                )
+            )
+
     def test_major_wizards_expose_previous_step_callbacks(self):
         self.assertIn("empback:phone", callback_values(employee_navigation_keyboard("phone")))
         self.assertIn("payback:create_hours", callback_values(payroll_back_keyboard("create_hours")))

@@ -75,7 +75,6 @@ from modules.payroll.google_sheets import (
 )
 from modules.employees.roles import format_role_labels, has_role
 from modules.payroll.pdf_reports import create_payroll_pdf
-from modules.payroll.additional_pay import can_manage_additional_pay
 from modules.payroll.vacations import (
     VacationValidationError,
     create_vacation,
@@ -161,7 +160,7 @@ CREATE_MANAGER_DATE = 356
 # ============================================================
 
 
-def payroll_main_keyboard(manager=False, additional_pay_manager=False, warehouse_manager=False):
+def payroll_main_keyboard(manager=False, warehouse_manager=False):
     rows = [
         [InlineKeyboardButton("📝 Создать ежедневный отчет", callback_data="pay:create_report")],
         [InlineKeyboardButton("✏️ Изменить отчет", callback_data="pay:edit_report")],
@@ -187,12 +186,6 @@ def payroll_main_keyboard(manager=False, additional_pay_manager=False, warehouse
                 [InlineKeyboardButton("⚙️ Позиции KPI", callback_data="pay:kpi_management")],
                 [InlineKeyboardButton("🧹 Очистить данные старше 1 года", callback_data="pay:cleanup")],
             ]
-        )
-
-    if additional_pay_manager:
-        rows.insert(
-            4,
-            [InlineKeyboardButton("➕ Доп. начисления", callback_data="pay:additional_pay")],
         )
 
     rows.append([InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")])
@@ -584,7 +577,6 @@ async def show_payroll_menu_message(target, employee):
             text,
             reply_markup=payroll_main_keyboard(
                 manager=manager,
-                additional_pay_manager=can_manage_additional_pay(employee),
                 warehouse_manager=is_warehouse_manager(employee),
             ),
         )
@@ -593,7 +585,6 @@ async def show_payroll_menu_message(target, employee):
             text,
             reply_markup=payroll_main_keyboard(
                 manager=manager,
-                additional_pay_manager=can_manage_additional_pay(employee),
                 warehouse_manager=is_warehouse_manager(employee),
             ),
         )
@@ -2083,7 +2074,6 @@ async def finish_manager_only_report(target, context, telegram_user):
 
     menu = payroll_main_keyboard(
         manager=is_manager(employee),
-        additional_pay_manager=can_manage_additional_pay(employee),
         warehouse_manager=True,
     )
     try:
@@ -4468,7 +4458,6 @@ def get_payroll_conversation_handler():
 
 def get_payroll_handlers():
     from modules.payroll.kpi_handlers import get_kpi_management_handler
-    from modules.payroll.additional_pay_handlers import get_additional_pay_handler
     from modules.payroll.driver_handlers import get_drivers_handler
 
     return [
@@ -4476,6 +4465,5 @@ def get_payroll_handlers():
         CallbackQueryHandler(payroll_menu, pattern=r"^section:payroll$"),
         get_payroll_conversation_handler(),
         get_kpi_management_handler(),
-        get_additional_pay_handler(),
         get_drivers_handler(),
     ]

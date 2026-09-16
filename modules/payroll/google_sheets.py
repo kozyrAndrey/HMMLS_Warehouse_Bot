@@ -281,14 +281,10 @@ def safe_float(value):
 
 
 def safe_hourly_rate(value):
-    rate = safe_float(value)
-
-    # Защита от старых импортов: иногда 437.5 могло превратиться в 4375.
-    # Для складских ставок значения выше 1000 считаем потерянной десятичной точкой.
-    if 1000 <= rate < 10000:
-        return rate / 10
-
-    return rate
+    # Ставка из справочника «Сотрудники» — актуальный источник данных.
+    # Не исправляем её эвристикой: иначе корректная ставка выше 1000 ₽
+    # молча уменьшалась в 10 раз при расчёте ЗП.
+    return safe_float(value)
 
 
 def safe_bool(value):
@@ -426,15 +422,14 @@ def rows_to_dict_by_key(values, key_name):
 
 
 def sync_employees_sheet(worksheet):
-    """Синхронизирует справочник сотрудников с payroll_config.py.
+    """Добавляет только отсутствующих стартовых сотрудников.
 
-    Это важно, потому что лист «Сотрудники» мог быть создан раньше.
-    Без этой синхронизации новые telegram_user_id, ставки и роли из кода
-    не попадали бы в уже существующую таблицу.
+    Существующие строки управляются из раздела «Сотрудники». Их нельзя
+    перезаписывать значениями PAYROLL_EMPLOYEES при каждом запуске: так
+    терялись изменённые оклады, ставки и другие поля.
     """
     values = worksheet.get_all_values()
     existing_by_id, _ = rows_to_dict_by_key(values, "employee_id")
-    end_col = column_letter(len(EMPLOYEE_HEADERS))
 
     rows_to_append = []
 
@@ -453,19 +448,7 @@ def sync_employees_sheet(worksheet):
             str(employee["is_active"]).upper(),
         ]
 
-        found = existing_by_id.get(employee["employee_id"])
-        if found:
-            row_index = found["row_index"]
-            row[2] = str(found["row_data"].get("Телефон", "")).strip()
-            existing_roles = found["row_data"].get("roles")
-            if str(existing_roles or "").strip():
-                existing_role = str(found["row_data"].get("role") or row[5]).strip()
-                row[6] = roles_to_storage(existing_roles, existing_role)
-                row[5] = primary_role(existing_roles, existing_role)
-            existing_active = found["row_data"].get("is_active")
-            row[10] = str(safe_bool(existing_active) if str(existing_active).strip() else employee["is_active"]).upper()
-            worksheet.update(f"A{row_index}:{end_col}{row_index}", [row])
-        else:
+        if employee["employee_id"] not in existing_by_id:
             rows_to_append.append(row)
 
     if rows_to_append:
@@ -530,8 +513,8 @@ def init_payroll_sheet():
     ensure_headers(driver_payments_ws, DRIVER_PAYMENT_HEADERS)
     ensure_headers(driver_write_offs_ws, DRIVER_WRITE_OFF_HEADERS)
 
-    # Сотрудники по-прежнему синхронизируются с конфигом. KPI из конфига служат
-    # только стартовым наполнением: существующие позиции управляются через бот.
+    # Сотрудники и KPI из конфига служат только стартовым наполнением.
+    # Существующие записи управляются через бот и при запуске не перезаписываются.
     sync_employees_sheet(employees_ws)
     sync_kpi_sheet(kpi_ws)
 

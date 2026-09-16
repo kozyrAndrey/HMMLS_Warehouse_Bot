@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -21,10 +21,8 @@ from modules.payroll.additional_pay import (
     calculate_trend_island_pay,
     can_manage_additional_pay,
     delete_additional_payment,
-    find_trend_island_payment,
     get_additional_payment,
     list_additional_payments,
-    previous_completed_week,
     recent_completed_weeks,
     update_trend_island_payment,
 )
@@ -765,60 +763,4 @@ def get_additional_pay_handler():
             ],
         },
         fallbacks=[CallbackQueryHandler(cancel, pattern=r"^addpay:cancel$")],
-    )
-
-
-async def trend_island_weekly_reminder_job(context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(MSK_TZ).date()
-    if today.weekday() != 0:
-        return
-
-    employee = get_warehouse_manager()
-    if not employee:
-        logging.warning(
-            "Напоминание Trend Island не отправлено: не найден единственный активный руководитель склада"
-        )
-        return
-
-    week_start, week_end = previous_completed_week(today)
-    if find_trend_island_payment(employee["employee_id"], week_start):
-        return
-
-    text = (
-        "Напоминание: оформите дополнительное начисление Trend Island за прошедшую неделю.\n\n"
-        f"Неделя: {week_start.strftime('%d.%m.%Y')} — {week_end.strftime('%d.%m.%Y')}\n"
-        f"Получатель: {employee['full_name']}"
-    )
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Оформить начисление", callback_data="addpay:add")]]
-    )
-    for manager in get_employees(include_inactive=False):
-        if not can_manage_additional_pay(manager):
-            continue
-        telegram_user_id = str(manager.get("telegram_user_id", "")).strip()
-        if not telegram_user_id:
-            continue
-        try:
-            await context.bot.send_message(
-                chat_id=int(telegram_user_id),
-                text=text,
-                reply_markup=markup,
-            )
-        except Exception:
-            logging.exception(
-                "Не удалось отправить напоминание Trend Island сотруднику %s",
-                manager.get("full_name"),
-            )
-
-
-def setup_additional_pay_jobs(app):
-    if not app.job_queue:
-        logging.warning(
-            "JobQueue не доступен: напоминание Trend Island по понедельникам работать не будет."
-        )
-        return
-    app.job_queue.run_daily(
-        trend_island_weekly_reminder_job,
-        time=time(hour=13, minute=0, tzinfo=MSK_TZ),
-        name="trend_island_weekly_pay_reminder",
     )

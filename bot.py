@@ -43,7 +43,6 @@ from modules.returns.handlers import (
     get_returns_conversation_handler,
 )
 from modules.payroll.handlers import get_payroll_handlers
-from modules.payroll.additional_pay_handlers import setup_additional_pay_jobs
 from modules.schedule.handlers import get_schedule_handlers, setup_schedule_jobs
 from modules.tasks.handlers import get_tasks_handlers, setup_tasks_jobs
 from modules.ai_agent.weather import setup_ai_agent_jobs
@@ -155,7 +154,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             reset_conversations_on_navigation,
-            pattern=r"^(section:|menu:start$|pay:additional_pay$|addpay:add$)",
+            pattern=r"^(section:|menu:start$)",
         ),
         group=-2,
     )
@@ -246,7 +245,6 @@ def main():
     setup_schedule_jobs(app)
     setup_tasks_jobs(app)
     setup_ai_agent_jobs(app)
-    setup_additional_pay_jobs(app)
     setup_daily_summary_jobs(app)
     setup_lamoda_jobs(app)
 

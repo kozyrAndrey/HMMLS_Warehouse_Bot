@@ -18,15 +18,11 @@ def build_start_keyboard():
 
 def build_main_menu_keyboard(recruitment_tester=False, manager=False):
     keyboard = [
-        [InlineKeyboardButton("📦 Отчет оприходований", callback_data="section:receiving")],
-        [InlineKeyboardButton("↩️ Возвраты", callback_data="section:returns")],
         [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
-        [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
         [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
         [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
         [InlineKeyboardButton("🚪 Разовые пропуска", callback_data="section:passes")],
         [InlineKeyboardButton("🏷 Маркировка", callback_data="section:marking")],
-        [InlineKeyboardButton("🛒 Lamoda FBS", callback_data="section:lamoda")],
     ]
 
     if manager:

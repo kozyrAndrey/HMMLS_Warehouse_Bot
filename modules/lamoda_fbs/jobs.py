@@ -1,38 +1,21 @@
 import logging
-from datetime import datetime, time, timedelta
-from io import BytesIO
+from datetime import time
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import (
-    LAMODA_CANCELLATION_TIME,
     LAMODA_REMINDER_TIME,
     LAMODA_SYNC_INTERVAL_MINUTES,
 )
-from modules.employees.roles import has_any_role
-from modules.lamoda_fbs.cancellation_notices import (
-    RETURNS,
-    SHIPMENT,
-    cancellation_document,
-    cancellation_notice,
-    count_outbound_orders,
-    count_ready_returns,
-)
 from modules.lamoda_fbs.services import get_client, sync_lamoda_statuses
-from modules.lamoda_fbs.storage import (
-    claim_cancellation_notice,
-    finish_cancellation_notice,
-    pending_counts,
-)
-from modules.payroll.google_sheets import get_employees
+from modules.lamoda_fbs.storage import pending_counts
 from modules.tasks.storage import get_warehouse_managers
 
 
 logger = logging.getLogger(__name__)
 MSK = ZoneInfo("Europe/Moscow")
-CANCELLATION_DAYS = (0, 2, 4)  # Sunday, Tuesday, Thursday in python-telegram-bot.
 
 
 async def lamoda_sync_job(context: ContextTypes.DEFAULT_TYPE):
@@ -78,155 +61,6 @@ async def lamoda_marking_reminder_job(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Lamoda marking reminder failed")
 
 
-def _cancellation_recipients():
-    result = []
-    seen = set()
-    for employee in get_employees(include_inactive=False):
-        user_id = str(employee.get("telegram_user_id") or "").strip()
-        if not user_id or user_id in seen:
-            continue
-        if not has_any_role(employee, {"warehouse_manager", "brand_manager", "operations"}):
-            continue
-        seen.add(user_id)
-        result.append(employee)
-    return result
-
-
-async def _notify_cancellation_recipients(context, text):
-    for employee in _cancellation_recipients():
-        try:
-            await context.bot.send_message(
-                chat_id=int(employee["telegram_user_id"]),
-                text=text,
-            )
-        except Exception:
-            logger.exception(
-                "Could not send cancellation notification to employee_id=%s",
-                employee.get("telegram_user_id"),
-            )
-
-
-async def _send_cancellation_notice(context, service_type, service_date):
-    _, text = cancellation_notice(service_type, service_date)
-    filename, pdf_content = cancellation_document(service_type, service_date)
-    recipients = _cancellation_recipients()
-    if not recipients:
-        raise RuntimeError(
-            "Не найдены активные руководитель склада, руководитель бренда или операционщик "
-            "с telegram_user_id."
-        )
-
-    message_ids = []
-    errors = []
-    for employee in recipients:
-        user_id = str(employee.get("telegram_user_id") or "").strip()
-        try:
-            message = await context.bot.send_document(
-                chat_id=int(user_id),
-                document=InputFile(BytesIO(pdf_content), filename=filename),
-                caption=text,
-            )
-            message_id = getattr(message, "message_id", None)
-            if message_id is not None:
-                message_ids.append(str(message_id))
-        except Exception as error:
-            errors.append(f"{user_id}: {error}")
-            logger.exception(
-                "Could not send cancellation PDF to employee_id=%s service=%s",
-                user_id,
-                service_type,
-            )
-
-    if not message_ids and errors:
-        raise RuntimeError("; ".join(errors))
-    if errors:
-        logger.warning(
-            "Lamoda cancellation notice delivered partially: service=%s date=%s errors=%s",
-            service_type,
-            service_date,
-            "; ".join(errors),
-        )
-    return message_ids
-
-
-async def lamoda_cancellation_job(context: ContextTypes.DEFAULT_TYPE):
-    service_date = datetime.now(MSK).date() + timedelta(days=1)
-    client = get_client()
-    try:
-        orders = await client.list_orders(
-            sellerId=client.seller_id,
-            fulfillmentType="FBS",
-        )
-        return_items = await client.list_return_items(sellerId=client.seller_id)
-    except Exception as error:
-        logger.exception("Lamoda cancellation check failed")
-        await _notify_cancellation_recipients(
-            context,
-            "⚠️ Не удалось проверить отмену машин Lamoda на "
-            f"{service_date.strftime('%d.%m.%Y')}. Уведомления не отправлены.\nОшибка: {error}",
-        )
-        return
-
-    checks = (
-        (SHIPMENT, count_outbound_orders(orders)),
-        (RETURNS, count_ready_returns(return_items)),
-    )
-    for service_type, count in checks:
-        if count:
-            logger.info(
-                "Lamoda cancellation skipped: service=%s date=%s count=%s",
-                service_type,
-                service_date,
-                count,
-            )
-            continue
-
-        title, _ = cancellation_notice(service_type, service_date)
-        if not claim_cancellation_notice(
-            service_type,
-            service_date,
-            "telegram:warehouse_manager,brand_manager,operations",
-            title,
-        ):
-            logger.info(
-                "Lamoda cancellation notice already claimed: service=%s date=%s",
-                service_type,
-                service_date,
-            )
-            continue
-        try:
-            message_ids = await _send_cancellation_notice(
-                context,
-                service_type,
-                service_date,
-            )
-        except Exception as error:
-            finish_cancellation_notice(
-                service_type,
-                service_date,
-                "FAILED",
-                error=str(error),
-            )
-            logger.exception(
-                "Lamoda cancellation notice failed: service=%s date=%s",
-                service_type,
-                service_date,
-            )
-            await _notify_cancellation_recipients(
-                context,
-                "⚠️ Не удалось сформировать или отправить PDF об отмене машины Lamoda "
-                f"на {service_date.strftime('%d.%m.%Y')}.\nОшибка: {error}",
-            )
-            continue
-
-        finish_cancellation_notice(
-            service_type,
-            service_date,
-            "SENT",
-            message_id=",".join(message_ids),
-        )
-
-
 def _reminder_time():
     try:
         hour_text, minute_text = str(LAMODA_REMINDER_TIME).split(":", 1)
@@ -234,18 +68,6 @@ def _reminder_time():
     except (TypeError, ValueError):
         logger.warning("Invalid LAMODA_REMINDER_TIME=%r; using 10:00", LAMODA_REMINDER_TIME)
         return time(hour=10, minute=0, tzinfo=MSK)
-
-
-def _cancellation_time():
-    try:
-        hour_text, minute_text = str(LAMODA_CANCELLATION_TIME).split(":", 1)
-        return time(hour=int(hour_text), minute=int(minute_text), tzinfo=MSK)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid LAMODA_CANCELLATION_TIME=%r; using 14:00",
-            LAMODA_CANCELLATION_TIME,
-        )
-        return time(hour=14, minute=0, tzinfo=MSK)
 
 
 def setup_lamoda_jobs(app):
@@ -262,11 +84,4 @@ def setup_lamoda_jobs(app):
         app.job_queue.run_daily(
             lamoda_marking_reminder_job, time=_reminder_time(),
             name="lamoda_marking_reminder",
-        )
-    if not app.job_queue.get_jobs_by_name("lamoda_cancellation_notice"):
-        app.job_queue.run_daily(
-            lamoda_cancellation_job,
-            time=_cancellation_time(),
-            days=CANCELLATION_DAYS,
-            name="lamoda_cancellation_notice",
         )
