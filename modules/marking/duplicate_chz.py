@@ -1,5 +1,4 @@
 import re
-from datetime import datetime
 from pathlib import Path
 
 from config import MARKING_LABEL_CUSTOMER, MARKING_LABEL_MANUFACTURER
@@ -9,10 +8,17 @@ GROUP_SEPARATOR = "\x1d"
 MARKING_ASSET_DIR = Path(__file__).resolve().parents[2] / "resources" / "marking"
 HONEST_SIGN_LOGO_PATH = MARKING_ASSET_DIR / "honest_sign.jpeg"
 EAC_LOGO_PATH = MARKING_ASSET_DIR / "eac.png"
+PDF_POINTS_PER_PIXEL = 72 / 96
+LABEL_75X120_FONT_REDUCTION = 2 * PDF_POINTS_PER_PIXEL
 
 
 class DuplicateChzError(RuntimeError):
     pass
+
+
+def label_75x120_font_size(original_size):
+    """Уменьшить шрифт этикетки на 2 экранных пикселя (1,5 PDF-пункта)."""
+    return original_size - LABEL_75X120_FONT_REDUCTION
 
 
 def normalize_chz_text(value):
@@ -287,7 +293,7 @@ def create_duplicate_chz_75x120_pdf(raw_code, output_path, product_info=None):
             preserveAspectRatio=False,
             mask="auto",
         )
-        pdf.setFont(regular_font, 6.2)
+        pdf.setFont(regular_font, label_75x120_font_size(6.2))
         pdf.drawCentredString(24.5 * mm, 25.5 * mm, ean13)
 
     draw_rotated_footer(pdf, product_info, page_width, mm, bold_font)
@@ -387,45 +393,45 @@ def draw_75x120_product_details(
     customer = str(product_info.get("customer") or MARKING_LABEL_CUSTOMER).strip()
     manufacturer = str(product_info.get("manufacturer") or MARKING_LABEL_MANUFACTURER).strip()
 
-    draw_text_block(pdf, model, 4 * mm, page_height - 18 * mm, 30 * mm, bold_font, 8, 3.5 * mm, 2)
+    draw_text_block(
+        pdf, model, 4 * mm, page_height - 18 * mm, 30 * mm,
+        bold_font, label_75x120_font_size(8), 3.5 * mm, 2,
+    )
     draw_inline_field(pdf, "Цвет:", color, 36 * mm, page_height - 19 * mm, 35 * mm, mm, bold_font)
     draw_inline_field(pdf, "Размер:", size, 4 * mm, page_height - 31 * mm, 27 * mm, mm, bold_font)
     draw_inline_field(pdf, "Артикул:", article, 36 * mm, page_height - 31 * mm, 35 * mm, mm, bold_font)
     draw_inline_field(pdf, "Страна:", country, 4 * mm, page_height - 43 * mm, 40 * mm, mm, bold_font)
     draw_inline_field(pdf, "Состав:", composition, 4 * mm, page_height - 51 * mm, 67 * mm, mm, bold_font)
 
-    pdf.setFont(bold_font, 7.2)
+    pdf.setFont(bold_font, label_75x120_font_size(7.2))
     pdf.drawString(4 * mm, page_height - 61 * mm, "Заказчик:")
     draw_text_block(
         pdf, customer, 20 * mm, page_height - 59 * mm, page_width - 24 * mm,
-        regular_font, 5.5, 2.5 * mm, 4,
+        regular_font, label_75x120_font_size(5.5), 2.5 * mm, 4,
     )
 
-    pdf.setFont(bold_font, 7.2)
+    pdf.setFont(bold_font, label_75x120_font_size(7.2))
     pdf.drawString(4 * mm, page_height - 74 * mm, "Производитель:")
     draw_text_block(
         pdf, manufacturer, 29 * mm, page_height - 72 * mm, page_width - 33 * mm,
-        regular_font, 5.2, 2.4 * mm, 6,
+        regular_font, label_75x120_font_size(5.2), 2.4 * mm, 6,
     )
-
-    pdf.setFont(bold_font, 6.8)
-    pdf.drawString(4 * mm, 34 * mm, "Дата изготовления:")
-    pdf.drawString(28 * mm, 34 * mm, datetime.now().strftime("%d.%m.%Y"))
 
     try:
         code = extract_short_marking_code(raw_code)
     except DuplicateChzError:
         code = short_code_text(raw_code, limit=31)
-    pdf.setFont(regular_font, 7.2)
+    pdf.setFont(regular_font, label_75x120_font_size(7.2))
     pdf.drawCentredString(59 * mm, 34 * mm, code[:16])
     pdf.drawCentredString(59 * mm, 31 * mm, code[16:])
 
 
 def draw_inline_field(pdf, label, value, x, y, width, mm, font_name):
-    pdf.setFont(font_name, 7.5)
+    font_size = label_75x120_font_size(7.5)
+    pdf.setFont(font_name, font_size)
     pdf.drawString(x, y, label)
-    label_width = pdf.stringWidth(label, font_name, 7.5) + 2 * mm
-    draw_text_block(pdf, value, x + label_width, y, width - label_width, font_name, 7.5, 3 * mm, 2)
+    label_width = pdf.stringWidth(label, font_name, font_size) + 2 * mm
+    draw_text_block(pdf, value, x + label_width, y, width - label_width, font_name, font_size, 3 * mm, 2)
 
 
 def draw_text_block(pdf, value, x, y, width, font_name, font_size, leading, max_lines):
@@ -439,9 +445,12 @@ def wrap_text_for_font(pdf, value, width, font_name, font_size):
     words = str(value or "").split()
     if not words:
         return [""]
+    wrapped_words = []
+    for word in words:
+        wrapped_words.extend(split_word_for_font(pdf, word, width, font_name, font_size))
     lines = []
     current = ""
-    for word in words:
+    for word in wrapped_words:
         candidate = f"{current} {word}".strip()
         if not current or pdf.stringWidth(candidate, font_name, font_size) <= width:
             current = candidate
@@ -453,13 +462,31 @@ def wrap_text_for_font(pdf, value, width, font_name, font_size):
     return lines
 
 
+def split_word_for_font(pdf, word, width, font_name, font_size):
+    if pdf.stringWidth(word, font_name, font_size) <= width:
+        return [word]
+
+    parts = []
+    current = ""
+    for character in word:
+        candidate = current + character
+        if current and pdf.stringWidth(candidate, font_name, font_size) > width:
+            parts.append(current)
+            current = character
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
 def draw_rotated_footer(pdf, product_info, page_width, mm, font_name):
     model = str(product_info.get("model_name") or "").strip()
     size = str(product_info.get("size") or "").strip()
     pdf.saveState()
     pdf.translate(page_width - 4 * mm, 2.5 * mm)
     pdf.rotate(180)
-    pdf.setFont(font_name, 6.5)
+    pdf.setFont(font_name, label_75x120_font_size(6.5))
     pdf.drawString(0, 0, model[:36])
     pdf.drawString(40 * mm, 0, f"Размер: {size}")
     pdf.restoreState()
