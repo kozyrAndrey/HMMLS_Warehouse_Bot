@@ -16,6 +16,7 @@ from modules.payroll.report_automation import (
 )
 from modules.schedule.config import date_to_str, parse_date, today_msk
 from modules.storage.postgres import Base, get_engine, session_scope
+from core.module_control import is_module_enabled
 
 
 class DailySummary(Base):
@@ -152,6 +153,8 @@ async def refresh_daily_summary(context, report_date):
 
 
 async def retry_daily_summaries(context):
+    if not is_module_enabled("payroll"):
+        return
     try:
         days = summary_dates_to_check()
     except Exception:

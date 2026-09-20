@@ -16,19 +16,34 @@ def build_start_keyboard():
 # ГЛАВНОЕ МЕНЮ: ВЫБОР РАЗДЕЛА
 # ============================================================
 
-def build_main_menu_keyboard(recruitment_tester=False, manager=False):
+def build_main_menu_keyboard(recruitment_tester=False, manager=False, admin=False, enabled_modules=None):
+    if enabled_modules is None:
+        from core.module_control import enabled_module_keys
+
+        enabled_modules = enabled_module_keys()
+
+    sections = [
+        ("payroll", "💰 Расчет ЗП"),
+        ("schedule", "📅 Расписание"),
+        ("tasks", "🧩 Задачи"),
+        ("consumables", "🧾 Расходники"),
+        ("passes", "🚪 Разовые пропуска"),
+        ("marking", "🏷 Маркировка"),
+    ]
     keyboard = [
-        [InlineKeyboardButton("💰 Расчет ЗП", callback_data="section:payroll")],
-        [InlineKeyboardButton("📅 Расписание", callback_data="section:schedule")],
-        [InlineKeyboardButton("🧩 Задачи", callback_data="section:tasks")],
-        [InlineKeyboardButton("🧾 Расходники", callback_data="section:consumables")],
-        [InlineKeyboardButton("🚪 Разовые пропуска", callback_data="section:passes")],
-        [InlineKeyboardButton("🏷 Маркировка", callback_data="section:marking")],
+        [InlineKeyboardButton(label, callback_data=f"section:{module_key}")]
+        for module_key, label in sections
+        if module_key in enabled_modules
     ]
 
     if manager:
-        keyboard.append([InlineKeyboardButton("👥 Сотрудники", callback_data="section:employees")])
-        keyboard.append([InlineKeyboardButton("🧺 Товары", callback_data="section:products")])
+        if "employees" in enabled_modules:
+            keyboard.append([InlineKeyboardButton("👥 Сотрудники", callback_data="section:employees")])
+        if "products" in enabled_modules:
+            keyboard.append([InlineKeyboardButton("🧺 Товары", callback_data="section:products")])
+
+    if admin:
+        keyboard.append([InlineKeyboardButton("⚙️ Управление ботом", callback_data="section:admin")])
 
     return InlineKeyboardMarkup(keyboard)
 

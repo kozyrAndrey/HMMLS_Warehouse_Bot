@@ -168,6 +168,7 @@ class LamodaJobTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(send_message=AsyncMock())
         context = SimpleNamespace(bot=bot)
         with (
+            patch("modules.lamoda_fbs.jobs.is_module_enabled", return_value=True),
             patch("modules.lamoda_fbs.jobs.pending_counts", return_value={"WAITING_WITHDRAWAL": 2}),
             patch("modules.lamoda_fbs.jobs.get_warehouse_managers", return_value=[
                 {"telegram_user_id": "42", "role": "warehouse_manager", "is_active": True},

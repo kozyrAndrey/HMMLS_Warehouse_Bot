@@ -8,6 +8,7 @@ from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler
 
 from config import GROUP_CHAT_ID, SCHEDULE_REMINDER_TOPIC_ID
 from core.keyboards import build_main_menu_keyboard
+from core.module_control import is_module_enabled
 from modules.payroll.google_sheets import find_employee_for_telegram_user, get_employees
 from modules.schedule.config import MSK_TZ, date_to_str, day_label, parse_date, today_msk
 from modules.schedule.google_sheets import get_schedule_matrix
@@ -1517,6 +1518,8 @@ async def task_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def daily_staff_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("schedule"):
+        return
     if not GROUP_CHAT_ID or not SCHEDULE_REMINDER_TOPIC_ID:
         return
     day = today_msk()
@@ -1530,14 +1533,20 @@ async def daily_staff_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def daily_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("tasks"):
+        return
     await export_tasks_for_date(context, today_msk())
 
 
 async def auto_assign_template_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("tasks"):
+        return
     assign_working_employees_to_unassigned_template_tasks(today_msk())
 
 
 async def weekly_template_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("tasks"):
+        return
     logging.info("Создано задач из регулярных задач: %s", materialize_next_week_templates(today_msk()))
 
 

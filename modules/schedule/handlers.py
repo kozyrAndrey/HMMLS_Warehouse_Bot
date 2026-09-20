@@ -11,6 +11,7 @@ from telegram.ext import (
 
 from config import GROUP_CHAT_ID, SCHEDULE_EXPORT_TOPIC_ID, SCHEDULE_REMINDER_TOPIC_ID
 from core.keyboards import build_main_menu_keyboard
+from core.module_control import is_module_enabled
 from modules.payroll.google_sheets import find_employee_for_telegram_user, get_employee_by_id, get_employees
 from modules.employees.roles import has_role
 from modules.schedule.config import (
@@ -1189,6 +1190,8 @@ async def send_schedule_missing_reminder(context: ContextTypes.DEFAULT_TYPE, wee
 
 
 async def schedule_missing_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("schedule"):
+        return
     current = today_msk()
     if current.weekday() != 4:
         return
@@ -1207,6 +1210,8 @@ async def schedule_missing_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def schedule_manager_overdue_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("schedule"):
+        return
     current = today_msk()
     if current.weekday() != 4:
         return

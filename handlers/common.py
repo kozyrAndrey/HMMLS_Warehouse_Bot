@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from modules.payroll.google_sheets import find_employee_for_telegram_user, is_manager
+from modules.employees.roles import has_role
 from modules.receiving.postgres_storage import get_last_records_text, get_receiving_db_status
 from core.keyboards import (
     build_employees_menu_keyboard,
@@ -35,7 +36,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         "Выберите раздел:",
-        reply_markup=build_main_menu_keyboard(manager=is_manager(employee)),
+        reply_markup=build_main_menu_keyboard(
+            manager=is_manager(employee),
+            admin=has_role(employee, "admin"),
+        ),
     )
 
     return ConversationHandler.END
@@ -131,7 +135,10 @@ async def show_products_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def send_main_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Выберите раздел:"):
     context.user_data.clear()
     employee = find_employee_for_telegram_user(update.effective_user)
-    reply_markup = build_main_menu_keyboard(manager=is_manager(employee))
+    reply_markup = build_main_menu_keyboard(
+        manager=is_manager(employee),
+        admin=has_role(employee, "admin"),
+    )
 
     if update.callback_query:
         query = update.callback_query

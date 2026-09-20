@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from modules.ai_agent.weather import setup_ai_agent_jobs
 from core.keyboards import build_main_menu_keyboard
+from core.module_control import MODULES
 from modules.employees.handlers import cancel_keyboard as employee_navigation_keyboard
 from modules.payroll.handlers import payroll_back_keyboard
 from modules.products.handlers import PRODUCT_ADD_GTIN, product_add_back
@@ -67,7 +68,12 @@ class NavigationKeyboardTests(unittest.TestCase):
             "section:lamoda",
         }
         for manager in (False, True):
-            callbacks = callback_values(build_main_menu_keyboard(manager=manager))
+            callbacks = callback_values(
+                build_main_menu_keyboard(
+                    manager=manager,
+                    enabled_modules=set(MODULES),
+                )
+            )
             self.assertTrue(hidden_callbacks.isdisjoint(callbacks))
             self.assertIn("section:schedule", callbacks)
 

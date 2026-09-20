@@ -12,6 +12,7 @@ from telegram.ext import (
 
 from config import BOT_TOKEN
 from core.access import access_guard
+from core.module_control import init_module_control_storage, module_access_guard
 from modules.receiving.postgres_storage import init_receiving_storage
 from modules.consumables.storage import init_consumables_storage
 from modules.recruitment.storage import init_recruitment_storage
@@ -58,6 +59,7 @@ from modules.lamoda_fbs.jobs import setup_lamoda_jobs
 from modules.lamoda_fbs.storage import init_lamoda_storage
 from modules.passes.handlers import get_pass_handlers
 from modules.passes.storage import init_passes_storage
+from modules.admin_panel.handlers import get_admin_panel_handlers
 
 
 def setup_logging():
@@ -102,6 +104,7 @@ def main():
     init_returns_storage()
     init_marking_storage()
     init_passes_storage()
+    init_module_control_storage()
 
     try:
         init_lamoda_storage()
@@ -150,21 +153,21 @@ def main():
     app.add_error_handler(error_handler)
 
     # Сброс зависших диалогов при переходе между разделами.
-    # Важно: group=-2, чтобы это сработало ДО access_guard и ДО модулей.
+    # Важно: эти группы срабатывают до проверок доступа и обработчиков модулей.
     app.add_handler(
         CallbackQueryHandler(
             reset_conversations_on_navigation,
             pattern=r"^(section:|menu:start$)",
         ),
-        group=-2,
+        group=-3,
     )
-    app.add_handler(CommandHandler("start", reset_conversations_on_navigation), group=-2)
+    app.add_handler(CommandHandler("start", reset_conversations_on_navigation), group=-3)
 
     # Глобальная защита:
     # /start разрешен всем, чтобы пользователь увидел кнопку «Старт».
     # После нажатия «Старт» и любые дальнейшие действия доступны только сотрудникам из списка.
     # /whoami оставлен доступным, чтобы можно было узнать Telegram user_id нового сотрудника.
-    app.add_handler(CallbackQueryHandler(access_guard), group=-1)
+    app.add_handler(CallbackQueryHandler(access_guard), group=-2)
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE
@@ -172,12 +175,17 @@ def main():
             & ~filters.Regex(r"^/(start|whoami)(\\s|$)"),
             access_guard,
         ),
-        group=-1,
+        group=-2,
     )
     app.add_handler(
         MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, access_guard),
-        group=-1,
+        group=-2,
     )
+
+    # Единая проверка состояния модулей блокирует в том числе старые кнопки
+    # и продолжение уже начатых диалогов.
+    app.add_handler(CallbackQueryHandler(module_access_guard), group=-1)
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, module_access_guard), group=-1)
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("last", last_records))
@@ -185,6 +193,10 @@ def main():
     # Служебные команды.
     app.add_handler(CommandHandler("db_status", db_status))
     app.add_handler(CommandHandler("whereami", whereami))
+
+    # Неотключаемая панель управления доступна только роли admin.
+    for handler in get_admin_panel_handlers():
+        app.add_handler(handler)
 
     # Справочная информация.
     for handler in get_reference_handlers():

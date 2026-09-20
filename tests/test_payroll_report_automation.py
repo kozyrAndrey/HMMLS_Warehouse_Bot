@@ -196,6 +196,7 @@ class DailySummaryDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.manager_report_ids = set()
         self.recipients = [employee("brand", "brand_manager", "77")]
         patches = [
+            patch.object(delivery, "is_module_enabled", return_value=True),
             patch.object(delivery, "session_scope", self.session_scope),
             patch.object(automation, "reports_for_date", side_effect=lambda _: dict(self.reports)),
             patch.object(

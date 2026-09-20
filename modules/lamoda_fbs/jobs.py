@@ -12,6 +12,7 @@ from config import (
 from modules.lamoda_fbs.services import get_client, sync_lamoda_statuses
 from modules.lamoda_fbs.storage import pending_counts
 from modules.tasks.storage import get_warehouse_managers
+from core.module_control import is_module_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,8 @@ MSK = ZoneInfo("Europe/Moscow")
 
 
 async def lamoda_sync_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("lamoda"):
+        return
     client = get_client()
     if not client.configured:
         return
@@ -30,6 +33,8 @@ async def lamoda_sync_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def lamoda_marking_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    if not is_module_enabled("lamoda"):
+        return
     try:
         counts = pending_counts()
         withdrawal = counts.get("WAITING_WITHDRAWAL", 0)
