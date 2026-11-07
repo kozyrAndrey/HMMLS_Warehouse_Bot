@@ -1228,6 +1228,21 @@ def get_penalties_in_period(start_date, end_date):
     return penalties
 
 
+def get_employee_penalty_coefficient(employee_id, penalty_category, penalty_date, lookback_days=14):
+    """Return a linear 0.2 multiplier step for same-category penalties in the prior 14 days."""
+    penalty_dt = parse_date(penalty_date)
+    start_date = (penalty_dt - timedelta(days=lookback_days)).strftime("%d.%m.%Y")
+    matching_count = sum(
+        1
+        for penalty in get_penalties_in_period(start_date, penalty_date)
+        if str(penalty.get("employee_id")) == str(employee_id)
+        and safe_float(penalty.get("amount")) > 0
+        and str(penalty.get("penalty_category", "")).strip().casefold()
+        == str(penalty_category or "").strip().casefold()
+    )
+    return round(1.0 + 0.2 * matching_count, 4)
+
+
 def count_employee_penalties_by_type(employee_id, penalty_type, start_date, end_date):
     count = 0
     for penalty in get_penalties_in_period(start_date, end_date):
