@@ -9,6 +9,7 @@ from modules.marking.handlers import (
     MARKING_DISCOUNTS,
     MARKING_DOCUMENT_NAME,
     MARKING_DUPLICATE_CHZ_CODE,
+    MARKING_CATALOG_IMPORT_CONFIRM,
     MARKING_STOCK_CODES_DOCUMENT_NAME,
     MARKING_UNMARKED_CONFIRM,
     MARKING_UNMARKED_PRODUCT,
@@ -23,6 +24,9 @@ from modules.marking.handlers import (
     stock_codes_export_start,
     trend_unmarked_quantity_received,
     catalog_start,
+    catalog_file_received,
+    catalog_import_confirm_keyboard,
+    catalog_import_confirmed,
 )
 
 
@@ -63,6 +67,99 @@ class MarkingHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state, ConversationHandler.END)
         self.assertIn("только руководителям", query.edit_message_text.await_args.args[0])
+
+    async def test_catalog_file_is_parsed_and_previewed(self):
+        status_message = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(
+            document=SimpleNamespace(
+                file_name="catalog.csv",
+                file_size=100,
+                file_id="file-id",
+            ),
+            reply_text=AsyncMock(return_value=status_message),
+        )
+        telegram_file = SimpleNamespace(
+            download_as_bytearray=AsyncMock(
+                return_value=bytearray(
+                    "04670332742266;HOODIE BLACK M\n04670332742273;HOODIE BLACK L\n",
+                    "utf-8",
+                )
+            )
+        )
+        context = SimpleNamespace(
+            user_data={},
+            bot=SimpleNamespace(get_file=AsyncMock(return_value=telegram_file)),
+        )
+
+        with patch("modules.marking.handlers.ensure_manager", return_value=True):
+            state = await catalog_file_received(SimpleNamespace(message=message), context)
+
+        self.assertEqual(state, MARKING_CATALOG_IMPORT_CONFIRM)
+        self.assertIn("Таблица распознана", message.reply_text.await_args_list[1].args[0])
+        self.assertIn("reply_markup", message.reply_text.await_args_list[1].kwargs)
+
+    def test_catalog_import_offers_merge_and_replace(self):
+        callbacks = [
+            button.callback_data
+            for row in catalog_import_confirm_keyboard().inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("marking:catalog:import:merge", callbacks)
+        self.assertIn("marking:catalog:import:replace", callbacks)
+
+    async def test_catalog_import_merge_upserts_without_replacing(self):
+        query = SimpleNamespace(
+            data="marking:catalog:import:merge",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        rows = [{"gtin": "04670332742266", "honest_sign_name": "HOODIE", "size": ""}]
+        context = SimpleNamespace(
+            user_data={
+                "marking_catalog_import_rows": rows,
+                "marking_catalog_import_filename": "catalog.xlsx",
+            }
+        )
+
+        with (
+            patch("modules.marking.handlers.ensure_manager", return_value=True),
+            patch("modules.marking.handlers.upsert_honest_sign_products", return_value=1) as upsert,
+            patch("modules.marking.handlers.replace_marked_honest_sign_products") as replace,
+        ):
+            await catalog_import_confirmed(SimpleNamespace(callback_query=query), context)
+
+        upsert.assert_called_once_with(rows)
+        replace.assert_not_called()
+        self.assertIn("дополнен", query.edit_message_text.await_args.args[0])
+
+    async def test_catalog_import_replace_uses_marked_only_replacement(self):
+        query = SimpleNamespace(
+            data="marking:catalog:import:replace",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        rows = [{"gtin": "04670332742266", "honest_sign_name": "HOODIE", "size": ""}]
+        context = SimpleNamespace(
+            user_data={
+                "marking_catalog_import_rows": rows,
+                "marking_catalog_import_filename": "catalog.xlsx",
+            }
+        )
+
+        with (
+            patch("modules.marking.handlers.ensure_manager", return_value=True),
+            patch("modules.marking.handlers.upsert_honest_sign_products") as upsert,
+            patch(
+                "modules.marking.handlers.replace_marked_honest_sign_products",
+                return_value=1,
+            ) as replace,
+        ):
+            await catalog_import_confirmed(SimpleNamespace(callback_query=query), context)
+
+        replace.assert_called_once_with(rows)
+        upsert.assert_not_called()
+        self.assertIn("заменён", query.edit_message_text.await_args.args[0])
 
     async def test_stock_codes_export_is_available_without_manager_role(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())

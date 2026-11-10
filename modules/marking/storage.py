@@ -2,7 +2,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import DateTime, Integer, String, Text, select, text
+from sqlalchemy import DateTime, Integer, String, Text, delete, select, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from config import BASE_DIR
@@ -206,6 +206,41 @@ def upsert_honest_sign_products(rows):
                         updated_at=now,
                     )
                 )
+    return len(normalized_rows)
+
+
+def replace_marked_honest_sign_products(rows):
+    """Atomically replace GTIN records while preserving unmarked products."""
+    normalized_rows = []
+    seen_gtins = set()
+    for row in rows or []:
+        gtin = normalize_gtin(row.get("gtin"))
+        name = str(row.get("honest_sign_name") or "").strip()
+        size = str(row.get("size") or "").strip()
+        if not name:
+            raise ValueError(f"Для GTIN {gtin} не указано название.")
+        if gtin in seen_gtins:
+            raise ValueError(f"GTIN {gtin} повторяется в импортируемом справочнике.")
+        seen_gtins.add(gtin)
+        normalized_rows.append((gtin, name, size))
+    if not normalized_rows:
+        raise ValueError("Новый справочник не содержит товаров.")
+
+    now = datetime.now()
+    with session_scope() as session:
+        session.execute(delete(HonestSignProduct).where(HonestSignProduct.gtin.is_not(None)))
+        session.add_all(
+            [
+                HonestSignProduct(
+                    gtin=gtin,
+                    honest_sign_name=name,
+                    size=size or None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                for gtin, name, size in normalized_rows
+            ]
+        )
     return len(normalized_rows)
 
 
