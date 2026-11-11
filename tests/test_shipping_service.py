@@ -30,11 +30,11 @@ class ShippingServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ShippingValidationError, "не совпадает"):
             parse_marking_code(FULL_CODE, "04670332744239")
 
-    def test_datamatrix_rejects_cyrillic_and_lowercase_letters(self):
+    def test_datamatrix_rejects_cyrillic_but_allows_mixed_latin_case(self):
         with self.assertRaisesRegex(ShippingValidationError, "кириллица"):
             parse_marking_code(FULL_CODE.replace("A", "А", 1), VALID_GTIN)
-        with self.assertRaisesRegex(ShippingValidationError, "Caps Lock"):
-            parse_marking_code(FULL_CODE.replace("A", "a", 1), VALID_GTIN)
+        parsed = parse_marking_code(FULL_CODE.replace("A", "a", 1), VALID_GTIN)
+        self.assertEqual(parsed["gtin"], VALID_GTIN)
 
     def test_demand_payload_accepts_duplicate_codes_and_uses_short_cis(self):
         template = {

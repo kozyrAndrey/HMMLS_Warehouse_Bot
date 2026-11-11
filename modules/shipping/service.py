@@ -228,14 +228,6 @@ def parse_marking_code(raw_code, expected_gtin):
         raise ShippingValidationError(
             "В коде обнаружена кириллица. Переключите раскладку на английскую и отсканируйте код заново."
         )
-    if re.search(r"[a-z]", normalized):
-        raise ShippingValidationError(
-            "В коде обнаружены строчные латинские буквы. Включите Caps Lock и отсканируйте код заново."
-        )
-    if any(character.isalpha() and not ("A" <= character <= "Z") for character in normalized):
-        raise ShippingValidationError(
-            "Код должен содержать только латинские буквы в верхнем регистре."
-        )
     values = parenthesized_values(normalized) if "(01)" in normalized else plain_values(normalized)
     gtin = str(values.get("01") or "")
     serial = str(values.get("21") or "").strip(GROUP_SEPARATOR)
