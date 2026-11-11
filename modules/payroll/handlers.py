@@ -74,6 +74,7 @@ from modules.payroll.google_sheets import (
     SHIFT_TYPE_HALF,
     update_active_period,
     update_daily_report,
+    update_penalty_telegram_data,
     update_report_message_ids,
     validate_date,
     now_str,
@@ -186,8 +187,7 @@ def payroll_main_keyboard(manager=False, warehouse_manager=False):
     if manager:
         rows.extend(
             [
-                [InlineKeyboardButton("⚠️ Штраф", callback_data="pay:add_penalty")],
-                [InlineKeyboardButton("🗑 Удалить штраф", callback_data="pay:delete_penalty")],
+                [InlineKeyboardButton("⚠️ Штрафы", callback_data="pay:penalties")],
                 [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
                 [InlineKeyboardButton("🏖 Отпускные", callback_data="pay:vacations")],
                 [InlineKeyboardButton("🚚 Водители", callback_data="pay:drivers")],
@@ -218,6 +218,16 @@ def expenses_keyboard():
                 InlineKeyboardButton("Удалить расход", callback_data="expense:delete"),
                 InlineKeyboardButton("Посмотреть расходы", callback_data="expense:view"),
             ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
+        ]
+    )
+
+
+def penalties_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Добавить штраф", callback_data="pay:add_penalty")],
+            [InlineKeyboardButton("🗑 Удалить штраф", callback_data="pay:delete_penalty")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
         ]
     )
@@ -1142,10 +1152,20 @@ async def send_penalty_to_topic(
     coefficient=1.0,
 ):
     if not GROUP_CHAT_ID:
-        return "GROUP_CHAT_ID не настроен, сообщение в тему «Штрафы» не отправлено."
+        return {
+            "status": "GROUP_CHAT_ID не настроен, сообщение в тему «Штрафы» не отправлено.",
+            "chat_id": "",
+            "thread_id": "",
+            "message_ids": [],
+        }
 
     if not PAYROLL_PENALTIES_TOPIC_ID:
-        return "PAYROLL_PENALTIES_TOPIC_ID не настроен, сообщение в тему «Штрафы» не отправлено."
+        return {
+            "status": "PAYROLL_PENALTIES_TOPIC_ID не настроен, сообщение в тему «Штрафы» не отправлено.",
+            "chat_id": int(GROUP_CHAT_ID),
+            "thread_id": "",
+            "message_ids": [],
+        }
 
     photo_file_ids = photo_file_ids or []
     text = format_penalty_topic_text(
@@ -1163,24 +1183,37 @@ async def send_penalty_to_topic(
         "chat_id": int(GROUP_CHAT_ID),
         "message_thread_id": int(PAYROLL_PENALTIES_TOPIC_ID),
     }
+    message_ids = []
 
     if not photo_file_ids:
-        await context.bot.send_message(
+        message = await context.bot.send_message(
             **common_kwargs,
             text=text,
         )
-        return "Штраф отправлен в тему «Штрафы» ✅"
+        message_ids.append(message.message_id)
+        return {
+            "status": "Штраф отправлен в тему «Штрафы» ✅",
+            "chat_id": int(GROUP_CHAT_ID),
+            "thread_id": int(PAYROLL_PENALTIES_TOPIC_ID),
+            "message_ids": message_ids,
+        }
 
     if len(text) > 1000:
         text = text[:950] + "\n\n...текст обрезан."
 
     if len(photo_file_ids) == 1:
-        await context.bot.send_photo(
+        message = await context.bot.send_photo(
             **common_kwargs,
             photo=photo_file_ids[0],
             caption=text,
         )
-        return "Штраф отправлен в тему «Штрафы» ✅"
+        message_ids.append(message.message_id)
+        return {
+            "status": "Штраф отправлен в тему «Штрафы» ✅",
+            "chat_id": int(GROUP_CHAT_ID),
+            "thread_id": int(PAYROLL_PENALTIES_TOPIC_ID),
+            "message_ids": message_ids,
+        }
 
     first_chunk = True
     for chunk_start in range(0, len(photo_file_ids), 10):
@@ -1193,13 +1226,27 @@ async def send_penalty_to_topic(
             else:
                 media.append(InputMediaPhoto(media=photo_file_id))
 
-        await context.bot.send_media_group(
+        messages = await context.bot.send_media_group(
             **common_kwargs,
             media=media,
         )
+        message_ids.extend(message.message_id for message in messages)
         first_chunk = False
 
-    return "Штраф отправлен в тему «Штрафы» ✅"
+    return {
+        "status": "Штраф отправлен в тему «Штрафы» ✅",
+        "chat_id": int(GROUP_CHAT_ID),
+        "thread_id": int(PAYROLL_PENALTIES_TOPIC_ID),
+        "message_ids": message_ids,
+    }
+
+
+def save_penalty_topic_delivery(penalty_id, delivery):
+    if not isinstance(delivery, dict):
+        return str(delivery)
+    if delivery.get("message_ids"):
+        update_penalty_telegram_data(penalty_id, delivery)
+    return str(delivery.get("status", ""))
 
 
 async def maybe_add_late_warehouse_report_penalty(
@@ -1241,7 +1288,7 @@ async def maybe_add_late_warehouse_report_penalty(
         "(через 1 час после окончания смены)."
     )
     created_by = "Бот (автоштраф)"
-    append_penalty(
+    penalty_id = append_penalty(
         employee,
         report_date,
         penalty_type["category"],
@@ -1252,7 +1299,7 @@ async def maybe_add_late_warehouse_report_penalty(
     )
 
     try:
-        await send_penalty_to_topic(
+        delivery = await send_penalty_to_topic(
             context=context,
             employee=employee,
             penalty_date=report_date,
@@ -1263,6 +1310,7 @@ async def maybe_add_late_warehouse_report_penalty(
             created_by=created_by,
             coefficient=coefficient,
         )
+        save_penalty_topic_delivery(penalty_id, delivery)
         return f"Автоштраф «{penalty_type['name']}» добавлен: {money(amount)} ₽."
     except Exception as error:
         logging.exception("Не удалось отправить автоштраф за поздний отчет в тему Telegram")
@@ -1299,7 +1347,7 @@ async def maybe_send_third_absence_notice(context, employee, penalty_date, creat
         "Необходимо рассмотреть вопрос об увольнении."
     )
 
-    append_penalty(
+    penalty_id = append_penalty(
         employee,
         penalty_date,
         auto_type["category"],
@@ -1310,7 +1358,7 @@ async def maybe_send_third_absence_notice(context, employee, penalty_date, creat
     )
 
     try:
-        return await send_penalty_to_topic(
+        delivery = await send_penalty_to_topic(
             context=context,
             employee=employee,
             penalty_date=penalty_date,
@@ -1321,6 +1369,7 @@ async def maybe_send_third_absence_notice(context, employee, penalty_date, creat
             created_by=created_by,
             coefficient=coefficient,
         )
+        return save_penalty_topic_delivery(penalty_id, delivery)
     except Exception as error:
         logging.exception("Не удалось отправить автоматическое уведомление о третьем невыходе")
         return f"Автоуведомление о третьем невыходе не отправлено ⚠️\nОшибка: {error}"
@@ -3720,6 +3769,17 @@ def format_penalty_line(penalty, index=None):
     )
 
 
+async def penalties_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    await query.edit_message_text("Штрафы", reply_markup=penalties_keyboard())
+    return ConversationHandler.END
+
+
 def penalty_delete_keyboard(penalties):
     rows = []
     for index, penalty in enumerate(penalties, start=1):
@@ -3733,7 +3793,7 @@ def penalty_delete_keyboard(penalties):
                 callback_data=f"penaltydel:{penalty['penalty_id']}",
             )
         ])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="pay:penalties")])
     rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -3758,7 +3818,7 @@ async def penalty_delete_start(update: Update, context: ContextTypes.DEFAULT_TYP
     if not period:
         await query.edit_message_text(
             "Активный расчетный период не настроен.",
-            reply_markup=payroll_main_keyboard(manager=True),
+            reply_markup=penalties_keyboard(),
         )
         return ConversationHandler.END
     penalties = list(reversed(get_penalties_in_period(period["start_date"], period["end_date"])))
@@ -3766,7 +3826,7 @@ async def penalty_delete_start(update: Update, context: ContextTypes.DEFAULT_TYP
     if not penalties:
         await query.edit_message_text(
             f"Штрафов за период {period['start_date']} — {period['end_date']} нет.",
-            reply_markup=payroll_main_keyboard(manager=True),
+            reply_markup=penalties_keyboard(),
         )
         return ConversationHandler.END
     context.user_data["penalty_delete_items"] = {
@@ -3790,7 +3850,7 @@ async def penalty_delete_selected(update: Update, context: ContextTypes.DEFAULT_
     if not penalty:
         await query.edit_message_text(
             "Штраф не найден в текущем списке.",
-            reply_markup=payroll_main_keyboard(manager=True),
+            reply_markup=penalties_keyboard(),
         )
         return ConversationHandler.END
     await query.edit_message_text(
@@ -3798,6 +3858,30 @@ async def penalty_delete_selected(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=penalty_delete_confirm_keyboard(penalty_id),
     )
     return PENALTY_DELETE_SELECT
+
+
+async def delete_penalty_topic_messages(context, penalty):
+    message_ids = penalty.get("telegram_message_ids") or []
+    chat_id = penalty.get("telegram_chat_id") or GROUP_CHAT_ID
+    if not message_ids or not chat_id:
+        return "Связанное сообщение в теме не найдено — у старых штрафов ID не сохранялся."
+
+    failed = []
+    for message_id in message_ids:
+        try:
+            await context.bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+        except Exception as error:
+            logging.warning(
+                "Не удалось удалить сообщение штрафа из Telegram: chat_id=%s message_id=%s error=%s",
+                chat_id,
+                message_id,
+                error,
+            )
+            failed.append(message_id)
+
+    if failed:
+        return f"Не удалось удалить {len(failed)} сообщ. из темы «Штрафы» ⚠️"
+    return "Сообщение из темы «Штрафы» удалено ✅"
 
 
 async def penalty_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3811,13 +3895,14 @@ async def penalty_delete_confirmed(update: Update, context: ContextTypes.DEFAULT
     if not deleted:
         await query.edit_message_text(
             "Штраф не найден или уже удалён.",
-            reply_markup=payroll_main_keyboard(manager=True),
+            reply_markup=penalties_keyboard(),
         )
         context.user_data.clear()
         return ConversationHandler.END
+    topic_status = await delete_penalty_topic_messages(context, deleted)
     await query.edit_message_text(
-        "Штраф удалён ✅\n\n" + format_penalty_line(deleted),
-        reply_markup=payroll_main_keyboard(manager=True),
+        "Штраф удалён ✅\n\n" + format_penalty_line(deleted) + f"\n\n{topic_status}",
+        reply_markup=penalties_keyboard(),
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -4032,7 +4117,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
     amount = context.user_data["penalty_amount"]
     photo_file_ids = context.user_data.get("penalty_photo_file_ids", [])
 
-    append_penalty(
+    penalty_id = append_penalty(
         employee,
         penalty_date,
         penalty_category,
@@ -4043,7 +4128,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
     )
 
     try:
-        topic_status = await send_penalty_to_topic(
+        delivery = await send_penalty_to_topic(
             context=context,
             employee=employee,
             penalty_date=penalty_date,
@@ -4055,6 +4140,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
             photo_file_ids=photo_file_ids,
             coefficient=context.user_data.get("penalty_coefficient", 1.0),
         )
+        topic_status = save_penalty_topic_delivery(penalty_id, delivery)
     except Exception as error:
         logging.exception("Не удалось отправить штраф в тему Telegram")
         topic_status = f"Штраф записан в таблицу, но не отправлен в тему ⚠️\nОшибка: {error}"
@@ -4082,7 +4168,7 @@ async def penalty_confirm_received(update: Update, context: ContextTypes.DEFAULT
         f"Сумма: {money(amount)}\n\n"
         f"Фото-доказательства: {len(photo_file_ids) if photo_file_ids else 'нет'}\n\n"
         f"{topic_status}{extra_status}",
-        reply_markup=payroll_main_keyboard(manager=True),
+        reply_markup=penalties_keyboard(),
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -4469,6 +4555,7 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(expense_start, pattern=r"^(pay:add_expense|expense:add)$"),
             CallbackQueryHandler(expense_view_start, pattern=r"^expense:view$"),
             CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
+            CallbackQueryHandler(penalties_menu_start, pattern=r"^pay:penalties$"),
             CallbackQueryHandler(penalty_start, pattern=r"^pay:add_penalty$"),
             CallbackQueryHandler(penalty_delete_start, pattern=r"^pay:delete_penalty$"),
             CallbackQueryHandler(bonuses_menu_start, pattern=r"^pay:bonuses$"),

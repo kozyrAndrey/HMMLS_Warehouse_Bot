@@ -116,7 +116,12 @@ PENALTY_HEADERS = [
     "Сумма",
     "Назначил",
     "Создано",
+    "telegram_chat_id",
+    "telegram_thread_id",
+    "telegram_message_ids",
 ]
+
+OLD_PENALTY_HEADERS_WITH_CATEGORY = PENALTY_HEADERS[:10]
 
 BONUS_HEADERS = [
     "bonus_id",
@@ -360,6 +365,16 @@ def ensure_penalty_headers(worksheet):
         return
 
     new_values = [PENALTY_HEADERS]
+
+    if first_row == OLD_PENALTY_HEADERS_WITH_CATEGORY:
+        for row in values[1:]:
+            padded = row + [""] * (len(OLD_PENALTY_HEADERS_WITH_CATEGORY) - len(row))
+            new_values.append(padded + ["", "", ""])
+
+        worksheet.clear()
+        end_col = column_letter(len(PENALTY_HEADERS))
+        worksheet.update(f"A1:{end_col}{len(new_values)}", new_values)
+        return
 
     if first_row == OLD_PENALTY_HEADERS_WITH_TYPE:
         for row in values[1:]:
@@ -1154,8 +1169,9 @@ def delete_bonus(bonus_id):
 
 def append_penalty(employee, penalty_date, penalty_category, penalty_type, comment, amount, created_by):
     ws = get_worksheet(PENALTIES_SHEET)
+    penalty_id = generate_id("penalty")
     ws.append_row([
-        generate_id("penalty"),
+        penalty_id,
         penalty_date,
         employee["employee_id"],
         employee["full_name"],
@@ -1165,7 +1181,53 @@ def append_penalty(employee, penalty_date, penalty_category, penalty_type, comme
         safe_float(amount),
         created_by,
         now_str(),
+        "",
+        "",
+        "",
     ])
+    return penalty_id
+
+
+def update_penalty_telegram_data(penalty_id, telegram_data):
+    ws = get_worksheet(PENALTIES_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return False
+    headers = values[0]
+    for row_index, row in enumerate(values[1:], start=2):
+        data = dict(zip(headers, row))
+        if str(data.get("penalty_id", "")) != str(penalty_id):
+            continue
+        data["telegram_chat_id"] = str(telegram_data.get("chat_id", "") or "")
+        data["telegram_thread_id"] = str(telegram_data.get("thread_id", "") or "")
+        data["telegram_message_ids"] = json.dumps(
+            [int(message_id) for message_id in telegram_data.get("message_ids", [])],
+            ensure_ascii=False,
+        )
+        end_col = column_letter(len(PENALTY_HEADERS))
+        ws.update(
+            f"A{row_index}:{end_col}{row_index}",
+            [[data.get(header, "") for header in PENALTY_HEADERS]],
+        )
+        return True
+    return False
+
+
+def parse_penalty_message_ids(value):
+    if isinstance(value, list):
+        raw_ids = value
+    else:
+        try:
+            raw_ids = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_ids = []
+    result = []
+    for message_id in raw_ids if isinstance(raw_ids, list) else []:
+        try:
+            result.append(int(message_id))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 def penalty_record_from_row(record):
@@ -1180,6 +1242,9 @@ def penalty_record_from_row(record):
         "amount": safe_float(record.get("Сумма")),
         "assigned_by": str(record.get("Назначил", "")),
         "created_at": str(record.get("Создано", "")),
+        "telegram_chat_id": str(record.get("telegram_chat_id", "")),
+        "telegram_thread_id": str(record.get("telegram_thread_id", "")),
+        "telegram_message_ids": parse_penalty_message_ids(record.get("telegram_message_ids", "")),
     }
 
 

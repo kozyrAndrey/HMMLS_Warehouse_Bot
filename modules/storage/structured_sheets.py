@@ -82,6 +82,9 @@ SHEET_TABLES = {
             ("Сумма", "amount"),
             ("Назначил", "assigned_by"),
             ("Создано", "created_at_text"),
+            ("telegram_chat_id", "telegram_chat_id"),
+            ("telegram_thread_id", "telegram_thread_id"),
+            ("telegram_message_ids", "telegram_message_ids"),
         ],
     },
     ("payroll", "Премиальные"): {
