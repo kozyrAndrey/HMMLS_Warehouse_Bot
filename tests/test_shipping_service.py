@@ -47,8 +47,8 @@ class ShippingServiceTests(unittest.TestCase):
             [code, code],
         )
         self.assertEqual(payload["positions"][0]["trackingCodes"], [
-            {"cis": code["short_code"]},
-            {"cis": code["short_code"]},
+            {"cis": code["short_code"], "type": "trackingcode"},
+            {"cis": code["short_code"], "type": "trackingcode"},
         ])
 
 

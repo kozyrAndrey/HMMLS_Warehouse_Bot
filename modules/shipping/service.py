@@ -307,7 +307,10 @@ def demand_payload(template, sync_id, codes):
         else:
             codes_by_assortment.pop(assortment_id, None)
         if marking_codes:
-            position["trackingCodes"] = [{"cis": code} for code in marking_codes]
+            position["trackingCodes"] = [
+                {"cis": code, "type": "trackingcode"}
+                for code in marking_codes
+            ]
         positions.append(position)
     if any(codes_by_assortment.values()):
         raise ShippingServiceError("Не удалось сопоставить часть кодов ЧЗ позициям отгрузки.")
