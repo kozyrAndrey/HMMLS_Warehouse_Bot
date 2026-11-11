@@ -36,8 +36,14 @@ class ShippingStorageExcelTests(unittest.TestCase):
             "moysklad_order_id": "order-1",
             "order_number": "mind-100",
             "shipping_type": shipping_type,
-            "order_snapshot": [{"name": "Куртка", "quantity": 1, "gtin": "04601234567893"}],
-            "marking_codes": [{"product_name": "Куртка", "gtin": "04601234567893", "raw_code": "FULL"}],
+            "order_snapshot": [
+                {"position_id": "p1", "name": "Куртка", "quantity": 2, "gtin": "04601234567893"},
+                {"position_id": "p2", "name": "Ремень", "quantity": 1, "gtin": ""},
+            ],
+            "marking_codes": [
+                {"position_id": "p1", "product_name": "Куртка", "gtin": "04601234567893", "raw_code": "FULL-1"},
+                {"position_id": "p1", "product_name": "Куртка", "gtin": "04601234567893", "raw_code": "FULL-2"},
+            ],
             "collector_employee_id": "emp-1",
             "collector_name": "Сборщик",
             "created_by_employee_id": "emp-2",
@@ -54,16 +60,21 @@ class ShippingStorageExcelTests(unittest.TestCase):
         record = get_shipping_by_order(order_id="order-1")
         self.assertEqual(record["shipping_type"], "pickup")
 
-    def test_excel_uses_one_sheet_and_one_row_per_shipping(self):
+    def test_excel_uses_one_sheet_and_one_row_per_order_position(self):
         save_shipping_record(self.data())
         content = create_shipping_xlsx([get_shipping_by_order(order_id="order-1")])
         workbook = load_workbook(BytesIO(content))
         self.assertEqual(workbook.sheetnames, ["Отправления"])
         sheet = workbook["Отправления"]
-        self.assertEqual(sheet.max_row, 2)
+        self.assertEqual(sheet.max_row, 3)
         self.assertEqual(sheet["B2"].value, "mind-100")
-        self.assertIn("Куртка", sheet["F2"].value)
-        self.assertEqual(sheet["J2"].value, "Куртка: FULL")
+        self.assertEqual(sheet["B3"].value, "mind-100")
+        self.assertEqual(sheet["F2"].value, "Куртка")
+        self.assertEqual(sheet["F3"].value, "Ремень")
+        self.assertEqual(sheet["G2"].value, 2)
+        self.assertEqual(sheet["I2"].value, 2)
+        self.assertEqual(sheet["J2"].value, "FULL-1\nFULL-2")
+        self.assertIsNone(sheet["J3"].value)
 
 
 if __name__ == "__main__":
