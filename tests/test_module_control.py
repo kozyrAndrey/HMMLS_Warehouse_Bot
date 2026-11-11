@@ -28,6 +28,7 @@ class ModuleCallbackTests(unittest.TestCase):
             "pass:new": "passes",
             "marking:catalog": "marking",
             "shipping:export": "shipping",
+            "penaltydel:penalty-1": "payroll",
             "empedit:42": "employees",
             "prodeditproduct:42": "products",
             "recvdel:choose": "receiving",

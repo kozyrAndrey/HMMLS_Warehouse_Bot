@@ -186,7 +186,7 @@ CALLBACK_PREFIXES = {
         "cremp:", "crkpi:", "crlunch:", "crshift:", "eddate:", "edemp:",
         "editdelete:", "editfield:", "editkpi:", "editlunch:", "editnewdate:",
         "edittasks:", "edkpi:", "edshift:", "exemp:", "mgrdate:", "mgrwiz:",
-        "penalty:", "penaltyphotos:", "pngrp:", "pntype:", "pnemp:", "salemp:",
+        "penalty:", "penaltydel:", "penaltydelconfirm:", "penaltyphotos:", "pngrp:", "pntype:", "pnemp:", "salemp:",
     ),
     "schedule": ("section:schedule", "sch"),
     "tasks": ("section:tasks", "task", "reg", "irreg:"),

@@ -1168,6 +1168,37 @@ def append_penalty(employee, penalty_date, penalty_category, penalty_type, comme
     ])
 
 
+def penalty_record_from_row(record):
+    return {
+        "penalty_id": str(record.get("penalty_id", "")),
+        "date": str(record.get("Дата", "")),
+        "employee_id": str(record.get("employee_id", "")),
+        "full_name": str(record.get("ФИО", "")),
+        "penalty_category": str(record.get("Категория штрафа", "")),
+        "penalty_type": str(record.get("Тип штрафа", "")),
+        "comment": str(record.get("Комментарий", "")),
+        "amount": safe_float(record.get("Сумма")),
+        "assigned_by": str(record.get("Назначил", "")),
+        "created_at": str(record.get("Создано", "")),
+    }
+
+
+def delete_penalty(penalty_id):
+    ws = get_worksheet(PENALTIES_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None
+    headers = values[0]
+    for row_index, row in enumerate(values[1:], start=2):
+        data = dict(zip(headers, row))
+        if str(data.get("penalty_id", "")) != str(penalty_id):
+            continue
+        penalty = penalty_record_from_row(data)
+        ws.delete_rows(row_index)
+        return penalty
+    return None
+
+
 def get_reports_in_period(start_date, end_date):
     ws = get_worksheet(REPORTS_SHEET)
     reports = []
@@ -1217,14 +1248,7 @@ def get_penalties_in_period(start_date, end_date):
     penalties = []
     for record in records_from_worksheet(ws):
         if date_in_range(record.get("Дата", ""), start_date, end_date):
-            penalties.append({
-                "employee_id": str(record.get("employee_id", "")),
-                "amount": safe_float(record.get("Сумма")),
-                "penalty_category": str(record.get("Категория штрафа", "")),
-                "penalty_type": str(record.get("Тип штрафа", "")),
-                "comment": str(record.get("Комментарий", "")),
-                "date": str(record.get("Дата", "")),
-            })
+            penalties.append(penalty_record_from_row(record))
     return penalties
 
 

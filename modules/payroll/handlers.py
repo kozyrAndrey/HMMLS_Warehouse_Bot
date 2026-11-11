@@ -41,6 +41,7 @@ from modules.payroll.google_sheets import (
     create_active_period,
     delete_bonus,
     delete_expense,
+    delete_penalty,
     delete_daily_kpi_row,
     delete_daily_report,
     find_employee_for_telegram_user,
@@ -160,6 +161,7 @@ MSK_TZ = ZoneInfo("Europe/Moscow")
 ) = range(300, 356)
 
 CREATE_MANAGER_DATE = 356
+PENALTY_DELETE_SELECT = 357
 
 
 # ============================================================
@@ -185,6 +187,7 @@ def payroll_main_keyboard(manager=False, warehouse_manager=False):
         rows.extend(
             [
                 [InlineKeyboardButton("⚠️ Штраф", callback_data="pay:add_penalty")],
+                [InlineKeyboardButton("🗑 Удалить штраф", callback_data="pay:delete_penalty")],
                 [InlineKeyboardButton("🎁 Премиальные", callback_data="pay:bonuses")],
                 [InlineKeyboardButton("🏖 Отпускные", callback_data="pay:vacations")],
                 [InlineKeyboardButton("🚚 Водители", callback_data="pay:drivers")],
@@ -3703,6 +3706,123 @@ async def expense_delete_confirmed(update: Update, context: ContextTypes.DEFAULT
 # ============================================================
 
 
+def format_penalty_line(penalty, index=None):
+    prefix = f"{index}. " if index is not None else ""
+    comment = str(penalty.get("comment", "") or "—")
+    if len(comment) > 100:
+        comment = comment[:97] + "..."
+    return (
+        f"{prefix}{penalty['date']} — {penalty['full_name']} — {money(penalty['amount'])} ₽\n"
+        f"Категория: {penalty.get('penalty_category') or '—'}\n"
+        f"Тип: {penalty.get('penalty_type') or '—'}\n"
+        f"Комментарий: {comment}\n"
+        f"Назначил: {penalty.get('assigned_by') or '—'}"
+    )
+
+
+def penalty_delete_keyboard(penalties):
+    rows = []
+    for index, penalty in enumerate(penalties, start=1):
+        text = (
+            f"{index}. {penalty['date']} — {penalty['full_name']} — "
+            f"{penalty.get('penalty_type') or 'Штраф'}"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text[:60],
+                callback_data=f"penaltydel:{penalty['penalty_id']}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def penalty_delete_confirm_keyboard(penalty_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Да, удалить", callback_data=f"penaltydelconfirm:{penalty_id}")],
+        [InlineKeyboardButton("⬅️ Назад к списку", callback_data="pay:delete_penalty")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="pay:cancel")],
+    ])
+
+
+async def penalty_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    current = current_employee_or_none(update)
+    if not is_manager(current):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    period = get_active_period()
+    if not period:
+        await query.edit_message_text(
+            "Активный расчетный период не настроен.",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        return ConversationHandler.END
+    penalties = list(reversed(get_penalties_in_period(period["start_date"], period["end_date"])))
+    penalties = [penalty for penalty in penalties if penalty.get("penalty_id")]
+    if not penalties:
+        await query.edit_message_text(
+            f"Штрафов за период {period['start_date']} — {period['end_date']} нет.",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        return ConversationHandler.END
+    context.user_data["penalty_delete_items"] = {
+        penalty["penalty_id"]: penalty for penalty in penalties
+    }
+    await query.edit_message_text(
+        f"Выберите штраф для удаления за период {period['start_date']} — {period['end_date']}:",
+        reply_markup=penalty_delete_keyboard(penalties),
+    )
+    return PENALTY_DELETE_SELECT
+
+
+async def penalty_delete_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    penalty_id = query.data.replace("penaltydel:", "")
+    penalty = (context.user_data.get("penalty_delete_items") or {}).get(penalty_id)
+    if not penalty:
+        await query.edit_message_text(
+            "Штраф не найден в текущем списке.",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Удалить этот штраф?\n\n" + format_penalty_line(penalty),
+        reply_markup=penalty_delete_confirm_keyboard(penalty_id),
+    )
+    return PENALTY_DELETE_SELECT
+
+
+async def penalty_delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_manager(current_employee_or_none(update)):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+    penalty_id = query.data.replace("penaltydelconfirm:", "")
+    deleted = delete_penalty(penalty_id)
+    if not deleted:
+        await query.edit_message_text(
+            "Штраф не найден или уже удалён.",
+            reply_markup=payroll_main_keyboard(manager=True),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Штраф удалён ✅\n\n" + format_penalty_line(deleted),
+        reply_markup=payroll_main_keyboard(manager=True),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 async def penalty_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -4350,6 +4470,7 @@ def get_payroll_conversation_handler():
             CallbackQueryHandler(expense_view_start, pattern=r"^expense:view$"),
             CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
             CallbackQueryHandler(penalty_start, pattern=r"^pay:add_penalty$"),
+            CallbackQueryHandler(penalty_delete_start, pattern=r"^pay:delete_penalty$"),
             CallbackQueryHandler(bonuses_menu_start, pattern=r"^pay:bonuses$"),
             CallbackQueryHandler(bonus_start, pattern=r"^bonus:add$"),
             CallbackQueryHandler(bonus_view_start, pattern=r"^bonus:view$"),
@@ -4466,6 +4587,12 @@ def get_payroll_conversation_handler():
                 CallbackQueryHandler(expense_delete_confirmed, pattern=r"^expdelconfirm:"),
                 CallbackQueryHandler(expense_delete_start, pattern=r"^expense:delete$"),
                 CallbackQueryHandler(expenses_menu_start, pattern=r"^pay:expenses$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            PENALTY_DELETE_SELECT: [
+                CallbackQueryHandler(penalty_delete_selected, pattern=r"^penaltydel:"),
+                CallbackQueryHandler(penalty_delete_confirmed, pattern=r"^penaltydelconfirm:"),
+                CallbackQueryHandler(penalty_delete_start, pattern=r"^pay:delete_penalty$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],
             BONUS_EMPLOYEE: [
