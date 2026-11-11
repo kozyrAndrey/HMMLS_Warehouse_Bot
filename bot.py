@@ -32,6 +32,7 @@ from handlers.common import (
     show_products_menu,
     show_receiving_menu,
     show_returns_menu,
+    show_shipping_menu,
     start,
     whereami,
 )
@@ -60,6 +61,8 @@ from modules.lamoda_fbs.storage import init_lamoda_storage
 from modules.passes.handlers import get_pass_handlers
 from modules.passes.storage import init_passes_storage
 from modules.admin_panel.handlers import get_admin_panel_handlers
+from modules.shipping.handlers import get_shipping_handlers
+from modules.shipping.storage import init_shipping_storage
 
 
 def setup_logging():
@@ -105,6 +108,7 @@ def main():
     init_marking_storage()
     init_passes_storage()
     init_module_control_storage()
+    init_shipping_storage()
 
     try:
         init_lamoda_storage()
@@ -242,6 +246,10 @@ def main():
     for handler in get_marking_handlers():
         app.add_handler(handler)
 
+    # Отправления СДЭК и самовывоз.
+    for handler in get_shipping_handlers():
+        app.add_handler(handler)
+
     # Сотрудники.
     for handler in get_employee_handlers():
         app.add_handler(handler)
@@ -264,6 +272,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern=r"^menu:start$"))
     app.add_handler(CallbackQueryHandler(show_receiving_menu, pattern=r"^section:receiving$"))
     app.add_handler(CallbackQueryHandler(show_returns_menu, pattern=r"^section:returns$"))
+    app.add_handler(CallbackQueryHandler(show_shipping_menu, pattern=r"^section:shipping$"))
     app.add_handler(CallbackQueryHandler(show_marking_menu, pattern=r"^section:marking$"))
     app.add_handler(CallbackQueryHandler(show_employees_menu, pattern=r"^section:employees$"))
     app.add_handler(CallbackQueryHandler(show_products_menu, pattern=r"^section:products$"))

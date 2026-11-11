@@ -27,6 +27,7 @@ class ModuleCallbackTests(unittest.TestCase):
             "consinventory:finish": "consumables",
             "pass:new": "passes",
             "marking:catalog": "marking",
+            "shipping:export": "shipping",
             "empedit:42": "employees",
             "prodeditproduct:42": "products",
             "recvdel:choose": "receiving",

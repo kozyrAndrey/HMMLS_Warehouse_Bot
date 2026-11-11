@@ -10,10 +10,10 @@ from modules.employees.roles import employee_roles
 # если справочник временно недоступен.
 
 ROLE_PERMISSIONS = {
-    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products", "lamoda"},
-    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products", "lamoda"},
-    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "employees", "products", "lamoda"},
-    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables", "marking", "lamoda"},
+    "admin": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "shipping", "employees", "products", "lamoda"},
+    "warehouse_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "shipping", "employees", "products", "lamoda"},
+    "brand_manager": {"incoming", "returns", "last_records", "service", "payroll", "schedule", "consumables", "marking", "shipping", "employees", "products", "lamoda"},
+    "warehouse_employee": {"incoming", "returns", "last_records", "payroll", "schedule", "consumables", "marking", "shipping", "lamoda"},
     "viewer": {"last_records"},
 }
 

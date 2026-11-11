@@ -46,6 +46,13 @@ class PayrollManagerReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
         period_patch = patch("modules.payroll.google_sheets.get_period_for_date", return_value={"payment_mode": "hourly"})
         period_patch.start()
         self.addCleanup(period_patch.stop)
+        late_penalty_patch = patch(
+            "modules.payroll.handlers.maybe_add_late_warehouse_report_penalty",
+            new_callable=AsyncMock,
+            return_value=None,
+        )
+        late_penalty_patch.start()
+        self.addCleanup(late_penalty_patch.stop)
 
     def test_manager_menu_has_separate_management_report_button(self):
         keyboard = payroll_main_keyboard(manager=True, warehouse_manager=True)

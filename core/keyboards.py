@@ -23,6 +23,7 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False, admin=Fals
         enabled_modules = enabled_module_keys()
 
     sections = [
+        ("shipping", "🚚 Отправления"),
         ("payroll", "💰 Расчет ЗП"),
         ("schedule", "📅 Расписание"),
         ("tasks", "🧩 Задачи"),
@@ -46,6 +47,17 @@ def build_main_menu_keyboard(recruitment_tester=False, manager=False, admin=Fals
         keyboard.append([InlineKeyboardButton("⚙️ Управление ботом", callback_data="section:admin")])
 
     return InlineKeyboardMarkup(keyboard)
+
+
+def build_shipping_menu_keyboard(manager=False):
+    rows = [
+        [InlineKeyboardButton("🚚 Отправление СДЭК", callback_data="shipping:type:cdek")],
+        [InlineKeyboardButton("🏬 Самовывоз", callback_data="shipping:type:pickup")],
+    ]
+    if manager:
+        rows.append([InlineKeyboardButton("📤 Выгрузить отправления в Excel", callback_data="shipping:export")])
+    rows.append([InlineKeyboardButton("⬅️ Главное меню", callback_data="menu:start")])
+    return InlineKeyboardMarkup(rows)
 
 
 def build_marking_menu_keyboard(manager=False):

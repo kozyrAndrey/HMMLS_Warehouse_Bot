@@ -386,6 +386,7 @@ PENALTY_TYPES = {
 
 PENALTY_AUTO_DISMISSAL_TYPE_ID = "absence_no_reason_third_month"
 PENALTY_ABSENCE_NO_REASON_TYPE_ID = "absence_no_reason"
+PENALTY_LATE_WAREHOUSE_REPORT_TYPE_ID = "late_warehouse_report"
 
 PENALTY_TYPE_GROUPS = {
     "inventory": {

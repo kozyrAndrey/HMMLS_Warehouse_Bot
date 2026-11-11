@@ -5,6 +5,7 @@ import re
 import uuid
 from decimal import InvalidOperation
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import (
@@ -25,6 +26,7 @@ from core.keyboards import build_main_menu_keyboard
 from modules.payroll.config import (
     PENALTY_ABSENCE_NO_REASON_TYPE_ID,
     PENALTY_AUTO_DISMISSAL_TYPE_ID,
+    PENALTY_LATE_WAREHOUSE_REPORT_TYPE_ID,
     PENALTY_TYPES,
     PENALTY_TYPE_GROUPS,
 )
@@ -58,6 +60,7 @@ from modules.payroll.google_sheets import (
     calculate_kpi_sum,
     count_employee_penalties_by_type,
     get_employee_penalty_coefficient,
+    get_penalties_in_period,
     money,
     report_data_to_model,
     safe_float,
@@ -92,6 +95,9 @@ from modules.payroll.report_automation import (
     completed_tasks_text, load_day_reports, quantity, quantity_text,
     report_coverage_text, summary_chunks, volume_values, warehouse_tasks_for_report,
 )
+
+
+MSK_TZ = ZoneInfo("Europe/Moscow")
 
 
 (
@@ -540,6 +546,40 @@ def calculate_worked_hours(interval, lunch_hours):
     if worked_hours <= 0 or abs(worked_hours * 2 - round(worked_hours * 2)) > 0.0001:
         return None
     return worked_hours
+
+
+def warehouse_report_deadline(report_date, interval):
+    """Возвращает дедлайн отчета: час после фактического окончания смены."""
+    parsed = parse_work_interval(interval)
+    if not parsed:
+        return None
+
+    normalized, _ = parsed
+    start_text, end_text = normalized.split("-", 1)
+    report_day = datetime.strptime(str(report_date), "%d.%m.%Y").date()
+    start_time = datetime.strptime(start_text, "%H:%M").time()
+    end_time = datetime.strptime(end_text, "%H:%M").time()
+    shift_start = datetime.combine(report_day, start_time, tzinfo=MSK_TZ)
+    shift_end = datetime.combine(report_day, end_time, tzinfo=MSK_TZ)
+    if shift_end <= shift_start:
+        shift_end += timedelta(days=1)
+    return shift_end + timedelta(hours=1)
+
+
+def warehouse_report_is_late(report_date, interval, submitted_at=None):
+    try:
+        deadline = warehouse_report_deadline(report_date, interval)
+    except (TypeError, ValueError):
+        return False
+    if not deadline:
+        return False
+
+    submitted_at = submitted_at or datetime.now(MSK_TZ)
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=MSK_TZ)
+    else:
+        submitted_at = submitted_at.astimezone(MSK_TZ)
+    return submitted_at > deadline
 
 
 def parse_positive_amount(text):
@@ -1157,6 +1197,76 @@ async def send_penalty_to_topic(
         first_chunk = False
 
     return "Штраф отправлен в тему «Штрафы» ✅"
+
+
+async def maybe_add_late_warehouse_report_penalty(
+    context,
+    employee,
+    report_date,
+    interval,
+    submitted_at=None,
+):
+    """Создает один автоштраф, если отчет сдан позже установленного дедлайна."""
+    submitted_at = submitted_at or datetime.now(MSK_TZ)
+    if not warehouse_report_is_late(report_date, interval, submitted_at):
+        return None
+
+    penalty_type = PENALTY_TYPES[PENALTY_LATE_WAREHOUSE_REPORT_TYPE_ID]
+    duplicate_exists = any(
+        str(penalty.get("employee_id", "")) == str(employee["employee_id"])
+        and str(penalty.get("penalty_type", "")) == penalty_type["name"]
+        for penalty in get_penalties_in_period(report_date, report_date)
+    )
+    if duplicate_exists:
+        return None
+
+    deadline = warehouse_report_deadline(report_date, interval)
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=MSK_TZ)
+    else:
+        submitted_at = submitted_at.astimezone(MSK_TZ)
+
+    coefficient = get_employee_penalty_coefficient(
+        employee["employee_id"],
+        penalty_type["category"],
+        report_date,
+    )
+    amount = round(safe_float(penalty_type["amount"]) * coefficient, 2)
+    comment = (
+        f"Ежедневный отчет отправлен {submitted_at.strftime('%d.%m.%Y в %H:%M')}. "
+        f"Дедлайн: {deadline.strftime('%d.%m.%Y в %H:%M')} "
+        "(через 1 час после окончания смены)."
+    )
+    created_by = "Бот (автоштраф)"
+    append_penalty(
+        employee,
+        report_date,
+        penalty_type["category"],
+        penalty_type["name"],
+        comment,
+        amount,
+        created_by,
+    )
+
+    try:
+        await send_penalty_to_topic(
+            context=context,
+            employee=employee,
+            penalty_date=report_date,
+            penalty_category=penalty_type["category"],
+            penalty_type=penalty_type["name"],
+            comment=comment,
+            amount=amount,
+            created_by=created_by,
+            coefficient=coefficient,
+        )
+        return f"Автоштраф «{penalty_type['name']}» добавлен: {money(amount)} ₽."
+    except Exception as error:
+        logging.exception("Не удалось отправить автоштраф за поздний отчет в тему Telegram")
+        return (
+            f"Автоштраф «{penalty_type['name']}» записан, но не отправлен в тему ⚠️\n"
+            f"Ошибка: {error}"
+        )
 
 
 def last_30_days_period(end_date):
@@ -2212,6 +2322,20 @@ async def finish_create_report(target, context: ContextTypes.DEFAULT_TYPE, teleg
                 await context.bot.send_message(chat_id=int(employee["telegram_user_id"]), text=warning)
             except Exception:
                 logging.exception("Не удалось отправить предупреждение руководителю склада")
+
+    if report_saved:
+        try:
+            late_penalty_status = await maybe_add_late_warehouse_report_penalty(
+                context=context,
+                employee=employee,
+                report_date=report_date,
+                interval=interval,
+            )
+            if late_penalty_status:
+                status += f"\n\n{late_penalty_status}"
+        except Exception as error:
+            logging.exception("Не удалось создать автоштраф за поздний ежедневный отчет")
+            status += f"\n\nАвтоштраф за поздний отчет не удалось создать ⚠️\nОшибка: {error}"
 
     if delivered_to_private_target and not status.startswith("Отчет не удалось"):
         context.user_data.clear()
