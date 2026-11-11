@@ -8,6 +8,8 @@ from modules.moysklad.client import MoySkladError
 
 PAGE_LIMIT = 100
 GTIN_CHARACTERISTIC_NAMES = {"gtin", "гтин"}
+BOT_SHIPPING_ATTRIBUTE_NAME = "Проведен через бота"
+BOT_SHIPPING_ATTRIBUTE_VALUE = "уедет"
 
 
 class ShippingValidationError(ValueError):
@@ -274,6 +276,50 @@ def inspect_order_demands(client, order_id):
     try:
         order = client.get_entity("customerorder", str(order_id))
         return linked_demands(client, order)
+    except MoySkladError as error:
+        raise ShippingServiceError(str(error)) from error
+
+
+def set_order_bot_shipping_flag(client, order_id):
+    """Записывает признак успешной отгрузки в дополнительное поле заказа."""
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        raise ShippingServiceError("У заказа отсутствует идентификатор МойСклад.")
+    try:
+        attributes = response_rows(client.get("entity/customerorder/metadata/attributes"))
+        attribute = next(
+            (
+                row for row in attributes
+                if str(row.get("name") or "").strip() == BOT_SHIPPING_ATTRIBUTE_NAME
+            ),
+            None,
+        )
+        if not attribute:
+            raise ShippingServiceError(
+                f"В МойСклад не найдено поле «{BOT_SHIPPING_ATTRIBUTE_NAME}»."
+            )
+        if str(attribute.get("type") or "") != "string":
+            raise ShippingServiceError(
+                f"Поле «{BOT_SHIPPING_ATTRIBUTE_NAME}» должно иметь тип «Строка»."
+            )
+        attribute_meta = dict(attribute.get("meta") or {})
+        if not attribute_meta.get("href"):
+            raise ShippingServiceError(
+                f"У поля «{BOT_SHIPPING_ATTRIBUTE_NAME}» отсутствуют метаданные."
+            )
+        client.update_entity(
+            "customerorder",
+            order_id,
+            {
+                "attributes": [{
+                    "meta": attribute_meta,
+                    "value": BOT_SHIPPING_ATTRIBUTE_VALUE,
+                }]
+            },
+        )
+        return BOT_SHIPPING_ATTRIBUTE_VALUE
+    except ShippingServiceError:
+        raise
     except MoySkladError as error:
         raise ShippingServiceError(str(error)) from error
 

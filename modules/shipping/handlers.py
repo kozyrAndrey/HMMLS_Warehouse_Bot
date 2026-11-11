@@ -21,6 +21,7 @@ from modules.shipping.service import (
     inspect_order_demands,
     parse_marking_code,
     search_customer_orders,
+    set_order_bot_shipping_flag,
 )
 from modules.shipping.storage import (
     get_shipping_by_order,
@@ -319,6 +320,23 @@ async def shipping_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Не удалось создать отгрузку МойСклад")
         data.pop("finishing", None)
         await query.edit_message_text(f"⚠️ Не удалось создать отгрузку: {error}", reply_markup=review_keyboard())
+        return SHIPPING_REVIEW
+
+    try:
+        await asyncio.to_thread(
+            set_order_bot_shipping_flag,
+            build_moysklad_client(),
+            data["order"]["id"],
+        )
+    except Exception as error:
+        logger.exception("Отгрузка создана, но признак в заказе МойСклад не записан")
+        data.pop("finishing", None)
+        await query.edit_message_text(
+            f"⚠️ Отгрузка {demand.get('name') or demand.get('id')} создана, но поле "
+            f"«Проведен через бота» не обновлено: {error}\n\n"
+            "Повторите подтверждение — дубликат отгрузки не создастся.",
+            reply_markup=review_keyboard(),
+        )
         return SHIPPING_REVIEW
 
     operator = current_employee(update) or {}

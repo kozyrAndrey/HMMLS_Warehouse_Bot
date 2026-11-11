@@ -5,6 +5,7 @@ from modules.shipping.service import (
     demand_payload,
     gtin_from_assortment,
     parse_marking_code,
+    set_order_bot_shipping_flag,
 )
 
 
@@ -56,6 +57,32 @@ class ShippingServiceTests(unittest.TestCase):
             {"cis": code["short_code"], "type": "trackingcode"},
             {"cis": code["short_code"], "type": "trackingcode"},
         ])
+
+    def test_successful_shipping_sets_customer_order_attribute(self):
+        class Client:
+            def __init__(self):
+                self.updated = None
+
+            def get(self, path):
+                self.path = path
+                return {"rows": [{
+                    "name": "Проведен через бота",
+                    "type": "string",
+                    "meta": {
+                        "href": "https://example/attribute/1",
+                        "type": "attributemetadata",
+                        "mediaType": "application/json",
+                    },
+                }]}
+
+            def update_entity(self, entity_type, entity_id, payload):
+                self.updated = (entity_type, entity_id, payload)
+
+        client = Client()
+        self.assertEqual(set_order_bot_shipping_flag(client, "order-1"), "уедет")
+        self.assertEqual(client.path, "entity/customerorder/metadata/attributes")
+        self.assertEqual(client.updated[0:2], ("customerorder", "order-1"))
+        self.assertEqual(client.updated[2]["attributes"][0]["value"], "уедет")
 
 
 if __name__ == "__main__":
