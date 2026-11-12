@@ -115,15 +115,22 @@ def characteristic_gtin(assortment):
 
 def gtin_from_assortment(assortment):
     """EAN-13 без отдельного GTIN не делает позицию маркируемой."""
+    gtins = gtins_from_assortment(assortment)
+    return gtins[0] if gtins else ""
+
+
+def gtins_from_assortment(assortment):
+    """Возвращает все явно заданные GTIN, сохраняя порядок и убирая дубли."""
+    result = []
     characteristic = characteristic_gtin(assortment)
     if characteristic:
-        return characteristic
+        result.append(characteristic)
     for barcode in (assortment or {}).get("barcodes") or []:
         if isinstance(barcode, dict) and barcode.get("gtin"):
             gtin = normalize_gtin(barcode["gtin"])
-            if gtin:
-                return gtin
-    return ""
+            if gtin and gtin not in result:
+                result.append(gtin)
+    return result
 
 
 def integer_quantity(position):
@@ -163,7 +170,8 @@ def build_order_snapshot(client, order):
         if assortment_type == "service":
             continue
         quantity = integer_quantity(position)
-        gtin = gtin_from_assortment(assortment)
+        gtins = gtins_from_assortment(assortment)
+        gtin = gtins[0] if gtins else ""
         name = str(assortment.get("name") or "Без названия").strip()
         item = {
             "position_id": str(position.get("id") or ""),
@@ -171,7 +179,8 @@ def build_order_snapshot(client, order):
             "name": name,
             "quantity": quantity,
             "gtin": gtin,
-            "marked": bool(gtin),
+            "gtins": gtins,
+            "marked": bool(gtins),
         }
         snapshot.append(item)
         if gtin:
@@ -222,6 +231,16 @@ def plain_values(code):
     return {"01": gtin, "21": serial, "91": value91, "92": value92}
 
 
+def expected_gtin_values(expected_gtin):
+    values = expected_gtin if isinstance(expected_gtin, (list, tuple, set)) else [expected_gtin]
+    result = []
+    for value in values:
+        gtin = normalize_gtin(value)
+        if gtin and gtin not in result:
+            result.append(gtin)
+    return result
+
+
 def parse_marking_code(raw_code, expected_gtin):
     normalized = normalize_chz_text(raw_code).strip()
     if not normalized:
@@ -239,9 +258,12 @@ def parse_marking_code(raw_code, expected_gtin):
         raise ShippingValidationError("AI 21 должен содержать 13 символов.")
     if not values.get("91") or not values.get("92"):
         raise ShippingValidationError("Нужен полный DataMatrix с AI 91 и AI 92.")
-    expected = normalize_gtin(expected_gtin)
-    if gtin != expected:
-        raise ShippingValidationError(f"GTIN кода {gtin} не совпадает с GTIN товара {expected}.")
+    expected = expected_gtin_values(expected_gtin)
+    if gtin not in expected:
+        expected_text = ", ".join(expected)
+        raise ShippingValidationError(
+            f"GTIN кода {gtin} не совпадает с GTIN товара {expected_text}."
+        )
     return {
         "raw_code": normalized,
         "short_code": f"01{gtin}21{serial}",

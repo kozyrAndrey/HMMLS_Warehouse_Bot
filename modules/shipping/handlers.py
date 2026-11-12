@@ -209,11 +209,12 @@ async def existing_demand_continue(update: Update, context: ContextTypes.DEFAULT
 async def ask_current_code(message, context):
     data = draft(context)
     unit = data["units"][data["unit_index"]]
+    accepted_gtins = unit.get("gtins") or [unit["gtin"]]
     await message.edit_text(
         f"Заказ {data['order']['name']}\n"
         f"Маркируемая единица {data['unit_index'] + 1} из {len(data['units'])}\n\n"
         f"{unit['name']}\nЕдиница {unit['unit_number']} из {unit['quantity']}\n"
-        f"GTIN: {unit['gtin']}\n\nОтсканируйте полный DataMatrix Честного знака:",
+        f"GTIN: {', '.join(accepted_gtins)}\n\nОтсканируйте полный DataMatrix Честного знака:",
         reply_markup=cancel_keyboard("scan" if data["unit_index"] else "order"),
     )
     return SHIPPING_SCAN
@@ -223,7 +224,10 @@ async def marking_code_received(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         data = draft(context)
         unit = data["units"][data["unit_index"]]
-        parsed = parse_marking_code(update.message.text, unit["gtin"])
+        parsed = parse_marking_code(
+            update.message.text,
+            unit.get("gtins") or unit["gtin"],
+        )
     except ShippingValidationError as error:
         await update.message.reply_text(f"⚠️ Код не принят: {error}\n\nОтсканируйте код повторно:", reply_markup=cancel_keyboard("scan" if draft(context)["unit_index"] else "order"))
         return SHIPPING_SCAN

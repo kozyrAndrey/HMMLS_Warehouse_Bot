@@ -4,6 +4,7 @@ from modules.shipping.service import (
     ShippingValidationError,
     demand_payload,
     gtin_from_assortment,
+    gtins_from_assortment,
     parse_marking_code,
     set_order_bot_shipping_flag,
 )
@@ -25,11 +26,31 @@ class ShippingServiceTests(unittest.TestCase):
             VALID_GTIN,
         )
 
+    def test_all_explicit_gtins_are_available_for_shipping(self):
+        second_gtin = "04670332744239"
+        assortment = {
+            "barcodes": [
+                {"ean13": "4601234567893"},
+                {"gtin": VALID_GTIN},
+                {"gtin": second_gtin},
+                {"gtin": VALID_GTIN},
+            ],
+        }
+        self.assertEqual(gtins_from_assortment(assortment), [VALID_GTIN, second_gtin])
+        self.assertEqual(gtin_from_assortment(assortment), VALID_GTIN)
+
     def test_datamatrix_format_and_gtin_are_checked(self):
         parsed = parse_marking_code(FULL_CODE, VALID_GTIN)
         self.assertEqual(parsed["short_code"], f"01{VALID_GTIN}21ABCDEFGHIJKLM")
         with self.assertRaisesRegex(ShippingValidationError, "не совпадает"):
             parse_marking_code(FULL_CODE, "04670332744239")
+
+    def test_datamatrix_accepts_any_gtin_explicitly_assigned_to_product(self):
+        parsed = parse_marking_code(
+            FULL_CODE,
+            ["04670332744239", VALID_GTIN],
+        )
+        self.assertEqual(parsed["gtin"], VALID_GTIN)
 
     def test_datamatrix_rejects_cyrillic_but_allows_mixed_latin_case(self):
         with self.assertRaisesRegex(ShippingValidationError, "кириллица"):
