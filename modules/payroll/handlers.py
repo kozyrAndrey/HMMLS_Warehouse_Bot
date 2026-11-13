@@ -72,7 +72,7 @@ from modules.payroll.google_sheets import (
     PAYMENT_MODE_SHIFT,
     SHIFT_TYPE_FULL,
     SHIFT_TYPE_HALF,
-    update_active_period,
+    update_period,
     update_daily_report,
     update_penalty_telegram_data,
     update_report_message_ids,
@@ -163,6 +163,7 @@ MSK_TZ = ZoneInfo("Europe/Moscow")
 
 CREATE_MANAGER_DATE = 356
 PENALTY_DELETE_SELECT = 357
+PERIOD_EDIT_SELECT = 358
 
 
 # ============================================================
@@ -416,7 +417,7 @@ def periods_keyboard():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("➕ Создать текущий период", callback_data="period:create")],
-            [InlineKeyboardButton("✏️ Изменить текущий период", callback_data="period:edit")],
+            [InlineKeyboardButton("✏️ Изменить период", callback_data="period:edit")],
             [InlineKeyboardButton("📋 Посмотреть периоды", callback_data="period:list")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="section:payroll")],
         ]
@@ -430,9 +431,24 @@ def period_edit_field_keyboard():
             [InlineKeyboardButton("Дата начала", callback_data="periodfield:start")],
             [InlineKeyboardButton("Дата конца", callback_data="periodfield:end")],
             [InlineKeyboardButton("Режим оплаты", callback_data="periodfield:payment_mode")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="pay:periods")],
+            [InlineKeyboardButton("⬅️ К выбору периода", callback_data="period:edit")],
         ]
     )
+
+
+def period_edit_selection_keyboard(periods):
+    rows = []
+    for period in reversed(periods):
+        status = "активный" if period["status"] == "active" else "закрытый"
+        label = f"{period['name']} ({period['start_date']} — {period['end_date']}, {status})"
+        rows.append([
+            InlineKeyboardButton(
+                label[:60],
+                callback_data=f"periodeditselect:{period['period_id']}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="pay:periods")])
+    return InlineKeyboardMarkup(rows)
 
 
 def period_payment_mode_keyboard(prefix):
@@ -4291,16 +4307,17 @@ async def period_edit_payment_mode_selected(update: Update, context: ContextType
         )
         return PERIOD_EDIT_VALUE
 
-    updated = update_active_period(payment_mode=payment_mode)
+    period_id = context.user_data.get("period_edit_id")
+    updated = update_period(period_id, payment_mode=payment_mode)
     if not updated:
-        await query.edit_message_text("Активный период не найден.", reply_markup=payroll_main_keyboard(manager=True))
+        await query.edit_message_text("Расчетный период не найден.", reply_markup=payroll_main_keyboard(manager=True))
         return ConversationHandler.END
 
-    active = get_active_period()
+    period = next((item for item in get_periods() if item["period_id"] == period_id), None)
     await query.edit_message_text(
         f"Период обновлен ✅\n\n"
-        f"{active['name']}\n{active['start_date']} — {active['end_date']}\n"
-        f"Режим оплаты: {payment_mode_label(active.get('payment_mode'))}",
+        f"{period['name']}\n{period['start_date']} — {period['end_date']}\n"
+        f"Режим оплаты: {payment_mode_label(period.get('payment_mode'))}",
         reply_markup=payroll_main_keyboard(manager=True),
     )
     context.user_data.clear()
@@ -4315,14 +4332,47 @@ async def period_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Недостаточно прав.")
         return ConversationHandler.END
 
-    active = get_active_period()
-    if not active:
-        await query.edit_message_text("Активный период не настроен.", reply_markup=periods_keyboard())
+    periods = get_periods()
+    if not periods:
+        await query.edit_message_text("Расчетные периоды не настроены.", reply_markup=periods_keyboard())
         return ConversationHandler.END
 
+    context.user_data.clear()
+    context.user_data["periods_to_edit"] = {
+        period["period_id"]: period for period in periods
+    }
     await query.edit_message_text(
-        f"Текущий период:\n{active['name']}\n{active['start_date']} — {active['end_date']}\n"
-        f"Режим оплаты: {payment_mode_label(active.get('payment_mode'))}\n\nЧто изменить?",
+        "Выберите расчетный период для изменения:",
+        reply_markup=period_edit_selection_keyboard(periods),
+    )
+    return PERIOD_EDIT_SELECT
+
+
+async def period_edit_period_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_employee = current_employee_or_none(update)
+    if not is_manager(current_employee):
+        await query.edit_message_text("Недостаточно прав.")
+        return ConversationHandler.END
+
+    period_id = query.data.replace("periodeditselect:", "")
+    period = (context.user_data.get("periods_to_edit") or {}).get(period_id)
+    if not period:
+        period = next((item for item in get_periods() if item["period_id"] == period_id), None)
+    if not period:
+        await query.edit_message_text(
+            "Расчетный период не найден. Выберите период заново.",
+            reply_markup=periods_keyboard(),
+        )
+        return ConversationHandler.END
+
+    context.user_data["period_edit_id"] = period_id
+    await query.edit_message_text(
+        f"Выбранный период:\n{period['name']}\n{period['start_date']} — {period['end_date']}\n"
+        f"Режим оплаты: {payment_mode_label(period.get('payment_mode'))}\n"
+        f"Статус: {'активный' if period['status'] == 'active' else 'закрытый'}\n\n"
+        "Что изменить?",
         reply_markup=period_edit_field_keyboard(),
     )
     return PERIOD_EDIT_FIELD
@@ -4371,16 +4421,17 @@ async def period_edit_value_received(update: Update, context: ContextTypes.DEFAU
     elif field == "end":
         kwargs["end_date"] = value
 
-    updated = update_active_period(**kwargs)
+    period_id = context.user_data.get("period_edit_id")
+    updated = update_period(period_id, **kwargs)
     if not updated:
-        await update.message.reply_text("Активный период не найден.", reply_markup=payroll_main_keyboard(manager=True))
+        await update.message.reply_text("Расчетный период не найден.", reply_markup=payroll_main_keyboard(manager=True))
         return ConversationHandler.END
 
-    active = get_active_period()
+    period = next((item for item in get_periods() if item["period_id"] == period_id), None)
     await update.message.reply_text(
         f"Период обновлен ✅\n\n"
-        f"{active['name']}\n{active['start_date']} — {active['end_date']}\n"
-        f"Режим оплаты: {payment_mode_label(active.get('payment_mode'))}",
+        f"{period['name']}\n{period['start_date']} — {period['end_date']}\n"
+        f"Режим оплаты: {payment_mode_label(period.get('payment_mode'))}",
         reply_markup=payroll_main_keyboard(manager=True),
     )
     context.user_data.clear()
@@ -4791,6 +4842,11 @@ def get_payroll_conversation_handler():
             ],
             PERIOD_EDIT_FIELD: [
                 CallbackQueryHandler(period_edit_field_selected, pattern=r"^periodfield:"),
+                CallbackQueryHandler(period_edit_start, pattern=r"^period:edit$"),
+                CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
+            ],
+            PERIOD_EDIT_SELECT: [
+                CallbackQueryHandler(period_edit_period_selected, pattern=r"^periodeditselect:"),
                 CallbackQueryHandler(periods_menu_start, pattern=r"^pay:periods$"),
                 CallbackQueryHandler(payroll_cancel, pattern=r"^pay:cancel$"),
             ],

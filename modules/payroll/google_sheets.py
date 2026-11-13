@@ -1384,6 +1384,22 @@ def find_active_period_row():
     return None, None
 
 
+def find_period_row(period_id):
+    period_id = str(period_id or "").strip()
+    if not period_id:
+        return None, None
+    ws = get_worksheet(PERIODS_SHEET)
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None, None
+    headers = values[0]
+    for index, row in enumerate(values[1:], start=2):
+        data = dict(zip(headers, row))
+        if str(data.get("period_id", "")).strip() == period_id:
+            return index, data
+    return None, None
+
+
 def get_active_period():
     _, data = find_active_period_row()
     if not data:
@@ -1434,9 +1450,9 @@ def create_active_period(name, start_date, end_date, created_by, payment_mode=PA
     return period_id
 
 
-def update_active_period(name=None, start_date=None, end_date=None, payment_mode=None):
+def update_period(period_id, name=None, start_date=None, end_date=None, payment_mode=None):
     ws = get_worksheet(PERIODS_SHEET)
-    row_index, data = find_active_period_row()
+    row_index, data = find_period_row(period_id)
     if not data:
         return False
     if name is not None:
@@ -1450,6 +1466,19 @@ def update_active_period(name=None, start_date=None, end_date=None, payment_mode
     data["Обновлено"] = now_str()
     ws.update(f"A{row_index}:I{row_index}", [[data.get(header, "") for header in PERIOD_HEADERS]])
     return True
+
+
+def update_active_period(name=None, start_date=None, end_date=None, payment_mode=None):
+    active = get_active_period()
+    if not active:
+        return False
+    return update_period(
+        active["period_id"],
+        name=name,
+        start_date=start_date,
+        end_date=end_date,
+        payment_mode=payment_mode,
+    )
 
 
 def cleanup_old_operational_data(days=365):
