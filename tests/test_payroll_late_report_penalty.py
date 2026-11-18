@@ -41,6 +41,36 @@ class WarehouseReportDeadlineTests(unittest.TestCase):
 
 
 class LateWarehouseReportPenaltyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_managers_with_warehouse_employee_role_are_not_penalized(self):
+        submitted_at = datetime(2026, 11, 11, 21, 0, tzinfo=MSK_TZ)
+
+        for manager_role in ("warehouse_manager", "brand_manager", "admin"):
+            with self.subTest(manager_role=manager_role):
+                with (
+                    patch("modules.payroll.handlers.get_penalties_in_period") as get_penalties,
+                    patch("modules.payroll.handlers.append_penalty") as append_penalty,
+                    patch("modules.payroll.handlers.send_penalty_to_topic", new=AsyncMock()) as send_penalty,
+                ):
+                    employee = {
+                        "employee_id": f"emp-{manager_role}",
+                        "full_name": "Иван Иванов",
+                        "role": "warehouse_employee",
+                        "roles": ["warehouse_employee", manager_role],
+                    }
+
+                    status = await maybe_add_late_warehouse_report_penalty(
+                        SimpleNamespace(bot=SimpleNamespace()),
+                        employee,
+                        "11.11.2026",
+                        "10:00-19:00",
+                        submitted_at=submitted_at,
+                    )
+
+                    self.assertIsNone(status)
+                    get_penalties.assert_not_called()
+                    append_penalty.assert_not_called()
+                    send_penalty.assert_not_awaited()
+
     async def test_late_report_creates_and_sends_automatic_penalty(self):
         employee = {"employee_id": "emp-1", "full_name": "Иван Иванов"}
         submitted_at = datetime(2026, 11, 11, 20, 30, tzinfo=MSK_TZ)

@@ -1273,6 +1273,9 @@ async def maybe_add_late_warehouse_report_penalty(
     submitted_at=None,
 ):
     """Создает один автоштраф, если отчет сдан позже установленного дедлайна."""
+    if is_manager(employee):
+        return None
+
     submitted_at = submitted_at or datetime.now(MSK_TZ)
     if not warehouse_report_is_late(report_date, interval, submitted_at):
         return None
